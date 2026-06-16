@@ -197,13 +197,10 @@
       (= :handle (:kind ret))
       (some #(= :handle (:kind (:type %))) params)))
 
-(defn generate
-  "Emit the Zig wrapper for `spec` with the user's `body` spliced in. An
-  error-union return generates an inner impl fn and a translating wrapper;
-  an owned or borrowed slice return writes its pointer and length to
-  out-params; a struct return writes through an out-pointer; every other
-  return is a direct `export fn`. A wrapper that allocates gets `std` in
-  scope."
+(defn- generate-inline
+  "The inline-mode wrapper: the user's body string is spliced into the
+  exported function (or its inner impl fn). A wrapper that allocates gets
+  `std` in scope."
   [{:keys [ret] :as spec} body]
   (let [core (cond
                (= :error-union (:kind ret))                  (generate-error-union spec body)
@@ -214,6 +211,123 @@
     (if (needs-std? spec)
       (str "const std = @import(\"std\");\n\n" core)
       core)))
+
+;; --- File mode: the wrapper calls a user-written `pub fn` ----------------
+
+(defn- user-call
+  "The Zig expression calling the user's `entry` fn with each binding by
+  its name. Slices, arrays, and structs arrive reconstructed; enums and
+  scalars arrive by value."
+  [entry params]
+  (str entry "(" (str/join ", " (map #(str (:binding %)) params)) ")"))
+
+(defn- wrapper-prelude
+  "Reconstruction statements run inside the export wrapper before it calls
+  the user fn, indented to the function-body level. Empty when no param
+  needs rebuilding."
+  [params]
+  (let [stmts (keep reconstruction params)]
+    (when (seq stmts)
+      (str (str/join "\n" (map #(str "    " %) stmts)) "\n"))))
+
+(defn- file-plain
+  "A file-mode `export fn` that reconstructs its slice and struct args and
+  returns the user fn's result directly (scalar, enum, or void)."
+  [{:keys [params ret] sym :symbol} entry]
+  (str "export fn " sym "(" (str/join ", " (mapcat param-decls params)) ") "
+       (zig-type ret) " {\n"
+       (wrapper-prelude params)
+       "    return " (user-call entry params) ";\n"
+       "}\n"))
+
+(defn- file-error-union
+  "A file-mode `export fn` that calls the user fn and translates a returned
+  error into the caller's error-name buffer."
+  [{:keys [params ret] sym :symbol} entry]
+  (let [params-str (str/join ", " (mapcat param-decls params))
+        value-t    (zig-type (:of ret))
+        void?      (= "void" value-t)
+        out-params (str (when (seq params-str) ", ")
+                        "__err: [*]u8, __errlen: *usize")
+        call       (user-call entry params)
+        on-error   (str "catch |__err_value| {\n"
+                        "        const __name = @errorName(__err_value);\n"
+                        "        const __n = @min(__name.len, " error-name-cap ");\n"
+                        "        @memcpy(__err[0..__n], __name[0..__n]);\n"
+                        "        __errlen.* = __n;\n"
+                        "        return" (when-not void? " undefined") ";\n"
+                        "    };")]
+    (str "export fn " sym "(" params-str out-params ") " value-t " {\n"
+         (wrapper-prelude params)
+         (if void?
+           (str "    " call " " on-error "\n"
+                "    __errlen.* = 0;\n")
+           (str "    const __value = " call " " on-error "\n"
+                "    __errlen.* = 0;\n"
+                "    return __value;\n"))
+         "}\n")))
+
+(defn- file-struct-return
+  "A file-mode `export fn` that calls the user fn and writes the returned
+  struct through an out-pointer (the aggregate crosses by reference)."
+  [{:keys [params ret] sym :symbol} entry]
+  (let [params-str (str/join ", " (mapcat param-decls params))
+        ret-t      (zig-type ret)
+        out-params (str (when (seq params-str) ", ") "__ret: *" ret-t)]
+    (str "export fn " sym "(" params-str out-params ") void {\n"
+         (wrapper-prelude params)
+         "    __ret.* = " (user-call entry params) ";\n"
+         "}\n")))
+
+(defn- file-ownership
+  "A file-mode `export fn` that calls the user fn and writes the returned
+  slice's pointer and length to two out-params. An `:owned` return also
+  emits a free shim; it imports `std` inline so the user file's own
+  imports never collide."
+  [{:keys [params ret] sym :symbol} entry]
+  (let [params-str (str/join ", " (mapcat param-decls params))
+        slice      (:of ret)
+        elem-t     (zig-type (:of slice))
+        owned?     (= :owned (:kind ret))
+        out-params (str (when (seq params-str) ", ") "__ptr: *usize, __len: *usize")]
+    (str "export fn " sym "(" params-str out-params ") void {\n"
+         (wrapper-prelude params)
+         "    const __r = " (user-call entry params) ";\n"
+         "    __ptr.* = @intFromPtr(__r.ptr);\n"
+         "    __len.* = __r.len;\n"
+         "}\n"
+         (when owned?
+           (str "\nexport fn " sym "__free(__ptr: usize, __len: usize) void {\n"
+                "    const __p: [*]" elem-t " = @ptrFromInt(__ptr);\n"
+                "    @import(\"std\").heap.c_allocator.free(__p[0..__len]);\n"
+                "}\n")))))
+
+(defn- generate-file
+  "The file-mode wrapper: an `export fn` that reconstructs args and calls
+  the user's `entry` fn. No impl fn and no top-level `std` are emitted; the
+  user's file owns its declarations and imports."
+  [{:keys [ret] :as spec} entry]
+  (cond
+    (= :error-union (:kind ret))                  (file-error-union spec entry)
+    (contains? #{:owned :borrowed} (:kind ret))   (file-ownership spec entry)
+    (and (= :named (:kind ret)) (enum-type? ret)) (file-plain spec entry)
+    (= :named (:kind ret))                        (file-struct-return spec entry)
+    :else                                         (file-plain spec entry)))
+
+(defn generate
+  "Emit the Zig wrapper for `spec`. In the default inline mode the user's
+  `body` string is spliced in; an error-union return generates an inner
+  impl fn and a translating wrapper, an owned or borrowed slice return
+  writes its pointer and length to out-params, a struct return writes
+  through an out-pointer, and every other return is a direct `export fn`.
+  In file mode (`opts {:mode :file :entry \"name\"}`) the wrapper instead
+  reconstructs its arguments and calls the user's `pub fn`; `body` is not
+  spliced and is concatenated separately."
+  ([spec body] (generate spec body {:mode :inline}))
+  ([spec body {:keys [mode entry]}]
+   (if (= :file mode)
+     (generate-file spec entry)
+     (generate-inline spec body))))
 
 (comment
   (require '[clj-zig.spec :as spec])
