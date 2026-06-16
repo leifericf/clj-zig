@@ -226,6 +226,13 @@
             types (gen/vector gen-scalar-type n)]
     (vec (mapcat (fn [i t] [(symbol (str "f" i)) t]) (range) types))))
 
+(def gen-enum-members
+  "A `defenumz` member list: one to six `name value` pairs with distinct
+  integer values, so the value-to-member mapping is unambiguous."
+  (gen/let [n      (gen/choose 1 6)
+            values (gen/vector-distinct gen/nat {:num-elements n})]
+    (vec (mapcat (fn [i v] [(symbol (str "m" i)) v]) (range) values))))
+
 ;; --- Negative space ----------------------------------------------------
 
 (def junk-forms
