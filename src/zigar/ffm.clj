@@ -32,15 +32,20 @@
   length."
   [{:keys [type]}]
   (case (:kind type)
-    :slice                   [ValueLayout/ADDRESS ValueLayout/JAVA_LONG]
-    (:ptr :manyptr :array)   [ValueLayout/ADDRESS]
+    :slice                             [ValueLayout/ADDRESS ValueLayout/JAVA_LONG]
+    (:ptr :manyptr :array :optional)   [ValueLayout/ADDRESS]
     [(value-layout type)]))
+
+(defn- return-layout ^ValueLayout [ret]
+  (if (= :optional (:kind ret))
+    ValueLayout/ADDRESS
+    (value-layout ret)))
 
 (defn- descriptor ^FunctionDescriptor [spec]
   (let [arg-layouts (into-array MemoryLayout (mapcat param-layouts (:params spec)))]
     (if (type/void-type? (:ret spec))
       (FunctionDescriptor/ofVoid arg-layouts)
-      (FunctionDescriptor/of (value-layout (:ret spec)) arg-layouts))))
+      (FunctionDescriptor/of (return-layout (:ret spec)) arg-layouts))))
 
 (defn- to-carrier
   "Coerce a Clojure value to the param's native carrier. Integers cross
@@ -97,26 +102,61 @@
                                   :expected n
                                   :actual (Array/getLength arg)})))
                {:carriers [(:address (marshal-array arena param arg))]})
+    :optional (if (nil? arg)
+                {:carriers [MemorySegment/NULL]}
+                (marshal-arg arena (update param :type :of) arg))
     {:carriers [(to-carrier param arg)]}))
 
+(defn- coerce-scalar
+  "Coerce a native scalar value of type `t` to Clojure, applying the
+  unsigned-return policy for `:u64`/`:usize`."
+  [t v]
+  (let [{:keys [category signed? bits]} (type/scalar-info (:name t))]
+    (case category
+      :bool  (boolean v)
+      :float (double v)
+      :int   (if signed?
+               (long v)
+               (case bits
+                 8  (bit-and (long v) 0xff)
+                 16 (bit-and (long v) 0xffff)
+                 32 (bit-and (long v) 0xffffffff)
+                 64 (let [l (long v)]
+                      (if (neg? l) (.add (biginteger l) two-to-64) l)))))))
+
+(defn- read-scalar
+  "Read one scalar of type `t` from the start of native segment `seg`."
+  [^MemorySegment seg t]
+  (let [{:keys [category bits]} (type/scalar-info (:name t))]
+    (case category
+      :int   (case bits
+               8  (.get seg ValueLayout/JAVA_BYTE 0)
+               16 (.get seg ValueLayout/JAVA_SHORT 0)
+               32 (.get seg ValueLayout/JAVA_INT 0)
+               64 (.get seg ValueLayout/JAVA_LONG 0))
+      :float (case bits
+               32 (.get seg ValueLayout/JAVA_FLOAT 0)
+               64 (.get seg ValueLayout/JAVA_DOUBLE 0))
+      :bool  (.get seg ValueLayout/JAVA_BOOLEAN 0))))
+
+(defn- deref-optional
+  "Read the pointee of an `:optional` single-item pointer return: nil when
+  the address is null, else the coerced scalar the pointer addresses."
+  [ret ^MemorySegment seg]
+  (when-not (zero? (.address seg))
+    (let [scalar (-> ret :of :of)
+          sized  (.reinterpret seg (.byteSize (value-layout scalar)))]
+      (coerce-scalar scalar (read-scalar sized scalar)))))
+
 (defn- from-return
-  "Coerce a native return to a Clojure value, applying the unsigned-return
-  policy for `:u64`/`:usize`."
+  "Coerce a native return to a Clojure value: nil for `:void`, the pointee
+  or nil for an `:optional` pointer, and the unsigned-aware scalar value
+  otherwise."
   [ret v]
-  (if (type/void-type? ret)
-    nil
-    (let [{:keys [category signed? bits]} (type/scalar-info (:name ret))]
-      (case category
-        :bool  (boolean v)
-        :float (double v)
-        :int   (if signed?
-                 (long v)
-                 (case bits
-                   8  (bit-and (long v) 0xff)
-                   16 (bit-and (long v) 0xffff)
-                   32 (bit-and (long v) 0xffffffff)
-                   64 (let [l (long v)]
-                        (if (neg? l) (.add (biginteger l) two-to-64) l))))))))
+  (cond
+    (type/void-type? ret)     nil
+    (= :optional (:kind ret)) (deref-optional ret v)
+    :else                     (coerce-scalar ret v)))
 
 (defn bind
   "Load `library-path`, look up the spec's symbol, and return a Clojure

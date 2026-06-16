@@ -15,13 +15,16 @@
   fmt` over the whole file to normalize the body."
   (:require [clojure.string :as str]))
 
+(declare zig-type pointee pointer-type)
+
 (defn- zig-type
-  "The Zig type name for a normalized boundary type. Handles scalars and
-  named types; `param-decls` lowers slices."
+  "The Zig type name for a normalized boundary type. Handles scalars,
+  named types, and optional pointers; `param-decls` lowers slices."
   [t]
   (case (:kind t)
-    :scalar (name (:name t))
-    :named  (str (:name t))
+    :scalar   (name (:name t))
+    :named    (str (:name t))
+    :optional (str "?" (pointer-type (:of t)))
     (throw (ex-info "Source generation does not yet support this boundary type."
                     {:level :error
                      :error/code :zigar/unsupported-source-type
@@ -33,18 +36,23 @@
   [{:keys [const? of]}]
   (str (when const? "const ") (zig-type of)))
 
+(defn- pointer-type
+  "The Zig type of a single- or many-item pointer."
+  [{:keys [kind] :as t}]
+  (str (case kind :ptr "*" :manyptr "[*]") (pointee t)))
+
 (defn- param-decls
-  "The Zig parameter declarations for one boundary param. A scalar or
-  pointer is one declaration; a fixed-size array crosses as a pointer to
-  the array; a slice is two declarations, a many-item pointer and a
-  `usize` length."
+  "The Zig parameter declarations for one boundary param. A scalar,
+  pointer, or optional pointer is one declaration; a fixed-size array
+  crosses as a pointer to the array; a slice is two declarations, a
+  many-item pointer and a `usize` length."
   [{:keys [binding type]}]
   (case (:kind type)
-    :slice   [(str binding "_ptr: [*]" (pointee type))
-              (str binding "_len: usize")]
-    :manyptr [(str binding ": [*]" (pointee type))]
-    :ptr     [(str binding ": *" (pointee type))]
-    :array   [(str binding "_ptr: *const [" (:length type) "]" (zig-type (:of type)))]
+    :slice            [(str binding "_ptr: [*]" (pointee type))
+                       (str binding "_len: usize")]
+    (:ptr :manyptr)   [(str binding ": " (pointer-type type))]
+    :optional         [(str binding ": " (zig-type type))]
+    :array            [(str binding "_ptr: *const [" (:length type) "]" (zig-type (:of type)))]
     [(str binding ": " (zig-type type))]))
 
 (defn- reconstruction

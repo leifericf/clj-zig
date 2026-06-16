@@ -88,13 +88,22 @@
 
 (defn- validate!
   "Reject contracts FFM cannot honor: `:void`/`:noreturn` in argument
-  position, and any value-position scalar without an FFM carrier."
+  position, an `:optional` over anything but a pointer, and any
+  value-position scalar without an FFM carrier."
   [{:keys [params ret] :as spec}]
   (doseq [{:keys [type]} params]
     (when (type/void-type? type)
       (fail spec :zigar/void-argument
             (str (:name type) " is not a valid argument type.")
-            {})))
+            {}))
+    (when (and (= :optional (:kind type))
+               (not (contains? #{:ptr :manyptr} (:kind (:of type)))))
+      (fail spec :zigar/unsupported-optional
+            "An :optional argument must wrap a :ptr or :manyptr." {})))
+  (when (and (= :optional (:kind ret))
+             (not= :ptr (:kind (:of ret))))
+    (fail spec :zigar/unsupported-optional
+          "An :optional return must wrap a single-item :ptr." {}))
   (let [ret-scalars (if (type/void-type? ret) #{} (scalar-names ret))
         value-scalars (apply set/union ret-scalars (map (comp scalar-names :type) params))
         no-carrier (remove type/has-carrier? value-scalars)]
@@ -112,7 +121,7 @@
                           :error/code code
                           :message message}
                          (when spec
-                           {:var (clojure.core/symbol (str (:ns spec)) (str (:name spec)))
+                           {:var (symbol (str (:ns spec)) (str (:name spec)))
                             :signature (:signature spec)})
                          extra))))
 
