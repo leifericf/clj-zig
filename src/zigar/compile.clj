@@ -49,6 +49,9 @@
       (if (zero? exit)
         {:library lib-abs :source-path src-abs}
         (let [message (str "Could not compile defnz " (:var ctx) ".")]
+          ;; A failed build leaves a zero-byte library at the emit path;
+          ;; remove it so the cache is not poisoned and a retry recompiles.
+          (.delete lib-file)
           (throw (ex-info message
                           (merge {:level :error
                                   :error/code :zig/compile-failed
@@ -57,3 +60,13 @@
                                   :zig/stderr err
                                   :zig/exit-code exit}
                                  ctx))))))))
+
+(comment
+  (require '[zigar.spec :as spec] '[zigar.source :as source])
+  (let [s   (spec/build-spec '{:ns app.core :name add :signature [x :i64 y :i64 :ret :i64]})
+        dir (str (java.nio.file.Files/createTempDirectory
+                  "zigar" (make-array java.nio.file.attribute.FileAttribute 0)))]
+    (compile! {:source (source/generate s "return x + y;")
+               :source-path (str dir "/source.zig")
+               :library-path (str dir "/libadd." (dynamic-library-extension))
+               :ctx {:var 'app.core/add :signature (:signature s)}})))

@@ -91,8 +91,13 @@
                    :else                       arch)]
     (str os "-" arch)))
 
-(defn library-present? [paths]
-  (.exists (io/file (:library-path paths))))
+(defn library-present?
+  "True when a usable library exists. A zero-byte file (left by a failed
+  build) does not count, so a poisoned path recompiles instead of loading
+  an invalid library."
+  [paths]
+  (let [f (io/file (:library-path paths))]
+    (and (.exists f) (pos? (.length f)))))
 
 (defn write-manifest!
   "Write the human-readable manifest describing a built artifact."
@@ -148,3 +153,11 @@
                                      :signature (:signature spec)}})
         (write-manifest! paths inputs artifact-key)
         (assoc paths :hash artifact-key :cached? false)))))
+
+(comment
+  (require '[zigar.spec :as spec])
+  (let [s (spec/build-spec '{:ns app.core :name add :signature [x :i64 y :i64 :ret :i64]})]
+    (cache-key {:spec s :body "return x + y;" :options {:optimize "ReleaseSafe"}
+                :zig-version (zig-version) :target (target-triple)}))
+  (target-triple)   ;; => "macos-aarch64"
+  (zig-version))    ;; => "0.16.0"

@@ -52,3 +52,14 @@
           (is (pos? (:zig/exit-code data)))
           (is (str/includes? (:zig/stderr data) "error"))
           (is (str/ends-with? (:zig/source-path data) "source.zig")))))))
+
+(deftest failed-compile-leaves-no-library-behind
+  (testing "a failed build does not poison the path with a zero-byte library"
+    (let [dir (scratch-dir)
+          lib (str dir "/libadd." (compile/dynamic-library-extension))]
+      (try (compile/compile! {:source (source/generate add-spec "return x + ;")
+                              :source-path (str dir "/source.zig")
+                              :library-path lib
+                              :ctx {:var 'app.core/add :signature '[x :i64 y :i64 :ret :i64]}})
+           (catch clojure.lang.ExceptionInfo _ nil))
+      (is (not (.exists (io/file lib)))))))
