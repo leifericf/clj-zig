@@ -30,3 +30,4 @@ Later ADRs capture decisions made during development. Written via the
 | [16](16-functional-core-imperative-shell.md) | Functional core, imperative shell |
 | [17](17-explicit-contracts-over-marshalling.md) | Explicit boundary contracts over data marshalling |
 | [18](18-carrier-and-unsigned-policy.md) | Boundary carriers and the unsigned-return policy |
+| [19](19-error-union-boundary-semantics.md) | Error-union boundary semantics |

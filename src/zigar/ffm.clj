@@ -42,10 +42,20 @@
     (value-layout ret)))
 
 (defn- descriptor ^FunctionDescriptor [spec]
-  (let [arg-layouts (into-array MemoryLayout (mapcat param-layouts (:params spec)))]
-    (if (type/void-type? (:ret spec))
+  (let [ret        (:ret spec)
+        eu?        (= :error-union (:kind ret))
+        ;; An error-union wrapper carries two trailing out-params: the
+        ;; error-name buffer and its length. The value (or void) stays the
+        ;; native return.
+        base       (mapcat param-layouts (:params spec))
+        arg-layouts (into-array MemoryLayout
+                                (if eu?
+                                  (concat base [ValueLayout/ADDRESS ValueLayout/ADDRESS])
+                                  base))
+        ret-value  (if eu? (:of ret) ret)]
+    (if (type/void-type? ret-value)
       (FunctionDescriptor/ofVoid arg-layouts)
-      (FunctionDescriptor/of (return-layout (:ret spec)) arg-layouts))))
+      (FunctionDescriptor/of (return-layout ret-value) arg-layouts))))
 
 (defn- to-carrier
   "Coerce a Clojure value to the param's native carrier. Integers cross
@@ -158,6 +168,18 @@
     (= :optional (:kind ret)) (deref-optional ret v)
     :else                     (coerce-scalar ret v)))
 
+(def ^:private error-buffer-bytes
+  "The size of the error-name buffer the caller hands an error-union
+  wrapper; error names are short, so 256 bytes is ample."
+  256)
+
+(defn- read-error-name
+  "Read `n` bytes of an error name from `buf` and return them as a keyword."
+  [^MemorySegment buf n]
+  (let [bytes (byte-array n)]
+    (MemorySegment/copy buf ValueLayout/JAVA_BYTE 0 bytes (int 0) (int n))
+    (keyword (String. bytes "UTF-8"))))
+
 (defn bind
   "Load `library-path`, look up the spec's symbol, and return a Clojure
   fn that calls it with scalar coercion. The library is held by the
@@ -183,15 +205,27 @@
                          :expected arity
                          :actual (count args)})))
       ;; A confined arena holds the native copies of any slice arguments
-      ;; for exactly the duration of the call: mutable slices are copied
-      ;; back before it closes, honoring the call-only lifetime rule.
+      ;; for exactly the duration of the call. Mutable slices are copied
+      ;; back before it closes, keeping the lifetime to the call.
       (with-open [arena (Arena/ofConfined)]
-        (let [marshalled (mapv #(marshal-arg arena %1 %2) params args)
-              result     (->> (mapcat :carriers marshalled)
+        (let [marshalled    (mapv #(marshal-arg arena %1 %2) params args)
+              base-carriers (mapcat :carriers marshalled)
+              copy-back!    #(run! (fn [m] (when-let [back (:copy-back m)] (back)))
+                                   marshalled)]
+          (if (= :error-union (:kind ret))
+            (let [errbuf ^MemorySegment (.allocate arena error-buffer-bytes 1)
+                  errlen ^MemorySegment (.allocate arena 8 8)
+                  result (->> (concat base-carriers [errbuf errlen])
                               (object-array)
-                              (.invokeWithArguments handle))]
-          (run! (fn [m] (when-let [back (:copy-back m)] (back))) marshalled)
-          (from-return ret result))))))
+                              (.invokeWithArguments handle))
+                  n      (do (copy-back!) (.get errlen ValueLayout/JAVA_LONG 0))]
+              (if (zero? n)
+                (let [value-t (:of ret)]
+                  (when-not (type/void-type? value-t) (coerce-scalar value-t result)))
+                (read-error-name errbuf n)))
+            (let [result (->> base-carriers (object-array) (.invokeWithArguments handle))]
+              (copy-back!)
+              (from-return ret result))))))))
 
 (comment
   ;; A whole small pipeline: build, compile, bind, call.

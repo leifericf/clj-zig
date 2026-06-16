@@ -88,8 +88,9 @@
 
 (defn- validate!
   "Reject contracts FFM cannot honor: `:void`/`:noreturn` in argument
-  position, an `:optional` over anything but a pointer, and any
-  value-position scalar without an FFM carrier."
+  position, an `:optional` over anything but a pointer, an `:error-union`
+  outside a scalar-or-void return, and any value-position scalar without
+  an FFM carrier."
   [{:keys [params ret] :as spec}]
   (doseq [{:keys [type]} params]
     (when (type/void-type? type)
@@ -99,14 +100,22 @@
     (when (and (= :optional (:kind type))
                (not (contains? #{:ptr :manyptr} (:kind (:of type)))))
       (fail spec :zigar/unsupported-optional
-            "An :optional argument must wrap a :ptr or :manyptr." {})))
+            "An :optional argument must wrap a :ptr or :manyptr." {}))
+    (when (= :error-union (:kind type))
+      (fail spec :zigar/unsupported-error-union
+            "An :error-union is supported in return position only." {})))
   (when (and (= :optional (:kind ret))
              (not= :ptr (:kind (:of ret))))
     (fail spec :zigar/unsupported-optional
           "An :optional return must wrap a single-item :ptr." {}))
-  (let [ret-scalars (if (type/void-type? ret) #{} (scalar-names ret))
+  (when (and (= :error-union (:kind ret))
+             (not (or (type/void-type? (:of ret)) (= :scalar (:kind (:of ret))))))
+    (fail spec :zigar/unsupported-error-union
+          "An :error-union return must wrap a scalar or :void value." {}))
+  (let [ret-value     (if (= :error-union (:kind ret)) (:of ret) ret)
+        ret-scalars   (if (type/void-type? ret-value) #{} (scalar-names ret-value))
         value-scalars (apply set/union ret-scalars (map (comp scalar-names :type) params))
-        no-carrier (remove type/has-carrier? value-scalars)]
+        no-carrier    (remove type/has-carrier? value-scalars)]
     (when (seq no-carrier)
       (fail spec :zigar/unsupported-carrier
             (str "Types " (str/join ", " (sort no-carrier))

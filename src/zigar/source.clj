@@ -64,6 +64,15 @@
     :array (str "const " binding " = " binding "_ptr.*;")
     nil))
 
+(defn- param-args
+  "The argument names the wrapper passes to an inner function, mirroring
+  `param-decls`."
+  [{:keys [binding type]}]
+  (case (:kind type)
+    :slice [(str binding "_ptr") (str binding "_len")]
+    :array [(str binding "_ptr")]
+    [(str binding)]))
+
 (defn- indent-body
   "Trim the body and indent every non-blank line by four spaces, the Zig
   function-body level."
@@ -72,16 +81,64 @@
        (map (fn [line] (if (str/blank? line) "" (str "    " line))))
        (str/join "\n")))
 
-(defn generate
-  "Emit the Zig wrapper for `spec` with the user's `body` spliced in."
-  [spec body]
-  (let [{:keys [params ret] sym :symbol} spec
-        params-str (str/join ", " (mapcat param-decls params))
-        prelude    (str/join "\n" (keep reconstruction params))
-        full-body  (if (str/blank? prelude) body (str prelude "\n" body))]
-    (str "export fn " sym "(" params-str ") " (zig-type ret) " {\n"
-         (indent-body full-body) "\n"
+(def ^:private error-name-cap
+  "The byte length the error-name buffer is clamped to before copy-out."
+  255)
+
+(defn- impl-body
+  "The user body with any slice or array bindings reconstructed first."
+  [params body]
+  (let [prelude (str/join "\n" (keep reconstruction params))]
+    (if (str/blank? prelude) body (str prelude "\n" body))))
+
+(defn- generate-plain
+  "A direct `export fn`: the body runs in the exported function itself."
+  [{:keys [params ret] sym :symbol} body]
+  (str "export fn " sym "(" (str/join ", " (mapcat param-decls params)) ") "
+       (zig-type ret) " {\n"
+       (indent-body (impl-body params body)) "\n"
+       "}\n"))
+
+(defn- generate-error-union
+  "An inner impl fn holding the user body returns `E!T`. The exported
+  wrapper calls it, writes the error name to the caller's buffer on
+  failure, and returns the value (or void)."
+  [{:keys [params ret] sym :symbol} body]
+  (let [params-str (str/join ", " (mapcat param-decls params))
+        args-str   (str/join ", " (mapcat param-args params))
+        err-set    (str (:error ret))
+        value-t    (zig-type (:of ret))
+        void?      (= "void" value-t)
+        out-params (str (when (seq params-str) ", ")
+                        "__err: [*]u8, __errlen: *usize")
+        call       (str sym "__impl(" args-str ")")
+        on-error   (str "catch |__err_value| {\n"
+                        "        const __name = @errorName(__err_value);\n"
+                        "        const __n = @min(__name.len, " error-name-cap ");\n"
+                        "        @memcpy(__err[0..__n], __name[0..__n]);\n"
+                        "        __errlen.* = __n;\n"
+                        "        return" (when-not void? " undefined") ";\n"
+                        "    };")]
+    (str "fn " sym "__impl(" params-str ") " err-set "!" value-t " {\n"
+         (indent-body (impl-body params body)) "\n"
+         "}\n\n"
+         "export fn " sym "(" params-str out-params ") " value-t " {\n"
+         (if void?
+           (str "    " call " " on-error "\n"
+                "    __errlen.* = 0;\n")
+           (str "    const __value = " call " " on-error "\n"
+                "    __errlen.* = 0;\n"
+                "    return __value;\n"))
          "}\n")))
+
+(defn generate
+  "Emit the Zig wrapper for `spec` with the user's `body` spliced in. An
+  error-union return generates an inner impl fn and a translating wrapper;
+  every other return is a direct `export fn`."
+  [{:keys [ret] :as spec} body]
+  (if (= :error-union (:kind ret))
+    (generate-error-union spec body)
+    (generate-plain spec body)))
 
 (comment
   (require '[zigar.spec :as spec])
