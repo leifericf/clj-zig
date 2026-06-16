@@ -13,6 +13,7 @@
             [clj-zig.compile :as compile]
             [clj-zig.diagnostics :as diagnostics]
             [clj-zig.ffm :as ffm]
+            [clj-zig.fileref :as fileref]
             [clj-zig.layout :as layout]
             [clj-zig.signature :as signature]
             [clj-zig.source :as source]
@@ -60,45 +61,58 @@
 
 ;; --- Establishing a native function -------------------------------------
 
+(defn- join-sources
+  "Join non-blank Zig sections with a blank line between them."
+  [sections]
+  (str/join "\n\n" (remove str/blank? sections)))
+
 (defn build-inputs
-  "The cache/compile inputs for `spec` and `body`: the generated wrapper,
+  "The cache/compile inputs for `spec` and `body`: the generated source,
   prefixed with this namespace's `defz` declarations, plus the toolchain
-  identity that the content hash includes."
-  [spec body]
-  (let [decls   (preamble (:ns spec))
-        wrapper (source/generate spec body)
-        src     (if (str/blank? decls) wrapper (str decls "\n\n" wrapper))]
-    {:spec        spec
-     :body        body
-     :source      src
-     :deps        decls
-     :options     {:optimize "ReleaseSafe"}
-     :zig-version (cache/zig-version)
-     :target      (cache/target-triple)}))
+  identity that the content hash includes. `gen` selects the source shape:
+  inline splices the body string into a wrapper; file concatenates the
+  user's file text and a wrapper that calls its `pub fn`; raw uses the file
+  text as-is. `gen` also carries any C-interop `:options-extra`."
+  ([spec body] (build-inputs spec body {:mode :inline}))
+  ([spec body {:keys [mode entry options-extra] :or {mode :inline}}]
+   (let [decls (preamble (:ns spec))
+         src   (case mode
+                 :raw  (join-sources [decls body])
+                 :file (join-sources [decls body (source/generate spec body {:mode :file :entry entry})])
+                 (join-sources [decls (source/generate spec body)]))]
+     {:spec        spec
+      :body        body
+      :source      src
+      :deps        decls
+      :options     (merge {:optimize "ReleaseSafe"} options-extra)
+      :zig-version (cache/zig-version)
+      :target      (cache/target-triple)})))
 
 (defn artifact
   "Compile or reuse the native library for `spec` and `body`. Returns the
   inspection data describing the build: the spec, the body, the generated
   source, the library and source paths, the symbol, and whether the
   library was reused (`:cached`) or freshly built (`:compiled`)."
-  [spec body]
-  (let [inputs (build-inputs spec body)
-        paths  (cache/ensure-library! inputs compile/compile!)]
-    {:spec             spec
-     :body             body
-     :generated-source (:source inputs)
-     :library          (:library-path paths)
-     :source-path      (:source-path paths)
-     :symbol           (:symbol spec)
-     :status           (if (:cached? paths) :cached :compiled)}))
+  ([spec body] (artifact spec body {:mode :inline}))
+  ([spec body gen]
+   (let [inputs (build-inputs spec body gen)
+         paths  (cache/ensure-library! inputs compile/compile!)]
+     {:spec             spec
+      :body             body
+      :generated-source (:source inputs)
+      :library          (:library-path paths)
+      :source-path      (:source-path paths)
+      :symbol           (:symbol spec)
+      :status           (if (:cached? paths) :cached :compiled)})))
 
 (defn establish!
   "Build the artifact for `spec` and `body` and bind its symbol. Returns
   the inspection data plus the native invoker under `:invoke`. Throws the
   compile diagnostic when the Zig does not build."
-  [spec body]
-  (let [a (artifact spec body)]
-    (assoc a :invoke (ffm/bind spec (:library a)))))
+  ([spec body] (establish! spec body {:mode :inline}))
+  ([spec body gen]
+   (let [a (artifact spec body gen)]
+     (assoc a :invoke (ffm/bind spec (:library a))))))
 
 ;; --- Binding and rebinding a Var ----------------------------------------
 
@@ -113,32 +127,97 @@
   merged, and any stale failure is cleared. On failure the last good root
   is left untouched, the failed attempt is recorded for inspection, and
   the rendered diagnostic is rethrown so the REPL shows it at once."
-  [the-var spec body var-meta wrap]
-  (try
-    (let [result (establish! spec body)]
-      (alter-var-root the-var (constantly (wrap (:invoke result))))
-      (swap! rebinders assoc the-var wrap)
-      (alter-meta! the-var
-                   #(-> (merge % var-meta {:clj-zig/info (dissoc result :invoke)})
-                        (dissoc :clj-zig/failed-attempt)))
-      the-var)
-    (catch clojure.lang.ExceptionInfo e
-      (alter-meta! the-var assoc
-                   :clj-zig/failed-attempt (assoc (ex-data e) :body body))
-      (throw (ex-info (diagnostics/render (ex-data e)) (ex-data e) e)))))
+  ([the-var spec body var-meta wrap]
+   (establish-binding! the-var spec body var-meta wrap {:mode :inline}))
+  ([the-var spec body var-meta wrap gen]
+   (try
+     (let [result (establish! spec body gen)
+           info   (cond-> (merge (dissoc result :invoke) {:source-mode (:mode gen)})
+                    (:source-file gen)   (assoc :source-file (:source-file gen))
+                    (:entry gen)         (assoc :entry (:entry gen))
+                    (:options-extra gen) (assoc :options-extra (:options-extra gen)))]
+       (alter-var-root the-var (constantly (wrap (:invoke result))))
+       (swap! rebinders assoc the-var wrap)
+       (alter-meta! the-var
+                    #(-> (merge % var-meta {:clj-zig/info info})
+                         (dissoc :clj-zig/failed-attempt)))
+       the-var)
+     (catch clojure.lang.ExceptionInfo e
+       (alter-meta! the-var assoc
+                    :clj-zig/failed-attempt (assoc (ex-data e) :body body))
+       (throw (ex-info (diagnostics/render (ex-data e)) (ex-data e) e))))))
 
 (defn recompile!
   "Force a fresh build of `the-var`'s current spec and body, ignoring the
-  cached artifact, and rebind. Returns the Var."
+  cached artifact, and rebind. Returns the Var. Rebuilds in the same mode
+  the function was defined with (inline, file, or raw)."
   [the-var]
-  (let [{:keys [spec body]} (:clj-zig/info (meta the-var))
+  (let [{:keys [spec body source-mode entry source-file options-extra]} (:clj-zig/info (meta the-var))
+        gen  (cond-> {:mode (or source-mode :inline)}
+               entry         (assoc :entry entry)
+               source-file   (assoc :source-file source-file)
+               options-extra (assoc :options-extra options-extra))
         wrap (get @rebinders the-var)]
     (when-not (and spec wrap)
       (throw (ex-info "recompile! needs a defnz Var with a current binding."
                       {:level :error :error/code :clj-zig/not-recompilable
                        :var the-var})))
-    (cache/evict! (build-inputs spec body))
-    (establish-binding! the-var spec body {} wrap)))
+    (cache/evict! (build-inputs spec body gen))
+    (establish-binding! the-var spec body {} wrap gen)))
+
+;; --- File-sourced bodies ------------------------------------------------
+
+(defn- valid-zig-ident?
+  "True when `s` is a legal Zig identifier, so it can name the user fn the
+  file-mode wrapper calls."
+  [s]
+  (boolean (re-matches #"[A-Za-z_][A-Za-z0-9_]*" s)))
+
+(defn- entry-name
+  "The user fn name the file-mode wrapper calls: `:zig/fn` when given, else
+  the Clojure fn name with hyphens as underscores, the way Clojure names
+  munge for the JVM (`dot-product` -> `dot_product`). A name still not a
+  legal Zig identifier, such as `red?` or `saxpy!`, needs `:zig/fn`."
+  [spec descriptor]
+  (or (:zig/fn descriptor)
+      (let [n (str/replace (name (:name spec)) "-" "_")]
+        (if (valid-zig-ident? n)
+          n
+          (throw (ex-info (str "The Clojure name " (pr-str (:name spec))
+                               " is not a legal Zig identifier; name the entry"
+                               " fn with :zig/fn.")
+                          {:level :error :error/code :clj-zig/entry-name-needed
+                           :name (:name spec)}))))))
+
+(defn- descriptor->options
+  "The C-interop compile options a `{:zig/file ...}` descriptor carries, or
+  nil when it carries none. These reach `zig build-lib` as flags and enter
+  the content hash."
+  [descriptor]
+  (not-empty
+   (cond-> {}
+     (:zig/include-path descriptor)        (assoc :include-path (vec (:zig/include-path descriptor)))
+     (:zig/system-include-path descriptor) (assoc :system-include-path (vec (:zig/system-include-path descriptor)))
+     (:zig/link-path descriptor)           (assoc :link-path (vec (:zig/link-path descriptor)))
+     (:zig/link descriptor)                (assoc :link (vec (:zig/link descriptor))))))
+
+(defn establish-binding-from!
+  "Resolve a `{:zig/file ...}` descriptor relative to `defining-file`, read
+  the Zig source, and establish the binding for `the-var`. File mode
+  generates a wrapper that calls the user's `pub fn`; `:zig/raw` skips the
+  wrapper and binds `:zig/symbol` (or the spec's symbol) directly. Public
+  because the `defnz` expansion calls it at load time, so re-evaluating the
+  form re-reads the file."
+  [the-var spec descriptor defining-file var-meta wrap]
+  (let [{:keys [text path]} (fileref/resolve-and-read defining-file (:zig/file descriptor))
+        raw?     (boolean (:zig/raw descriptor))
+        opts     (descriptor->options descriptor)
+        the-spec (cond-> spec
+                   (:zig/symbol descriptor) (assoc :symbol (:zig/symbol descriptor)))
+        gen      (cond-> {:mode (if raw? :raw :file) :source-file path}
+                   opts       (assoc :options-extra opts)
+                   (not raw?) (assoc :entry (entry-name spec descriptor)))]
+    (establish-binding! the-var the-spec text var-meta wrap gen)))
 
 ;; --- defnz / defz -------------------------------------------------------
 
@@ -189,7 +268,8 @@
 
 (defmacro defnz
   "Define a Clojure function whose body is Zig. The signature vector is
-  the boundary contract; the trailing string is the Zig body:
+  the boundary contract; the trailing form is the Zig body, either a
+  string or a `{:zig/file \"name.zig\"}` descriptor:
 
       (defnz add
         [x :i64
@@ -197,26 +277,40 @@
          :ret :i64]
         \"return x + y;\")
 
-  Redefining recompiles; a failed recompile keeps the last good binding."
+      (defnz dot
+        [a [:slice :const :f64]
+         b [:slice :const :f64]
+         :ret :f64]
+        {:zig/file \"dot.zig\"})
+
+  A file holds a complete Zig `pub fn` the generated wrapper calls; the
+  descriptor may also carry C-interop options (`:zig/link`,
+  `:zig/include-path`, ...), an entry name (`:zig/fn`), and a raw escape
+  hatch (`:zig/raw`, `:zig/symbol`). Redefining recompiles; a failed
+  recompile keeps the last good binding."
   [fn-name & tail]
   (let [{:keys [docstring attr-map signature body]} (parse-defnz tail)]
-    (when-not (string? body)
-      (throw (ex-info "defnz needs a signature vector and a Zig body string."
+    (when-not (or (string? body) (and (map? body) (contains? body :zig/file)))
+      (throw (ex-info "defnz needs a Zig body: a string or a {:zig/file ...} descriptor."
                       {:level :error :error/code :clj-zig/malformed-defnz
                        :var fn-name})))
-    (let [the-ns    (ns-name *ns*)
-          signature (prepare-signature the-ns signature)
-          spec      (spec/build-spec {:ns the-ns :name fn-name :signature signature
-                                      :types (types-in the-ns)})
-          arglist   (mapv :binding (:args (signature/normalize signature)))
-          call-args (mapv :binding (:params spec))
-          var-meta  (merge (when docstring {:doc docstring})
-                           attr-map
-                           {:arglists (list arglist)})]
+    (let [the-ns        (ns-name *ns*)
+          defining-file *file*
+          signature     (prepare-signature the-ns signature)
+          spec          (spec/build-spec {:ns the-ns :name fn-name :signature signature
+                                          :types (types-in the-ns)})
+          arglist       (mapv :binding (:args (signature/normalize signature)))
+          call-args     (mapv :binding (:params spec))
+          var-meta      (merge (when docstring {:doc docstring})
+                               attr-map
+                               {:arglists (list arglist)})
+          wrap          `(fn [invoke#] (fn ~arglist (invoke# ~@call-args)))]
       `(do
          (def ~fn-name)
-         (establish-binding! (var ~fn-name) '~spec ~body '~var-meta
-                             (fn [invoke#] (fn ~arglist (invoke# ~@call-args))))))))
+         ~(if (string? body)
+            `(establish-binding! (var ~fn-name) '~spec ~body '~var-meta ~wrap)
+            `(establish-binding-from! (var ~fn-name) '~spec '~body ~defining-file
+                                      '~var-meta ~wrap))))))
 
 (defmacro defz
   "Register a Zig declaration usable by the `defnz` bodies in this
