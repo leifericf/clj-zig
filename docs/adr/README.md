@@ -35,3 +35,4 @@ Later ADRs capture decisions made during development. Written via the
 | [21](21-owned-and-borrowed-returns.md) | Owned and borrowed slice returns copy into Clojure |
 | [22](22-opaque-handles.md) | Handles are opaque tagged pointers the caller frees |
 | [23](23-generative-test-strategy.md) | Generative and exhaustive testing over the example suite |
+| [24](24-link-libc-in-every-library.md) | Every compiled library links libc |
