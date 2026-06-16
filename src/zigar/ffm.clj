@@ -20,6 +20,14 @@
 
 (declare marshal-struct enum-member->value enum-value->member)
 
+;; An opaque native resource handle: the symbol naming its Zig type and
+;; the native pointer. The caller threads it back across calls and frees
+;; it explicitly; it never inspects the pointer.
+(defrecord Handle [type segment])
+
+(defmethod print-method Handle [h ^java.io.Writer w]
+  (.write w (str "#zigar/handle[" (:type h) "]")))
+
 (defn- value-layout ^ValueLayout [t]
   (let [{:keys [category bits]} (type/scalar-info (:name t))]
     (case category
@@ -41,15 +49,16 @@
   [{:keys [type]}]
   (case (:kind type)
     :slice                            [ValueLayout/ADDRESS ValueLayout/JAVA_LONG]
-    :named                            (if (enum-type? type)
-                                        [(value-layout (-> type :layout :backing))]
-                                        [ValueLayout/ADDRESS])
-    (:ptr :manyptr :array :optional)  [ValueLayout/ADDRESS]
+    :named                                    (if (enum-type? type)
+                                                [(value-layout (-> type :layout :backing))]
+                                                [ValueLayout/ADDRESS])
+    (:ptr :manyptr :array :optional :handle)  [ValueLayout/ADDRESS]
     [(value-layout type)]))
 
 (defn- return-layout ^ValueLayout [ret]
   (cond
     (= :optional (:kind ret))                ValueLayout/ADDRESS
+    (= :handle (:kind ret))                  ValueLayout/ADDRESS
     (and (= :named (:kind ret))
          (enum-type? ret))                   (value-layout (-> ret :layout :backing))
     :else                                    (value-layout ret)))
@@ -141,6 +150,14 @@
                                        :type (:name layout) :member arg})))
                     {:carriers [(int value)]})
                   {:carriers [(marshal-struct arena layout arg)]}))
+    :handle   (let [expected (-> param :type :of :name)]
+                (when-not (and (instance? Handle arg) (= expected (:type arg)))
+                  (throw (ex-info (str "Expected a :handle of " expected
+                                       " but got " (pr-str arg) ".")
+                                  {:level :error
+                                   :error/code :zigar/handle-type-mismatch
+                                   :expected expected :actual arg})))
+                {:carriers [(:segment arg)]})
     {:carriers [(to-carrier param arg)]}))
 
 (defn- coerce-scalar
@@ -259,6 +276,8 @@
   (cond
     (type/void-type? ret)     nil
     (= :optional (:kind ret)) (deref-optional ret v)
+    (= :handle (:kind ret))   (when-not (zero? (.address ^MemorySegment v))
+                                (->Handle (-> ret :of :name) v))
     (and (= :named (:kind ret))
          (enum-type? ret))    (enum-value->member (:layout ret) (long v))
     :else                     (coerce-scalar ret v)))

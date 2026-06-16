@@ -297,4 +297,13 @@
     "const out = std.heap.c_allocator.alloc(u8, n) catch @panic(\"oom\");
      @memset(out, b);
      return out;")
-  (repeat-byte 65 3))                      ;; => [65 65 65]
+  (repeat-byte 65 3)                       ;; => [65 65 65]
+
+  ;; An opaque handle threads a native resource across calls.
+  (defz Box "const Box = struct { v: i64 };")
+  (defnz box [v :i64 :ret [:handle Box]]
+    "const b = std.heap.c_allocator.create(Box) catch @panic(\"oom\");
+     b.* = .{ .v = v };
+     return b;")
+  (defnz unbox [b [:handle Box] :ret :i64] "return b.v;")
+  (unbox (box 42)))                        ;; => 42

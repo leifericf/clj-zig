@@ -25,6 +25,7 @@
     :scalar   (name (:name t))
     :named    (str (:name t))
     :optional (str "?" (pointer-type (:of t)))
+    :handle   (str "*" (zig-type (:of t)))
     (throw (ex-info "Source generation does not yet support this boundary type."
                     {:level :error
                      :error/code :zigar/unsupported-source-type
@@ -173,8 +174,7 @@
         ret-t      (str "[]" (when (:const? slice) "const ") elem-t)
         owned?     (= :owned (:kind ret))
         out-params (str (when (seq params-str) ", ") "__ptr: *usize, __len: *usize")]
-    (str (when owned? "const std = @import(\"std\");\n\n")
-         "fn " sym "__impl(" params-str ") " ret-t " {\n"
+    (str "fn " sym "__impl(" params-str ") " ret-t " {\n"
          (indent-body (impl-body params body)) "\n"
          "}\n\n"
          "export fn " sym "(" params-str out-params ") void {\n"
@@ -188,19 +188,32 @@
                 "    std.heap.c_allocator.free(__p[0..__len]);\n"
                 "}\n")))))
 
+(defn- needs-std?
+  "True when a function's generated wrapper needs `std` in scope: an owned
+  return uses `std.heap.c_allocator` in its free shim, and a handle in any
+  position is allocated or freed with `std`."
+  [{:keys [params ret]}]
+  (or (= :owned (:kind ret))
+      (= :handle (:kind ret))
+      (some #(= :handle (:kind (:type %))) params)))
+
 (defn generate
   "Emit the Zig wrapper for `spec` with the user's `body` spliced in. An
   error-union return generates an inner impl fn and a translating wrapper;
   an owned or borrowed slice return writes its pointer and length to
   out-params; a struct return writes through an out-pointer; every other
-  return is a direct `export fn`."
+  return is a direct `export fn`. A wrapper that allocates gets `std` in
+  scope."
   [{:keys [ret] :as spec} body]
-  (cond
-    (= :error-union (:kind ret))                     (generate-error-union spec body)
-    (contains? #{:owned :borrowed} (:kind ret))      (generate-ownership spec body)
-    (and (= :named (:kind ret)) (enum-type? ret))    (generate-plain spec body)
-    (= :named (:kind ret))                           (generate-struct-return spec body)
-    :else                                            (generate-plain spec body)))
+  (let [core (cond
+               (= :error-union (:kind ret))                  (generate-error-union spec body)
+               (contains? #{:owned :borrowed} (:kind ret))   (generate-ownership spec body)
+               (and (= :named (:kind ret)) (enum-type? ret)) (generate-plain spec body)
+               (= :named (:kind ret))                        (generate-struct-return spec body)
+               :else                                         (generate-plain spec body))]
+    (if (needs-std? spec)
+      (str "const std = @import(\"std\");\n\n" core)
+      core)))
 
 (comment
   (require '[zigar.spec :as spec])

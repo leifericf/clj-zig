@@ -121,7 +121,9 @@
             "An :error-union is supported in return position only." {}))
     (when (contains? #{:owned :borrowed} (:kind type))
       (fail spec :zigar/unsupported-ownership
-            "An :owned or :borrowed type is supported in return position only." {})))
+            "An :owned or :borrowed type is supported in return position only." {}))
+    (when (and (= :handle (:kind type)) (not= :named (:kind (:of type))))
+      (fail spec :zigar/unsupported-handle "A :handle must wrap a named type." {})))
   (when (and (= :optional (:kind ret))
              (not= :ptr (:kind (:of ret))))
     (fail spec :zigar/unsupported-optional
@@ -134,6 +136,8 @@
              (not= :slice (:kind (:of ret))))
     (fail spec :zigar/unsupported-ownership
           "An :owned or :borrowed return must wrap a slice." {}))
+  (when (and (= :handle (:kind ret)) (not= :named (:kind (:of ret))))
+    (fail spec :zigar/unsupported-handle "A :handle must wrap a named type." {}))
   (let [ret-value     (if (= :error-union (:kind ret)) (:of ret) ret)
         ret-scalars   (if (type/void-type? ret-value) #{} (scalar-names ret-value))
         value-scalars (apply set/union ret-scalars (map (comp scalar-names :type) params))
