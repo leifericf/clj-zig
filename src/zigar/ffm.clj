@@ -92,7 +92,7 @@
       :int   (let [l (.longValue (biginteger v))]
                (case bits 8 (unchecked-byte l) 16 (unchecked-short l)
                           32 (unchecked-int l) 64 l))
-      :float (case bits 32 (float v) 64 (double v))
+      :float (case bits 32 (unchecked-float v) 64 (double v))
       :bool  (boolean v))))
 
 (defn- marshal-array
@@ -205,7 +205,7 @@
                32 (.set seg ValueLayout/JAVA_INT off (int cv))
                64 (.set seg ValueLayout/JAVA_LONG off (long cv)))
       :float (case bits
-               32 (.set seg ValueLayout/JAVA_FLOAT off (float cv))
+               32 (.set seg ValueLayout/JAVA_FLOAT off (unchecked-float cv))
                64 (.set seg ValueLayout/JAVA_DOUBLE off (double cv)))
       :bool  (.set seg ValueLayout/JAVA_BOOLEAN off (boolean cv)))))
 
