@@ -22,7 +22,7 @@
       (let [{:keys [address length]} (#'ffm/marshal-array arena param arr)]
         (is (= [true false true]
                (#'ffm/read-slice-values
-                (.address ^java.lang.foreign.MemorySegment address)
+                (.address ^MemorySegment address)
                 length {:kind :scalar :name :bool})))))))
 
 (deftest bool-slice-copies-back-mutations
@@ -30,7 +30,7 @@
         arr   (boolean-array [false false false])]
     (with-open [arena (Arena/ofConfined)]
       (let [{:keys [address copy-back]} (#'ffm/marshal-array arena param arr)
-            seg ^java.lang.foreign.MemorySegment address]
-        (.set seg java.lang.foreign.ValueLayout/JAVA_BOOLEAN 1 true)
+            seg ^MemorySegment address]
+        (.set seg ValueLayout/JAVA_BOOLEAN 1 true)
         (copy-back)
         (is (= [false true false] (vec arr)))))))

@@ -316,7 +316,7 @@
       (mk [:ret [:handle 'Point]] fixture-types)])))
 
 (comment
-  (require '[zigar.spec :as spec] '[clojure.test.check.generators :as g])
-  (g/sample gen-signature 5)
+  (require '[zigar.spec :as spec])
+  (gen/sample gen-signature 5)
   (count (structural-cases))
   (map #(spec/build-spec %) (take 3 (structural-cases))))
