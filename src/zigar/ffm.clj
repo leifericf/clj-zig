@@ -18,6 +18,8 @@
 
 (def ^:private two-to-64 (.shiftLeft BigInteger/ONE 64))
 
+(declare marshal-struct)
+
 (defn- value-layout ^ValueLayout [t]
   (let [{:keys [category bits]} (type/scalar-info (:name t))]
     (case category
@@ -28,12 +30,12 @@
 
 (defn- param-layouts
   "The native layouts one boundary param crosses as. A scalar is one
-  layout; a pointer is an address; a slice is an address and a `usize`
-  length."
+  layout; a pointer, array, or named struct is an address; a slice is an
+  address and a `usize` length."
   [{:keys [type]}]
   (case (:kind type)
-    :slice                             [ValueLayout/ADDRESS ValueLayout/JAVA_LONG]
-    (:ptr :manyptr :array :optional)   [ValueLayout/ADDRESS]
+    :slice                                    [ValueLayout/ADDRESS ValueLayout/JAVA_LONG]
+    (:ptr :manyptr :array :optional :named)   [ValueLayout/ADDRESS]
     [(value-layout type)]))
 
 (defn- return-layout ^ValueLayout [ret]
@@ -42,18 +44,19 @@
     (value-layout ret)))
 
 (defn- descriptor ^FunctionDescriptor [spec]
-  (let [ret        (:ret spec)
-        eu?        (= :error-union (:kind ret))
-        ;; An error-union wrapper carries two trailing out-params: the
-        ;; error-name buffer and its length. The value (or void) stays the
-        ;; native return.
-        base       (mapcat param-layouts (:params spec))
-        arg-layouts (into-array MemoryLayout
-                                (if eu?
-                                  (concat base [ValueLayout/ADDRESS ValueLayout/ADDRESS])
-                                  base))
-        ret-value  (if eu? (:of ret) ret)]
-    (if (type/void-type? ret-value)
+  (let [ret         (:ret spec)
+        ;; An error-union wrapper carries two trailing out-params, the
+        ;; error-name buffer and its length; a struct return carries one
+        ;; out-pointer the result is written through. Both export `void`.
+        eu?         (= :error-union (:kind ret))
+        struct-ret? (= :named (:kind ret))
+        extra       (cond eu?         [ValueLayout/ADDRESS ValueLayout/ADDRESS]
+                          struct-ret? [ValueLayout/ADDRESS]
+                          :else       [])
+        arg-layouts (into-array MemoryLayout (concat (mapcat param-layouts (:params spec))
+                                                     extra))
+        ret-value   (if eu? (:of ret) ret)]
+    (if (or struct-ret? (type/void-type? ret-value))
       (FunctionDescriptor/ofVoid arg-layouts)
       (FunctionDescriptor/of (return-layout ret-value) arg-layouts))))
 
@@ -115,6 +118,7 @@
     :optional (if (nil? arg)
                 {:carriers [MemorySegment/NULL]}
                 (marshal-arg arena (update param :type :of) arg))
+    :named    {:carriers [(marshal-struct arena (-> param :type :layout) arg)]}
     {:carriers [(to-carrier param arg)]}))
 
 (defn- coerce-scalar
@@ -135,19 +139,59 @@
                       (if (neg? l) (.add (biginteger l) two-to-64) l)))))))
 
 (defn- read-scalar
-  "Read one scalar of type `t` from the start of native segment `seg`."
-  [^MemorySegment seg t]
-  (let [{:keys [category bits]} (type/scalar-info (:name t))]
+  "Read one scalar of type `t` from native segment `seg` at byte `offset`."
+  [^MemorySegment seg t offset]
+  (let [{:keys [category bits]} (type/scalar-info (:name t))
+        off (long offset)]
     (case category
       :int   (case bits
-               8  (.get seg ValueLayout/JAVA_BYTE 0)
-               16 (.get seg ValueLayout/JAVA_SHORT 0)
-               32 (.get seg ValueLayout/JAVA_INT 0)
-               64 (.get seg ValueLayout/JAVA_LONG 0))
+               8  (.get seg ValueLayout/JAVA_BYTE off)
+               16 (.get seg ValueLayout/JAVA_SHORT off)
+               32 (.get seg ValueLayout/JAVA_INT off)
+               64 (.get seg ValueLayout/JAVA_LONG off))
       :float (case bits
-               32 (.get seg ValueLayout/JAVA_FLOAT 0)
-               64 (.get seg ValueLayout/JAVA_DOUBLE 0))
-      :bool  (.get seg ValueLayout/JAVA_BOOLEAN 0))))
+               32 (.get seg ValueLayout/JAVA_FLOAT off)
+               64 (.get seg ValueLayout/JAVA_DOUBLE off))
+      :bool  (.get seg ValueLayout/JAVA_BOOLEAN off))))
+
+(defn- write-scalar
+  "Write the coerced scalar `cv` of type `t` into `seg` at byte `offset`."
+  [^MemorySegment seg t offset cv]
+  (let [{:keys [category bits]} (type/scalar-info (:name t))
+        off (long offset)]
+    (case category
+      :int   (case bits
+               8  (.set seg ValueLayout/JAVA_BYTE off (byte cv))
+               16 (.set seg ValueLayout/JAVA_SHORT off (short cv))
+               32 (.set seg ValueLayout/JAVA_INT off (int cv))
+               64 (.set seg ValueLayout/JAVA_LONG off (long cv)))
+      :float (case bits
+               32 (.set seg ValueLayout/JAVA_FLOAT off (float cv))
+               64 (.set seg ValueLayout/JAVA_DOUBLE off (double cv)))
+      :bool  (.set seg ValueLayout/JAVA_BOOLEAN off (boolean cv)))))
+
+(defn- marshal-struct
+  "Write the fields of Clojure map `m` into a fresh native segment for the
+  struct `descriptor`, each at its C-ABI offset."
+  [arena descriptor m]
+  (let [seg ^MemorySegment (.allocate ^Arena arena (long (:size descriptor))
+                                      (long (:align descriptor)))]
+    (doseq [{:keys [name type offset]} (:fields descriptor)]
+      (let [v (get m (keyword name))]
+        (when (nil? v)
+          (throw (ex-info (str "Struct " (:name descriptor) " is missing field " name ".")
+                          {:level :error :error/code :zigar/missing-field
+                           :type (:name descriptor) :field name})))
+        (write-scalar seg type offset (to-carrier {:type type} v))))
+    seg))
+
+(defn- read-struct
+  "Read a native struct segment into a Clojure map keyed by field name."
+  [^MemorySegment seg descriptor]
+  (reduce (fn [acc {:keys [name type offset]}]
+            (assoc acc (keyword name)
+                   (coerce-scalar type (read-scalar seg type offset))))
+          {} (:fields descriptor)))
 
 (defn- deref-optional
   "Read the pointee of an `:optional` single-item pointer return: nil when
@@ -156,7 +200,7 @@
   (when-not (zero? (.address seg))
     (let [scalar (-> ret :of :of)
           sized  (.reinterpret seg (.byteSize (value-layout scalar)))]
-      (coerce-scalar scalar (read-scalar sized scalar)))))
+      (coerce-scalar scalar (read-scalar sized scalar 0)))))
 
 (defn- from-return
   "Coerce a native return to a Clojure value: nil for `:void`, the pointee
@@ -223,9 +267,20 @@
                 (let [value-t (:of ret)]
                   (when-not (type/void-type? value-t) (coerce-scalar value-t result)))
                 (read-error-name errbuf n)))
-            (let [result (->> base-carriers (object-array) (.invokeWithArguments handle))]
-              (copy-back!)
-              (from-return ret result))))))))
+            ;; A struct return is written through a caller-allocated
+            ;; out-segment, then read back into a Clojure map.
+            (if (= :named (:kind ret))
+              (let [desc (:layout ret)
+                    out  ^MemorySegment (.allocate arena (long (:size desc))
+                                                   (long (:align desc)))]
+                (->> (concat base-carriers [out])
+                     (object-array)
+                     (.invokeWithArguments handle))
+                (copy-back!)
+                (read-struct out desc))
+              (let [result (->> base-carriers (object-array) (.invokeWithArguments handle))]
+                (copy-back!)
+                (from-return ret result)))))))))
 
 (comment
   ;; A whole small pipeline: build, compile, bind, call.

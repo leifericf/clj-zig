@@ -53,6 +53,7 @@
     (:ptr :manyptr)   [(str binding ": " (pointer-type type))]
     :optional         [(str binding ": " (zig-type type))]
     :array            [(str binding "_ptr: *const [" (:length type) "]" (zig-type (:of type)))]
+    :named            [(str binding "_ptr: *const " (zig-type type))]
     [(str binding ": " (zig-type type))]))
 
 (defn- reconstruction
@@ -60,8 +61,8 @@
   from its pointer and length, or an array value from its pointer."
   [{:keys [binding type]}]
   (case (:kind type)
-    :slice (str "const " binding " = " binding "_ptr[0.." binding "_len];")
-    :array (str "const " binding " = " binding "_ptr.*;")
+    :slice          (str "const " binding " = " binding "_ptr[0.." binding "_len];")
+    (:array :named) (str "const " binding " = " binding "_ptr.*;")
     nil))
 
 (defn- param-args
@@ -69,8 +70,8 @@
   `param-decls`."
   [{:keys [binding type]}]
   (case (:kind type)
-    :slice [(str binding "_ptr") (str binding "_len")]
-    :array [(str binding "_ptr")]
+    :slice          [(str binding "_ptr") (str binding "_len")]
+    (:array :named) [(str binding "_ptr")]
     [(str binding)]))
 
 (defn- indent-body
@@ -131,14 +132,32 @@
                 "    return __value;\n"))
          "}\n")))
 
+(defn- generate-struct-return
+  "An inner impl fn holding the user body returns the struct by value; the
+  exported wrapper calls it and writes the result through an out-pointer.
+  The aggregate crosses the C ABI by reference."
+  [{:keys [params ret] sym :symbol} body]
+  (let [params-str (str/join ", " (mapcat param-decls params))
+        args-str   (str/join ", " (mapcat param-args params))
+        ret-t      (zig-type ret)
+        out-params (str (when (seq params-str) ", ") "__ret: *" ret-t)]
+    (str "fn " sym "__impl(" params-str ") " ret-t " {\n"
+         (indent-body (impl-body params body)) "\n"
+         "}\n\n"
+         "export fn " sym "(" params-str out-params ") void {\n"
+         "    __ret.* = " sym "__impl(" args-str ");\n"
+         "}\n")))
+
 (defn generate
   "Emit the Zig wrapper for `spec` with the user's `body` spliced in. An
   error-union return generates an inner impl fn and a translating wrapper;
-  every other return is a direct `export fn`."
+  a struct return writes through an out-pointer; every other return is a
+  direct `export fn`."
   [{:keys [ret] :as spec} body]
-  (if (= :error-union (:kind ret))
-    (generate-error-union spec body)
-    (generate-plain spec body)))
+  (cond
+    (= :error-union (:kind ret)) (generate-error-union spec body)
+    (= :named (:kind ret))       (generate-struct-return spec body)
+    :else                        (generate-plain spec body)))
 
 (comment
   (require '[zigar.spec :as spec])

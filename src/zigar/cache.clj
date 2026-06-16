@@ -39,10 +39,12 @@
     (apply str (map #(format "%02x" (bit-and % 0xff)) digest))))
 
 (defn cache-key
-  "The content hash for these build inputs. Any change to the spec, body,
-  dependencies, options, Zig version, or target yields a new key."
-  [{:keys [spec body deps options zig-version target]}]
-  (subs (sha256-hex (canonical {:spec spec :body body :deps deps
+  "The content hash for these build inputs. The generated `source` enters
+  the hash directly, so a change to the source generator yields a new key
+  even when the spec and body are unchanged; the spec, body, dependencies,
+  options, Zig version, and target enter it as well."
+  [{:keys [spec body source deps options zig-version target]}]
+  (subs (sha256-hex (canonical {:spec spec :body body :source source :deps deps
                                 :options options :zig-version zig-version
                                 :target target}))
         0 12))
