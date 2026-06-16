@@ -52,6 +52,18 @@
   [the-var]
   (:status (info the-var)))
 
+(defn source-mode
+  "How the body was supplied: inline (`:inline`), from a complete Zig file
+  the wrapper calls (`:file`), or as a raw export fn (`:raw`)."
+  [the-var]
+  (:source-mode (info the-var)))
+
+(defn source-file
+  "The path of the `.zig` file the body was loaded from, or nil for an
+  inline body."
+  [the-var]
+  (:source-file (info the-var)))
+
 (defn failed-attempt
   "The recorded data for the last failed (re)definition, or nil if the
   current binding is the last attempt."

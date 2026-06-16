@@ -57,6 +57,17 @@
   [the-var]
   (inspect/status the-var))
 
+(defn source-mode
+  "How the body was supplied: `:inline`, `:file`, or `:raw`."
+  [the-var]
+  (inspect/source-mode the-var))
+
+(defn source-file
+  "The path of the `.zig` file the body was loaded from, or nil for an
+  inline body."
+  [the-var]
+  (inspect/source-file the-var))
+
 (defn explain
   "Render the last failed attempt for `the-var`, or nil when there is
   nothing to explain."
@@ -92,17 +103,20 @@
   (spec/build-spec ident))
 
 (defn generate-source
-  "Emit the Zig wrapper for `spec` with `body` spliced in."
-  [spec body]
-  (source/generate spec body))
+  "Emit the Zig wrapper for `spec` with `body` spliced in. With `opts`
+  `{:mode :file :entry \"name\"}` the wrapper instead calls a user fn."
+  ([spec body] (source/generate spec body))
+  ([spec body opts] (source/generate spec body opts)))
 
 ;; --- Shell pipeline -----------------------------------------------------
 
 (defn compile!
   "Compile or reuse the native library for `spec` and `body`, returning the
-  artifact data (paths, symbol, generated source, build status)."
-  [spec body]
-  (core/artifact spec body))
+  artifact data (paths, symbol, generated source, build status). `gen`
+  selects the source mode (`:inline`, `:file`, `:raw`) and carries any
+  C-interop options."
+  ([spec body] (core/artifact spec body))
+  ([spec body gen] (core/artifact spec body gen)))
 
 (defn load!
   "Load a compiled `artifact` and return the callable native invoker."
@@ -112,8 +126,8 @@
 (defn fn
   "Build a callable function from `spec` and `body` in one step:
   `compile!` then `load!`."
-  [spec body]
-  (load! (compile! spec body)))
+  ([spec body] (load! (compile! spec body)))
+  ([spec body gen] (load! (compile! spec body gen))))
 
 (comment
   (core/defnz add [x :i64 y :i64 :ret :i64] "return x + y;")

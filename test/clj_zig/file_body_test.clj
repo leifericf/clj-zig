@@ -73,6 +73,20 @@
       (define! `(core/defnz ~'stepper [~'x :i64 :ret :i64] {:zig/file ~path}))
       (is (= 105 ((the-fn 'stepper) 5))))))
 
+(deftest public-data-api-drives-file-mode-without-the-macro
+  (let [spec (zig/build-spec '{:ns app.core :name dot
+                               :signature [a [:slice :const :f64]
+                                           b [:slice :const :f64] :ret :f64]})
+        user (str "pub fn dot(a: []const f64, b: []const f64) f64 {\n"
+                  "    var t: f64 = 0;\n"
+                  "    var i: usize = 0;\n"
+                  "    const n = @min(a.len, b.len);\n"
+                  "    while (i < n) : (i += 1) t += a[i] * b[i];\n"
+                  "    return t;\n"
+                  "}\n")
+        dot  (zig/fn spec user {:mode :file :entry "dot"})]
+    (is (= 32.0 (dot (double-array [1.0 2.0 3.0]) (double-array [4.0 5.0 6.0]))))))
+
 (deftest raw-mode-binds-a-hand-written-export-fn
   (testing "no wrapper is generated; :zig/symbol names the bound export fn"
     (let [dir  (scratch-dir)
