@@ -309,7 +309,7 @@
          (def ~fn-name)
          ~(if (string? body)
             `(establish-binding! (var ~fn-name) '~spec ~body '~var-meta ~wrap)
-            `(establish-binding-from! (var ~fn-name) '~spec '~body ~defining-file
+            `(establish-binding-from! (var ~fn-name) '~spec ~body ~defining-file
                                       '~var-meta ~wrap))))))
 
 (defn resolve-decl-source

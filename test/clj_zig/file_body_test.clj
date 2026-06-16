@@ -73,6 +73,14 @@
       (define! `(core/defnz ~'stepper [~'x :i64 :ret :i64] {:zig/file ~path}))
       (is (= 105 ((the-fn 'stepper) 5))))))
 
+(deftest file-descriptor-is-an-evaluated-expression
+  (testing "the :zig/file path may be a runtime value, not only a literal"
+    (let [dir  (scratch-dir)
+          path (write-zig dir "ev.zig" "pub fn ev(x: i64) i64 {\n    return x + 7;\n}\n")]
+      (define! `(let [p# ~path]
+                  (core/defnz ~'ev [~'x :i64 :ret :i64] {:zig/file p#})))
+      (is (= 17 ((the-fn 'ev) 10))))))
+
 (deftest public-data-api-drives-file-mode-without-the-macro
   (let [spec (zig/build-spec '{:ns app.core :name dot
                                :signature [a [:slice :const :f64]
