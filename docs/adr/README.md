@@ -34,3 +34,4 @@ Later ADRs capture decisions made during development. Written via the
 | [20](20-enum-boundary-semantics.md) | Enum boundary semantics |
 | [21](21-owned-and-borrowed-returns.md) | Owned and borrowed slice returns copy into Clojure |
 | [22](22-opaque-handles.md) | Handles are opaque tagged pointers the caller frees |
+| [23](23-generative-test-strategy.md) | Generative and exhaustive testing over the example suite |
