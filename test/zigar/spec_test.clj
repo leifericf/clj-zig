@@ -62,6 +62,18 @@
            (error-code #(spec/build-spec '{:ns app.core :name f
                                            :signature [xs [:slice :u128] :ret :i64]}))))))
 
+(deftest rejects-floats-without-an-ffm-carrier
+  (testing "stable FFM carries only 32- and 64-bit floats"
+    (is (= :zigar/unsupported-carrier
+           (error-code #(spec/build-spec '{:ns app.core :name f
+                                           :signature [x :f16 :ret :f64]}))))
+    (is (= :zigar/unsupported-carrier
+           (error-code #(spec/build-spec '{:ns app.core :name f
+                                           :signature [x :f64 :ret :f128]}))))
+    (is (= :zigar/unsupported-carrier
+           (error-code #(spec/build-spec '{:ns app.core :name f
+                                           :signature [x :f80 :ret :f64]}))))))
+
 (deftest rejects-void-argument
   (is (= :zigar/void-argument
          (error-code #(spec/build-spec '{:ns app.core :name f

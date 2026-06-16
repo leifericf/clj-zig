@@ -25,11 +25,6 @@
 
 (declare expand-arg scalar-names validate! fail)
 
-(def ^:private unsupported-carriers
-  "Scalars with no FFM carrier; rejected at spec time (cross-cutting
-  decision recorded as an ADR at commit 10)."
-  #{:i128 :u128})
-
 (defn- munge-part
   "Escape a namespace or name to an ASCII C-identifier fragment. Letters
   and digits pass through; every other character becomes `_<hex>_`, so
@@ -92,20 +87,21 @@
     (if-let [of (:of t)] (scalar-names of) #{})))
 
 (defn- validate!
-  "Reject contracts FFM cannot honor: 128-bit carriers anywhere, and
-  `:void`/`:noreturn` in argument position."
+  "Reject contracts FFM cannot honor: `:void`/`:noreturn` in argument
+  position, and any value-position scalar without an FFM carrier."
   [{:keys [params ret] :as spec}]
-  (let [carriers (apply set/union (scalar-names ret) (map (comp scalar-names :type) params))
-        bad      (set/intersection carriers unsupported-carriers)]
-    (when (seq bad)
-      (fail spec :zigar/unsupported-carrier
-            (str "Types " (str/join ", " (sort bad))
-                 " have no FFM carrier and cannot cross the boundary.")
-            {})))
   (doseq [{:keys [type]} params]
-    (when (and (= :scalar (:kind type)) (#{:void :noreturn} (:name type)))
+    (when (type/void-type? type)
       (fail spec :zigar/void-argument
             (str (:name type) " is not a valid argument type.")
+            {})))
+  (let [ret-scalars (if (type/void-type? ret) #{} (scalar-names ret))
+        value-scalars (apply set/union ret-scalars (map (comp scalar-names :type) params))
+        no-carrier (remove type/has-carrier? value-scalars)]
+    (when (seq no-carrier)
+      (fail spec :zigar/unsupported-carrier
+            (str "Types " (str/join ", " (sort no-carrier))
+                 " have no FFM carrier and cannot cross the boundary.")
             {}))))
 
 (defn- fail

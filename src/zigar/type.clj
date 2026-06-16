@@ -55,6 +55,27 @@
   (let [{:keys [category signed?]} (scalars name)]
     (and (= :int category) (false? signed?))))
 
+(defn void-type?
+  "True when a normalized type is a `:void` or `:noreturn` scalar, which
+  carries no value across the boundary."
+  [t]
+  (and (= :scalar (:kind t))
+       (contains? #{:void :noreturn} (:name t))))
+
+(defn has-carrier?
+  "True when a scalar crosses the FFM boundary as a primitive value.
+  Stable FFM (Java 22, JEP 454) carries 8/16/32/64-bit integers and
+  32/64-bit floats and `bool`; 128-bit integers and 16/80/128-bit floats
+  have no carrier, so they are rejected at spec time. `:void` and
+  `:noreturn` are not value carriers (a `:void` return carries nothing)."
+  [name]
+  (let [{:keys [category bits]} (scalars name)]
+    (case category
+      :int    (<= bits 64)
+      :float  (boolean (#{32 64} bits))
+      :bool   true
+      false)))
+
 (defn normalize
   "Normalize a boundary type form to its canonical data shape. Throws a
   diagnostic (`ex-info`) for unknown or malformed types."
