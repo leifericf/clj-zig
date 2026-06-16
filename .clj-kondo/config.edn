@@ -1,0 +1,12 @@
+;; Teach clj-kondo about Zigar's defining macros. Each defines its first
+;; symbol and carries a boundary signature or field list clj-kondo should
+;; not read as ordinary code. defrecordz also interns the record factories,
+;; so it gets a hook that recovers their field arity.
+{:lint-as
+ {zigar.core/defnz                     clj-kondo.lint-as/def-catch-all
+  zigar.core/defz                      clj-kondo.lint-as/def-catch-all
+  zigar.core/deftypez                  clj-kondo.lint-as/def-catch-all
+  zigar.core/defenumz                  clj-kondo.lint-as/def-catch-all
+  zigar.composability-test/defbinaryz  clj-kondo.lint-as/def-catch-all}
+ :hooks
+ {:analyze-call {zigar.core/defrecordz hooks.zigar/defrecordz}}}

@@ -116,8 +116,7 @@
   (load! (compile! spec body)))
 
 (comment
-  (require '[zigar.core :refer [defnz]])
-  (defnz add [x :i64 y :i64 :ret :i64] "return x + y;")
+  (core/defnz add [x :i64 y :i64 :ret :i64] "return x + y;")
   (source #'add)                   ;; => "return x + y;"
   (spec #'add)                     ;; => {:ns ... :name add :params [...] :ret {...} ...}
 
