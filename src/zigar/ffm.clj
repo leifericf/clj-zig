@@ -98,18 +98,25 @@
 (defn- marshal-array
   "Copy a primitive array into a fresh native segment from `arena` and pass
   its address. Yields the segment, its length, and for a mutable pointee a
-  thunk that copies the segment back into the array after the call.
-  Element copies honor the layout's byte order."
+  thunk that copies the segment back into the array after the call. Bulk
+  copy carries the numeric carriers; `bool` has no bulk array copy, so it
+  crosses element by element."
   [arena {:keys [type]} arr]
   (let [elem  (value-layout (:of type))
         bytes (.byteSize elem)
         len   (Array/getLength arr)
-        seg   ^MemorySegment (.allocate ^Arena arena (* len bytes) bytes)]
-    (MemorySegment/copy arr (int 0) seg elem (long 0) (int len))
+        seg   ^MemorySegment (.allocate ^Arena arena (* len bytes) bytes)
+        bool? (= :bool (:category (type/scalar-info (:name (:of type)))))]
+    (if bool?
+      (dotimes [i len] (.set seg ValueLayout/JAVA_BOOLEAN (long i) (boolean (Array/get arr i))))
+      (MemorySegment/copy arr (int 0) seg elem (long 0) (int len)))
     {:address   seg
      :length    len
      :copy-back (when-not (:const? type)
-                  (fn [] (MemorySegment/copy seg elem (long 0) arr (int 0) (int len))))}))
+                  (if bool?
+                    (fn [] (dotimes [i len]
+                             (Array/set arr i (.get seg ValueLayout/JAVA_BOOLEAN (long i)))))
+                    (fn [] (MemorySegment/copy seg elem (long 0) arr (int 0) (int len)))))}))
 
 (defn- marshal-arg
   "Coerce one boundary argument to its native carriers. Pointers and slices
