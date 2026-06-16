@@ -32,8 +32,8 @@
   length."
   [{:keys [type]}]
   (case (:kind type)
-    :slice            [ValueLayout/ADDRESS ValueLayout/JAVA_LONG]
-    (:ptr :manyptr)   [ValueLayout/ADDRESS]
+    :slice                   [ValueLayout/ADDRESS ValueLayout/JAVA_LONG]
+    (:ptr :manyptr :array)   [ValueLayout/ADDRESS]
     [(value-layout type)]))
 
 (defn- descriptor ^FunctionDescriptor [spec]
@@ -89,6 +89,14 @@
                                     :actual (Array/getLength arg)})))
                  (let [{:keys [address copy-back]} (marshal-array arena param arg)]
                    {:carriers [address] :copy-back copy-back}))
+    :array   (let [n (-> param :type :length)]
+               (when (not= n (Array/getLength arg))
+                 (throw (ex-info (str "An :array argument must have length " n ".")
+                                 {:level :error
+                                  :error/code :zigar/array-length
+                                  :expected n
+                                  :actual (Array/getLength arg)})))
+               {:carriers [(:address (marshal-array arena param arg))]})
     {:carriers [(to-carrier param arg)]}))
 
 (defn- from-return

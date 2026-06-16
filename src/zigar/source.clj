@@ -35,21 +35,26 @@
 
 (defn- param-decls
   "The Zig parameter declarations for one boundary param. A scalar or
-  pointer is one declaration; a slice is two, a many-item pointer and a
-  `usize` length, the pair it crosses the C ABI as."
+  pointer is one declaration; a fixed-size array crosses as a pointer to
+  the array; a slice is two declarations, a many-item pointer and a
+  `usize` length."
   [{:keys [binding type]}]
   (case (:kind type)
     :slice   [(str binding "_ptr: [*]" (pointee type))
               (str binding "_len: usize")]
     :manyptr [(str binding ": [*]" (pointee type))]
     :ptr     [(str binding ": *" (pointee type))]
+    :array   [(str binding "_ptr: *const [" (:length type) "]" (zig-type (:of type)))]
     [(str binding ": " (zig-type type))]))
 
-(defn- slice-reconstruction
-  "The statement that rebuilds a slice from its pointer and length."
+(defn- reconstruction
+  "The statement that rebuilds a binding the body uses by name: a slice
+  from its pointer and length, or an array value from its pointer."
   [{:keys [binding type]}]
-  (when (= :slice (:kind type))
-    (str "const " binding " = " binding "_ptr[0.." binding "_len];")))
+  (case (:kind type)
+    :slice (str "const " binding " = " binding "_ptr[0.." binding "_len];")
+    :array (str "const " binding " = " binding "_ptr.*;")
+    nil))
 
 (defn- indent-body
   "Trim the body and indent every non-blank line by four spaces, the Zig
@@ -64,7 +69,7 @@
   [spec body]
   (let [{:keys [params ret] sym :symbol} spec
         params-str (str/join ", " (mapcat param-decls params))
-        prelude    (str/join "\n" (keep slice-reconstruction params))
+        prelude    (str/join "\n" (keep reconstruction params))
         full-body  (if (str/blank? prelude) body (str prelude "\n" body))]
     (str "export fn " sym "(" params-str ") " (zig-type ret) " {\n"
          (indent-body full-body) "\n"
