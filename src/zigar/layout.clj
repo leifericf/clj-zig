@@ -70,6 +70,14 @@
      :size   (round-up (:offset placed) (:align placed))
      :align  (:align placed)}))
 
+(defn describe-record
+  "The layout descriptor for a `defrecordz` type: the struct layout of
+  `describe`, plus the qualified map-factory symbol the boundary resolves
+  to rebuild the record from its fields on a return."
+  [type-name fields record-ns]
+  (assoc (describe type-name fields)
+         :record (symbol (str record-ns) (str "map->" type-name))))
+
 (defn zig-struct
   "The `extern struct` declaration the generated Zig uses for a layout."
   [{type-name :name :keys [fields]}]

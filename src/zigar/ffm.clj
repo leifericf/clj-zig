@@ -238,6 +238,10 @@
         params (:params spec)
         ret    (:ret spec)
         arity  (count params)
+        ;; A record return names the map-factory that rebuilds it; a
+        ;; plain struct return has none and stays a map.
+        record-factory (when (and (= :named (:kind ret)) (:record (:layout ret)))
+                         (requiring-resolve (:record (:layout ret))))
         var-sym (symbol (str (:ns spec)) (str (:name spec)))]
     (fn [& args]
       (when (not= (count args) arity)
@@ -277,7 +281,8 @@
                      (object-array)
                      (.invokeWithArguments handle))
                 (copy-back!)
-                (read-struct out desc))
+                (let [m (read-struct out desc)]
+                  (if record-factory (record-factory m) m)))
               (let [result (->> base-carriers (object-array) (.invokeWithArguments handle))]
                 (copy-back!)
                 (from-return ret result)))))))))

@@ -215,6 +215,30 @@
                     ~(when docstring {:doc docstring}))
        (var ~type-name))))
 
+(defmacro defrecordz
+  "Define both a Clojure record and a named boundary type sharing its
+  layout. A signature in this namespace may name the record as an
+  argument or return type; a record-typed return rebuilds the record on
+  the Clojure side instead of returning a plain map.
+
+      (defrecordz Point
+        [x :f64
+         y :f64])"
+  [type-name & tail]
+  (let [[docstring fields] (if (string? (first tail))
+                             [(first tail) (second tail)]
+                             [nil (first tail)])
+        the-ns     (ns-name *ns*)
+        descriptor (layout/describe-record type-name fields the-ns)
+        field-syms (mapv :name (:fields descriptor))
+        factory    (symbol (str "map->" type-name))]
+    `(do
+       (defrecord ~type-name ~field-syms)
+       (register-type! '~the-ns '~descriptor)
+       ~@(when docstring
+           [`(alter-meta! (var ~factory) assoc :doc ~docstring)])
+       ~type-name)))
+
 (comment
   ;; The headline workflow: a Clojure fn with a Zig body.
   (defnz add [x :i64 y :i64 :ret :i64] "return x + y;")
@@ -234,4 +258,10 @@
 
   ;; A named boundary type the signatures in this namespace can use.
   (deftypez Point [x :f64 y :f64])
-  (:size Point))                           ;; => 16
+  (:size Point)                            ;; => 16
+
+  ;; A record bridges a Clojure record and the same struct layout; a
+  ;; record-typed return rebuilds the record.
+  (defrecordz Vec2 [x :f64 y :f64])
+  (defnz scale [v Vec2 k :f64 :ret Vec2] "return .{ .x = v.x * k, .y = v.y * k };")
+  (scale (->Vec2 2.0 3.0) 2.0))            ;; => #user.Vec2{:x 4.0 :y 6.0}
