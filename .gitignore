@@ -9,8 +9,8 @@
 zig-cache/
 zig-out/
 
-# Zigar artifact cache
-/.zigar/
+# clj-zig artifact cache
+/.clj-zig/
 
 # Editor / tooling caches
 .clj-kondo/.cache/

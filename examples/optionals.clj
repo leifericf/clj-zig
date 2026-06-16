@@ -4,7 +4,7 @@
   single-item optional pointer return comes back as the value or nil.
   Start a REPL with `clojure -M:repl`, load this file, and evaluate the
   forms in the comment block."
-  (:require [zigar.core :refer [defnz defz]]))
+  (:require [clj-zig.core :refer [defnz defz]]))
 
 (defnz value-or-zero
   "The integer behind an optional pointer, or zero when absent."

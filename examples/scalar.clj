@@ -2,7 +2,7 @@
   "Small, self-contained scalar examples, each defined and called end to
   end. Start a REPL with `clojure -M:repl`, load this file, and evaluate
   the forms in the comment block."
-  (:require [zigar.core :refer [defnz]]))
+  (:require [clj-zig.core :refer [defnz]]))
 
 (defnz add
   "Adds two signed integers."

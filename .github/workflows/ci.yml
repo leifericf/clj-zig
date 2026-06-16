@@ -64,7 +64,7 @@ jobs:
       - name: Cache compiled Zig libraries
         uses: actions/cache@v4
         with:
-          path: .zigar
+          path: .clj-zig
           key: ${{ runner.os }}-zig0.16-${{ hashFiles('src/**/*.clj') }}
           restore-keys: |
             ${{ runner.os }}-zig0.16-

@@ -3,7 +3,7 @@
   so ordinary Clojure builds it. A type builder is a function returning a
   type form, and a macro can generate whole `defnz` forms. Start a REPL
   with `clojure -M:repl`, load this file, and evaluate the comment block."
-  (:require [zigar.core :refer [defnz]]))
+  (:require [clj-zig.core :refer [defnz]]))
 
 ;; Type builders are ordinary functions over data.
 (defn slice-of [t] [:slice t])

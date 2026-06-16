@@ -4,7 +4,7 @@
   it. A struct argument is a Clojure map and a struct return comes back as
   a map keyed by field name. Start a REPL with `clojure -M:repl`, load
   this file, and evaluate the forms in the comment block."
-  (:require [zigar.core :refer [defnz deftypez]]))
+  (:require [clj-zig.core :refer [defnz deftypez]]))
 
 (deftypez Point
   [x :f64

@@ -3,7 +3,7 @@
   end. A const slice is a read-only view; a mutable slice may be changed
   during the call. Start a REPL with `clojure -M:repl`, load this file,
   and evaluate the forms in the comment block."
-  (:require [zigar.core :refer [defnz]]))
+  (:require [clj-zig.core :refer [defnz]]))
 
 (defnz sum
   "Sums a read-only slice of doubles."

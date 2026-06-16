@@ -5,7 +5,7 @@
   frees the resource explicitly. The resource's Zig type is declared with
   `defz`. Start a REPL with `clojure -M:repl`, load this file, and
   evaluate the comment block."
-  (:require [zigar.core :refer [defnz defz]]))
+  (:require [clj-zig.core :refer [defnz defz]]))
 
 (defz Counter "const Counter = struct { n: i64 };")
 

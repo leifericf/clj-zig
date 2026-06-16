@@ -4,7 +4,7 @@
   may take the enum as an argument or return it: an argument is a member
   keyword and a return comes back as one. Start a REPL with
   `clojure -M:repl`, load this file, and evaluate the comment block."
-  (:require [zigar.core :refer [defnz defenumz]]))
+  (:require [clj-zig.core :refer [defnz defenumz]]))
 
 (defenumz Suit
   "The four suits of a deck of cards."

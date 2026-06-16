@@ -3,7 +3,7 @@
   argument is a read-only value of exactly `n` elements; the caller passes
   a matching primitive array. Start a REPL with `clojure -M:repl`, load
   this file, and evaluate the forms in the comment block."
-  (:require [zigar.core :refer [defnz]]))
+  (:require [clj-zig.core :refer [defnz]]))
 
 (defnz mean3
   "Mean of a fixed run of three doubles."

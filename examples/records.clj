@@ -5,7 +5,7 @@
   (or a plain map with the same fields) and a record return comes back as
   a record, not a map. Start a REPL with `clojure -M:repl`, load this
   file, and evaluate the forms in the comment block."
-  (:require [zigar.core :refer [defnz defrecordz]]))
+  (:require [clj-zig.core :refer [defnz defrecordz]]))
 
 (defrecordz Point
   "A 2D point shared between Clojure and Zig."

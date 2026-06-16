@@ -28,7 +28,7 @@
                 org.clojars.czan/stateful-check {:mvn/version "0.4.4"}}
    :main-opts ["-m" "cloverage.coverage"
                "-p" "src" "-s" "test"
-               "--ns-regex" "zigar\\.(signature|type|spec|source|layout|cache)"
+               "--ns-regex" "clj-zig\\.(signature|type|spec|source|layout|cache)"
                "--text" "--no-html"
                "--fail-threshold" "90"]
    :jvm-opts ["--enable-native-access=ALL-UNNAMED"]}}}

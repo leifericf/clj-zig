@@ -1,11 +1,11 @@
 (ns ownership
   "Small, self-contained ownership examples. A returned Zig slice carries
-  explicit ownership: `[:owned T]` is memory Zig allocates and Zigar frees
+  explicit ownership: `[:owned T]` is memory Zig allocates and clj-zig frees
   after copying it out, while `[:borrowed T]` is a view Zig keeps. Both
   come back to Clojure as an immutable vector of the element values. Start
   a REPL with `clojure -M:repl`, load this file, and evaluate the comment
   block."
-  (:require [zigar.core :refer [defnz]]))
+  (:require [clj-zig.core :refer [defnz]]))
 
 (defnz shout
   "An upper-cased copy of the bytes, owned by Clojure."

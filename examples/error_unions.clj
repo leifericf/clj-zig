@@ -3,7 +3,7 @@
   return gives back the value on success and the Zig error name as a
   keyword on failure. Start a REPL with `clojure -M:repl`, load this
   file, and evaluate the forms in the comment block."
-  (:require [zigar.core :refer [defnz defz]]))
+  (:require [clj-zig.core :refer [defnz defz]]))
 
 (defz DivError "const DivError = error{DivByZero};")
 

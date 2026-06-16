@@ -5,7 +5,7 @@
   const pointee is read-only; a mutable one is copied back after the call.
   Start a REPL with `clojure -M:repl`, load this file, and evaluate the
   forms in the comment block."
-  (:require [zigar.core :refer [defnz]]))
+  (:require [clj-zig.core :refer [defnz]]))
 
 (defnz incr!
   "Increments the single integer a mutable pointer addresses."
