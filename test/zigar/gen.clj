@@ -94,7 +94,9 @@
   (let [{:keys [category bits]} (type/scalars elem-kw)]
     (case category
       :bool  (boolean-array (map boolean vs))
-      :float (if (= 32 bits) (float-array (map float vs)) (double-array (map double vs)))
+      :float (if (= 32 bits)
+               (float-array (map unchecked-float vs))
+               (double-array (map double vs)))
       :int   (case bits
                8  (byte-array (map (comp unchecked-byte to-long) vs))
                16 (short-array (map (comp unchecked-short to-long) vs))
