@@ -37,6 +37,16 @@
 (defn- pow2 [n]
   (bigint (.shiftLeft (biginteger 1) (int n))))
 
+(defn same-scalar?
+  "Equality for a scalar keyword's value, honoring NaN, the bool coercion,
+  and the unsigned policy where Long and BigInteger compare numerically.
+  The comparator the round-trip properties share."
+  [kw a b]
+  (case (:category (type/scalars kw))
+    :bool  (= (boolean a) (boolean b))
+    :float (if (Double/isNaN (double a)) (Double/isNaN (double b)) (== a b))
+    (== a b)))
+
 (defn edge-values
   "The boundary values worth probing for a scalar keyword: the extremes of
   its range, the small neighbourhood around zero, and the float specials."
