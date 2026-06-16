@@ -134,8 +134,6 @@ defnz  crosses the Clojure/Zig boundary
    eof 2])
 ```
 
-These forms are part of the ideal end-state, not necessarily the proof of concept.
-
 ## Return values
 
 The return type is part of the signature contract.

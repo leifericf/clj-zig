@@ -126,7 +126,9 @@ Scalar returns are direct:
 :void  ;; nil
 ```
 
-Unsigned integer overflow beyond signed JVM ranges needs an explicit policy before implementation.
+Unsigned returns follow a fixed policy: a value within the signed JVM
+range comes back as a `Long`; a `:u64` or `:usize` value beyond it
+becomes a `BigInteger`, never truncated to a negative.
 
 Composite returns need layout and ownership metadata.
 

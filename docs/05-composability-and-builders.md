@@ -82,21 +82,19 @@ Usage:
 
 ## Lower-level functions
 
-The macro layer should sit over data-level functions.
-
-Possible functions:
+The macro layer sits over data-level functions:
 
 ```clojure
 (zig/normalize-type [:slice :const :u8])
 (zig/normalize-signature '[xs [:slice :const :u8] :ret :usize])
 (zig/build-spec {...})
-(zig/generate-source spec)
-(zig/compile! spec)
+(zig/generate-source spec body)
+(zig/compile! spec body)
 (zig/load! artifact)
-(zig/fn spec source)
+(zig/fn spec body)
 ```
 
-Most users should not need these, but library authors and macro authors will.
+Most users do not need these; library authors and macro authors do.
 
 ## Destructuring as composition
 

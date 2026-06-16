@@ -16,10 +16,6 @@ The proof of concept will not include:
 - Zig calling Clojure;
 - embedded JVM from Zig;
 - arbitrary Clojure data marshalling;
-- owned native memory returns;
-- native resource handles;
-- full `defrecordz`;
-- full `defenumz`;
 - production AOT packaging;
 - cross-platform polish beyond one development target.
 
@@ -39,6 +35,9 @@ Authoring:
 ```clojure
 defnz
 defz
+deftypez
+defrecordz
+defenumz
 ```
 
 Inspection:
