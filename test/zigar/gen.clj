@@ -124,6 +124,22 @@
 
 ;; --- Type-form generators ----------------------------------------------
 
+(defn normalized->form
+  "Render a normalized boundary type back to a type form, the inverse of
+  `type/normalize`. A normalize-then-render-then-normalize round-trip is
+  the identity, so this drives the stability properties."
+  [t]
+  (case (:kind t)
+    :scalar                (:name t)
+    :named                 (:name t)
+    (:slice :ptr :manyptr) (if (:const? t)
+                             [(:kind t) :const (normalized->form (:of t))]
+                             [(:kind t) (normalized->form (:of t))])
+    :array                 [:array (:length t) (normalized->form (:of t))]
+    (:optional :owned
+     :borrowed :handle)    [(:kind t) (normalized->form (:of t))]
+    :error-union           [:error-union (:error t) (normalized->form (:of t))]))
+
 (def type-name-symbols ['Point 'Pixel 'Color 'Status])
 
 (def gen-named-type (gen/elements type-name-symbols))
