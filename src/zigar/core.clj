@@ -41,32 +41,85 @@
 
 ;; --- Establishing a native function -------------------------------------
 
-(defn establish!
-  "Generate, compile or reuse, and bind the native function for `spec`
-  and `body`. Returns the native invoker under `:invoke` plus the data
-  the Var exposes for inspection. Throws the compile diagnostic when the
-  Zig does not build."
+(defn build-inputs
+  "The cache/compile inputs for `spec` and `body`: the generated wrapper,
+  prefixed with this namespace's `defz` declarations, plus the toolchain
+  identity that the content hash includes."
   [spec body]
   (let [decls   (preamble (:ns spec))
         wrapper (source/generate spec body)
-        src     (if (str/blank? decls) wrapper (str decls "\n\n" wrapper))
-        paths   (cache/ensure-library!
-                 {:spec spec
-                  :body body
-                  :source src
-                  :deps decls
-                  :options {:optimize "ReleaseSafe"}
-                  :zig-version (cache/zig-version)
-                  :target (cache/target-triple)}
-                 compile/compile!)]
-    {:invoke           (ffm/bind spec (:library-path paths))
-     :spec             spec
+        src     (if (str/blank? decls) wrapper (str decls "\n\n" wrapper))]
+    {:spec        spec
+     :body        body
+     :source      src
+     :deps        decls
+     :options     {:optimize "ReleaseSafe"}
+     :zig-version (cache/zig-version)
+     :target      (cache/target-triple)}))
+
+(defn artifact
+  "Compile or reuse the native library for `spec` and `body`. Returns the
+  inspection data describing the build: the spec, the body, the generated
+  source, the library and source paths, the symbol, and whether the
+  library was reused (`:cached`) or freshly built (`:compiled`)."
+  [spec body]
+  (let [inputs (build-inputs spec body)
+        paths  (cache/ensure-library! inputs compile/compile!)]
+    {:spec             spec
      :body             body
-     :generated-source src
+     :generated-source (:source inputs)
      :library          (:library-path paths)
      :source-path      (:source-path paths)
      :symbol           (:symbol spec)
      :status           (if (:cached? paths) :cached :compiled)}))
+
+(defn establish!
+  "Build the artifact for `spec` and `body` and bind its symbol. Returns
+  the inspection data plus the native invoker under `:invoke`. Throws the
+  compile diagnostic when the Zig does not build."
+  [spec body]
+  (let [a (artifact spec body)]
+    (assoc a :invoke (ffm/bind spec (:library a)))))
+
+;; --- Binding and rebinding a Var ----------------------------------------
+
+;; A defnz Var's wrap fn, kept so `recompile!` can rebind with the same
+;; arglist and destructuring the macro built.
+(defonce ^:private rebinders (atom {}))
+
+(defn establish-binding!
+  "Establish the native function for `the-var` and rebind it. `wrap` turns
+  the raw invoker into the public fn (it carries the arglist and any
+  destructuring). On success the root is swapped, inspection metadata is
+  merged, and any stale failure is cleared. On failure the last good root
+  is left untouched, the failed attempt is recorded for inspection, and
+  the rendered diagnostic is rethrown so the REPL shows it at once."
+  [the-var spec body var-meta wrap]
+  (try
+    (let [result (establish! spec body)]
+      (alter-var-root the-var (constantly (wrap (:invoke result))))
+      (swap! rebinders assoc the-var wrap)
+      (alter-meta! the-var
+                   #(-> (merge % var-meta {:zigar/info (dissoc result :invoke)})
+                        (dissoc :zigar/failed-attempt)))
+      the-var)
+    (catch clojure.lang.ExceptionInfo e
+      (alter-meta! the-var assoc
+                   :zigar/failed-attempt (assoc (ex-data e) :body body))
+      (throw (ex-info (diagnostics/render (ex-data e)) (ex-data e) e)))))
+
+(defn recompile!
+  "Force a fresh build of `the-var`'s current spec and body, ignoring the
+  cached artifact, and rebind. Returns the Var."
+  [the-var]
+  (let [{:keys [spec body]} (:zigar/info (meta the-var))
+        wrap (get @rebinders the-var)]
+    (when-not (and spec wrap)
+      (throw (ex-info "recompile! needs a defnz Var with a current binding."
+                      {:level :error :error/code :zigar/not-recompilable
+                       :var the-var})))
+    (cache/evict! (build-inputs spec body))
+    (establish-binding! the-var spec body {} wrap)))
 
 ;; --- defnz / defz -------------------------------------------------------
 
@@ -107,19 +160,8 @@
                            {:arglists (list arglist)})]
       `(do
          (def ~fn-name)
-         (try
-           (let [result# (establish! '~spec ~body)
-                 invoke# (:invoke result#)]
-             (alter-var-root (var ~fn-name) (constantly (fn ~arglist (invoke# ~@call-args))))
-             (alter-meta! (var ~fn-name) merge '~var-meta {:zigar/info (dissoc result# :invoke)})
-             (var ~fn-name))
-           ;; Keep the last good binding: the Var's root is untouched, the
-           ;; failed attempt is recorded, and the rendered diagnostic is
-           ;; re-thrown so the REPL shows it immediately.
-           (catch clojure.lang.ExceptionInfo e#
-             (alter-meta! (var ~fn-name) assoc
-                          :zigar/failed-attempt (assoc (ex-data e#) :body ~body))
-             (throw (ex-info (diagnostics/render (ex-data e#)) (ex-data e#) e#))))))))
+         (establish-binding! (var ~fn-name) '~spec ~body '~var-meta
+                             (fn [invoke#] (fn ~arglist (invoke# ~@call-args))))))))
 
 (defmacro defz
   "Register a Zig declaration usable by the `defnz` bodies in this

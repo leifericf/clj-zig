@@ -115,7 +115,9 @@
                           :source-path  (:source-path paths)
                           :library-path (:library-path paths)}))))
 
-(defn read-manifest [paths]
+(defn read-manifest
+  "Read the manifest for a built artifact, or nil when none exists."
+  [paths]
   (let [f (io/file (:manifest-path paths))]
     (when (.exists f)
       (read-string (slurp f)))))
@@ -131,6 +133,15 @@
   ([root]
    (let [d (io/file root)]
      (when (.exists d) (delete-recursively d)))))
+
+(defn evict!
+  "Remove the single cached artifact for these `inputs`, so the next build
+  recompiles instead of reusing it. Inputs match `ensure-library!`."
+  [{:keys [spec root] :as inputs}]
+  (let [paths (artifact-paths {:root root :target (:target inputs)
+                               :ns (:ns spec) :name (:name spec)
+                               :hash (cache-key inputs)})]
+    (delete-recursively (io/file (:dir paths)))))
 
 (defn ensure-library!
   "Return the cached artifact paths for these `inputs`, compiling through
