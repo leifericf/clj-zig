@@ -142,6 +142,40 @@
 
 ;; --- defnz / defz -------------------------------------------------------
 
+(defn- builder-value
+  "The type form a type-builder Var holds, or nil. A symbol resolves to the
+  value its Var holds when that value is a type form, a scalar keyword or a
+  compound vector. A named-type symbol (a `deftypez`/`defrecordz`/
+  `defenumz`) and every non-symbol are left alone."
+  [the-ns form]
+  (when (symbol? form)
+    (when-let [v (ns-resolve the-ns form)]
+      (when (var? v)
+        (let [value (deref v)]
+          (when (or (keyword? value) (vector? value)) value))))))
+
+(defn- simple-binding
+  "Strip the namespace a syntax-quote adds to a binding symbol, since a
+  binding is a local name and the Zig param takes its bare name. A
+  destructuring map binding passes through unchanged."
+  [binding]
+  (if (and (symbol? binding) (namespace binding)) (symbol (name binding)) binding))
+
+(defn- prepare-signature
+  "Ready a raw `defnz` signature for the pipeline: replace each
+  type-position symbol that names a type-builder Var with the form it
+  holds, so a builder composes into a signature as plain data, and strip
+  the namespace a syntax-quote adds to each binding symbol so a
+  macro-generated signature binds cleanly. Named-type references and
+  literal type forms pass through unchanged."
+  [the-ns signature]
+  (let [{:keys [args ret]} (signature/normalize signature)
+        resolve-form #(or (builder-value the-ns %) %)]
+    (-> (vec (mapcat (fn [{:keys [binding type]}]
+                       [(simple-binding binding) (resolve-form type)])
+                     args))
+        (conj :ret (resolve-form ret)))))
+
 (defn- parse-defnz
   "Split a `defnz` tail into `{:docstring :attr-map :signature :body}`,
   mirroring the optional docstring and attr-map of `defn`."
@@ -171,6 +205,7 @@
                       {:level :error :error/code :zigar/malformed-defnz
                        :var fn-name})))
     (let [the-ns    (ns-name *ns*)
+          signature (prepare-signature the-ns signature)
           spec      (spec/build-spec {:ns the-ns :name fn-name :signature signature
                                       :types (types-in the-ns)})
           arglist   (mapv :binding (:args (signature/normalize signature)))
@@ -306,4 +341,9 @@
      b.* = .{ .v = v };
      return b;")
   (defnz unbox [b [:handle Box] :ret :i64] "return b.v;")
-  (unbox (box 42)))                        ;; => 42
+  (unbox (box 42))                         ;; => 42
+
+  ;; A type-builder Var resolves to its form when named in a signature.
+  (def f64s [:slice :const :f64])
+  (defnz total [xs f64s :ret :f64] "var t: f64 = 0; for (xs) |v| t += v; return t;")
+  (total (double-array [1.0 2.0 3.0])))    ;; => 6.0
