@@ -13,6 +13,7 @@
             [zigar.compile :as compile]
             [zigar.diagnostics :as diagnostics]
             [zigar.ffm :as ffm]
+            [zigar.layout :as layout]
             [zigar.signature :as signature]
             [zigar.source :as source]
             [zigar.spec :as spec]))
@@ -20,6 +21,8 @@
 ;; --- Namespace-scoped Zig declarations ----------------------------------
 
 (defonce ^:private zig-decls (atom {}))
+
+(defonce ^:private named-types (atom {}))
 
 (defn register-decl!
   "Register or replace a `defz` declaration in its namespace, preserving
@@ -33,11 +36,27 @@
                  entry {:name decl-name :source decl-source}]
              (if idx (assoc decls idx entry) (conj decls entry))))))
 
-(defn- preamble
-  "The Zig declarations registered in `ns-sym`, joined for splicing ahead
-  of a wrapper."
+(defn register-type!
+  "Register or replace a `deftypez` layout descriptor in its namespace.
+  Public because the `deftypez` expansion calls it from the user's
+  namespace."
+  [ns-sym descriptor]
+  (swap! named-types update ns-sym assoc (:name descriptor) descriptor))
+
+(defn types-in
+  "The map of named-type descriptors declared in `ns-sym`, keyed by name."
   [ns-sym]
-  (str/join "\n\n" (map :source (get @zig-decls ns-sym))))
+  (get @named-types ns-sym {}))
+
+(defn- preamble
+  "The Zig declarations registered in `ns-sym`: the named-type structs,
+  then the `defz` declarations, joined for splicing ahead of a wrapper."
+  [ns-sym]
+  (let [structs (->> (vals (types-in ns-sym))
+                     (sort-by (comp str :name))
+                     (map layout/zig-struct))
+        decls   (map :source (get @zig-decls ns-sym))]
+    (str/join "\n\n" (concat structs decls))))
 
 ;; --- Establishing a native function -------------------------------------
 
@@ -152,7 +171,8 @@
                       {:level :error :error/code :zigar/malformed-defnz
                        :var fn-name})))
     (let [the-ns    (ns-name *ns*)
-          spec      (spec/build-spec {:ns the-ns :name fn-name :signature signature})
+          spec      (spec/build-spec {:ns the-ns :name fn-name :signature signature
+                                      :types (types-in the-ns)})
           arglist   (mapv :binding (:args (signature/normalize signature)))
           call-args (mapv :binding (:params spec))
           var-meta  (merge (when docstring {:doc docstring})
@@ -174,6 +194,27 @@
        (alter-meta! (var ~decl-name) assoc :zigar/decl true)
        (var ~decl-name))))
 
+(defmacro deftypez
+  "Define a named boundary type with an `extern struct` layout. The
+  signatures in this namespace may name it as an argument or return type;
+  the Var holds the layout descriptor.
+
+      (deftypez Point
+        [x :f64
+         y :f64])"
+  [type-name & tail]
+  (let [[docstring fields] (if (string? (first tail))
+                             [(first tail) (second tail)]
+                             [nil (first tail)])
+        the-ns     (ns-name *ns*)
+        descriptor (layout/describe type-name fields)]
+    `(do
+       (register-type! '~the-ns '~descriptor)
+       (def ~type-name '~descriptor)
+       (alter-meta! (var ~type-name) merge {:zigar/type-layout true}
+                    ~(when docstring {:doc docstring}))
+       (var ~type-name))))
+
 (comment
   ;; The headline workflow: a Clojure fn with a Zig body.
   (defnz add [x :i64 y :i64 :ret :i64] "return x + y;")
@@ -189,4 +230,8 @@
   ;; A Zig helper shared by the bodies in this namespace.
   (defz helpers "fn dbl(x: i64) i64 { return x * 2; }")
   (defnz doubled [x :i64 :ret :i64] "return dbl(x);")
-  (doubled 21))                            ;; => 42
+  (doubled 21)                             ;; => 42
+
+  ;; A named boundary type the signatures in this namespace can use.
+  (deftypez Point [x :f64 y :f64])
+  (:size Point))                           ;; => 16

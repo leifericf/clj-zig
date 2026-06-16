@@ -42,17 +42,32 @@
   [var-ns var-name]
   (str "zigar_" (munge-part (str var-ns)) "_" (munge-part (str var-name))))
 
+(defn- resolve-named
+  "Attach a named type's layout descriptor from `types`, or fail when the
+  signature names a type that is not declared."
+  [ident types t]
+  (if (= :named (:kind t))
+    (if-let [layout (get types (:name t))]
+      (assoc t :layout layout)
+      (fail ident :zigar/unknown-type-name
+            (str "Signature names type " (:name t)
+                 " which no deftypez/defrecordz/defenumz declares.")
+            {:type-name (:name t)}))
+    t))
+
 (defn build-spec
-  "Build the boundary spec from `{:ns :name :signature}`. Throws a
+  "Build the boundary spec from `{:ns :name :signature}`, resolving any
+  named-type references against an optional `:types` map. Throws a
   diagnostic (`ex-info`) when the contract is invalid."
-  [{:keys [ns name signature]}]
+  [{:keys [ns name signature types] :or {types {}}}]
   (let [{:keys [args ret]} (signature/normalize signature)
         ident  {:ns ns :name name :signature signature}
         params (into [] (comp (map-indexed (partial expand-arg ident)) cat) args)
+        params (mapv #(update % :type (partial resolve-named ident types)) params)
         spec   (assoc ident
                       :symbol (symbol-name ns name)
                       :params params
-                      :ret    (type/normalize ret))]
+                      :ret    (resolve-named ident types (type/normalize ret)))]
     (validate! spec)
     spec))
 
