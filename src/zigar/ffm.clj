@@ -13,6 +13,7 @@
   (:import (java.lang.foreign Arena FunctionDescriptor Linker Linker$Option
                               MemoryLayout MemorySegment SymbolLookup ValueLayout)
            (java.lang.invoke MethodHandle)
+           (java.lang.reflect Array)
            (java.math BigInteger)))
 
 (def ^:private two-to-64 (.shiftLeft BigInteger/ONE 64))
@@ -25,8 +26,16 @@
       :float (case bits 32 ValueLayout/JAVA_FLOAT 64 ValueLayout/JAVA_DOUBLE)
       :bool  ValueLayout/JAVA_BOOLEAN)))
 
+(defn- param-layouts
+  "The native layouts one boundary param crosses as. A scalar is one
+  layout; a slice is an address and a `usize` length."
+  [{:keys [type]}]
+  (if (= :slice (:kind type))
+    [ValueLayout/ADDRESS ValueLayout/JAVA_LONG]
+    [(value-layout type)]))
+
 (defn- descriptor ^FunctionDescriptor [spec]
-  (let [arg-layouts (into-array MemoryLayout (map (comp value-layout :type) (:params spec)))]
+  (let [arg-layouts (into-array MemoryLayout (mapcat param-layouts (:params spec)))]
     (if (type/void-type? (:ret spec))
       (FunctionDescriptor/ofVoid arg-layouts)
       (FunctionDescriptor/of (value-layout (:ret spec)) arg-layouts))))
@@ -43,6 +52,28 @@
                           32 (unchecked-int l) 64 l))
       :float (case bits 32 (float v) 64 (double v))
       :bool  (boolean v))))
+
+(defn- marshal-slice
+  "Copy a primitive array into a fresh native segment from `arena`. Yields
+  the carriers, the segment address and the length, and for a mutable
+  slice a thunk that copies the segment back into the array after the
+  call. Element copies honor the layout's byte order."
+  [arena {:keys [type]} arr]
+  (let [elem  (value-layout (:of type))
+        bytes (.byteSize elem)
+        len   (Array/getLength arr)
+        seg   ^MemorySegment (.allocate ^Arena arena (* len bytes) bytes)]
+    (MemorySegment/copy arr (int 0) seg elem (long 0) (int len))
+    {:carriers  [seg (long len)]
+     :copy-back (when-not (:const? type)
+                  (fn [] (MemorySegment/copy seg elem (long 0) arr (int 0) (int len))))}))
+
+(defn- marshal-arg
+  "Coerce one boundary argument to its native carriers."
+  [arena param arg]
+  (if (= :slice (-> param :type :kind))
+    (marshal-slice arena param arg)
+    {:carriers [(to-carrier param arg)]}))
 
 (defn- from-return
   "Coerce a native return to a Clojure value, applying the unsigned-return
@@ -87,10 +118,16 @@
                          :var var-sym
                          :expected arity
                          :actual (count args)})))
-      (->> (map to-carrier params args)
-           (object-array)
-           (.invokeWithArguments handle)
-           (from-return ret)))))
+      ;; A confined arena holds the native copies of any slice arguments
+      ;; for exactly the duration of the call: mutable slices are copied
+      ;; back before it closes, honoring the call-only lifetime rule.
+      (with-open [arena (Arena/ofConfined)]
+        (let [marshalled (mapv #(marshal-arg arena %1 %2) params args)
+              result     (->> (mapcat :carriers marshalled)
+                              (object-array)
+                              (.invokeWithArguments handle))]
+          (run! (fn [m] (when-let [back (:copy-back m)] (back))) marshalled)
+          (from-return ret result))))))
 
 (comment
   ;; A whole small pipeline: build -> compile -> bind -> call.
