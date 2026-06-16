@@ -77,3 +77,7 @@ tests compile and load native code, so they need `zig` on the path and JDK 22+.
 - No hiding of Zig's type system.
 - No production packaging before the REPL experience is proven.
 - No DSL that pretends to be Zig but is not.
+
+## License
+
+Released under the [MIT License](LICENSE).
