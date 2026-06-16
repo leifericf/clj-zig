@@ -22,6 +22,17 @@
                      :ctx {:var 'app.core/add
                            :signature '[x :i64 y :i64 :ret :i64]}}))
 
+(deftest options-become-zig-build-flags
+  (testing "empty options add nothing"
+    (is (= [] (compile/options->flags nil)))
+    (is (= [] (compile/options->flags {}))))
+  (testing "include, system-include, link-path, and link map to flags in order"
+    (is (= ["-I" "/inc" "-isystem" "/sys" "-L" "/lib" "-lm" "-lz"]
+           (compile/options->flags {:include-path ["/inc"]
+                                    :system-include-path ["/sys"]
+                                    :link-path ["/lib"]
+                                    :link ["m" "z"]})))))
+
 (deftest compiles-a-scalar-function
   (let [dir    (scratch-dir)
         result (compile-add dir "return x + y;")]

@@ -162,6 +162,7 @@
         (compile!-fn {:source       source
                       :source-path  (:source-path paths)
                       :library-path (:library-path paths)
+                      :options      (:options inputs)
                       :ctx          {:var (var-symbol spec)
                                      :signature (:signature spec)}})
         (write-manifest! paths inputs artifact-key)
