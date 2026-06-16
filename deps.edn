@@ -1,0 +1,13 @@
+{:paths ["src"]
+ :deps {}
+
+ :aliases
+ {:test
+  {:extra-paths ["test"]
+   :extra-deps {io.github.cognitect-labs/test-runner
+                {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+   :main-opts ["-m" "cognitect.test-runner"]
+   :exec-fn cognitect.test-runner.api/test
+   ;; Finalized FFM (JEP 454, Java 22+): the flag opens native access
+   ;; explicitly; --enable-preview is not needed. Development runs on JDK 26.
+   :jvm-opts ["--enable-native-access=ALL-UNNAMED"]}}}

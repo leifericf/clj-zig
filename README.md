@@ -44,6 +44,31 @@ flowchart TD
 6. [Proof-of-Concept Plan](docs/06-proof-of-concept-plan.md): scope, phases, acceptance tests.
 7. [Design Principles and Decisions](docs/07-design-principles-and-decisions.md): the principles; decisions are ADRs in [docs/adr/](docs/adr/README.md).
 
+## Requirements
+
+- **Java 22 or newer.** Zigar uses the finalized Foreign Function & Memory
+  API (JEP 454); `--enable-preview` is not required. The only flag the JVM
+  needs is `--enable-native-access=ALL-UNNAMED`, which the `:test` alias sets.
+- **Zig 0.16.** Zigar shells out to `zig` to compile generated source.
+- **Clojure CLI** (`deps.edn`, not Leiningen).
+
+Development runs on JDK 26. If your shell's default JDK is older (for example
+through sdkman), point the Clojure CLI at JDK 26 for one invocation using
+`JAVA_CMD`:
+
+```bash
+JAVA_CMD="$(/usr/libexec/java_home -v 26)/bin/java" clojure -M:test
+```
+
+## Running the tests
+
+```bash
+clojure -M:test
+```
+
+Pure-core tests (signature, type, spec, source) run on any JDK 22+. The shell
+tests compile and load native code, so they need `zig` on the path and JDK 22+.
+
 ## Non-goals for the proof of concept
 
 - No Zig-to-Clojure callbacks.
