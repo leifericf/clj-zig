@@ -28,19 +28,21 @@
                      :kind (:kind t)
                      :zigar/type-form t}))))
 
-(defn- slice-elem
-  "The Zig element type of a slice, with its `const` qualifier."
+(defn- pointee
+  "The Zig pointee type of a slice or pointer, with its `const` qualifier."
   [{:keys [const? of]}]
   (str (when const? "const ") (zig-type of)))
 
 (defn- param-decls
-  "The Zig parameter declarations for one boundary param. A scalar is one
-  declaration; a slice crosses the C ABI as a many-item pointer and a
-  `usize` length, so it is two."
+  "The Zig parameter declarations for one boundary param. A scalar or
+  pointer is one declaration; a slice is two, a many-item pointer and a
+  `usize` length, the pair it crosses the C ABI as."
   [{:keys [binding type]}]
-  (if (= :slice (:kind type))
-    [(str binding "_ptr: [*]" (slice-elem type))
-     (str binding "_len: usize")]
+  (case (:kind type)
+    :slice   [(str binding "_ptr: [*]" (pointee type))
+              (str binding "_len: usize")]
+    :manyptr [(str binding ": [*]" (pointee type))]
+    :ptr     [(str binding ": *" (pointee type))]
     [(str binding ": " (zig-type type))]))
 
 (defn- slice-reconstruction

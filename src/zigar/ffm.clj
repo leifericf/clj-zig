@@ -28,10 +28,12 @@
 
 (defn- param-layouts
   "The native layouts one boundary param crosses as. A scalar is one
-  layout; a slice is an address and a `usize` length."
+  layout; a pointer is an address; a slice is an address and a `usize`
+  length."
   [{:keys [type]}]
-  (if (= :slice (:kind type))
-    [ValueLayout/ADDRESS ValueLayout/JAVA_LONG]
+  (case (:kind type)
+    :slice            [ValueLayout/ADDRESS ValueLayout/JAVA_LONG]
+    (:ptr :manyptr)   [ValueLayout/ADDRESS]
     [(value-layout type)]))
 
 (defn- descriptor ^FunctionDescriptor [spec]
@@ -53,26 +55,40 @@
       :float (case bits 32 (float v) 64 (double v))
       :bool  (boolean v))))
 
-(defn- marshal-slice
-  "Copy a primitive array into a fresh native segment from `arena`. Yields
-  the carriers, the segment address and the length, and for a mutable
-  slice a thunk that copies the segment back into the array after the
-  call. Element copies honor the layout's byte order."
+(defn- marshal-array
+  "Copy a primitive array into a fresh native segment from `arena` and pass
+  its address. Yields the segment, its length, and for a mutable pointee a
+  thunk that copies the segment back into the array after the call.
+  Element copies honor the layout's byte order."
   [arena {:keys [type]} arr]
   (let [elem  (value-layout (:of type))
         bytes (.byteSize elem)
         len   (Array/getLength arr)
         seg   ^MemorySegment (.allocate ^Arena arena (* len bytes) bytes)]
     (MemorySegment/copy arr (int 0) seg elem (long 0) (int len))
-    {:carriers  [seg (long len)]
+    {:address   seg
+     :length    len
      :copy-back (when-not (:const? type)
                   (fn [] (MemorySegment/copy seg elem (long 0) arr (int 0) (int len))))}))
 
 (defn- marshal-arg
-  "Coerce one boundary argument to its native carriers."
+  "Coerce one boundary argument to its native carriers. Pointers and slices
+  ride behind a native segment; a single-item pointer demands a one-element
+  array, guarding against a read past the end."
   [arena param arg]
-  (if (= :slice (-> param :type :kind))
-    (marshal-slice arena param arg)
+  (case (-> param :type :kind)
+    :slice   (let [{:keys [address length copy-back]} (marshal-array arena param arg)]
+               {:carriers [address (long length)] :copy-back copy-back})
+    :manyptr (let [{:keys [address copy-back]} (marshal-array arena param arg)]
+               {:carriers [address] :copy-back copy-back})
+    :ptr     (do (when (not= 1 (Array/getLength arg))
+                   (throw (ex-info "A :ptr argument must be a one-element array."
+                                   {:level :error
+                                    :error/code :zigar/pointer-arity
+                                    :expected 1
+                                    :actual (Array/getLength arg)})))
+                 (let [{:keys [address copy-back]} (marshal-array arena param arg)]
+                   {:carriers [address] :copy-back copy-back}))
     {:carriers [(to-carrier param arg)]}))
 
 (defn- from-return
