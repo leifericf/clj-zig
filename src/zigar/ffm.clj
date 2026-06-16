@@ -6,7 +6,7 @@
 
   Coercion honors the unsigned-return policy: a value that fits
   the signed JVM range comes back as a `Long`; a `:u64`/`:usize` value
-  beyond it is promoted to `BigInteger`, never a surprise negative. A
+  beyond it is promoted to `BigInteger`, never truncated to a negative. A
   `:void` return is `nil`."
   (:require [clojure.java.io :as io]
             [zigar.type :as type])
@@ -44,8 +44,8 @@
 
 (defn- to-carrier
   "Coerce a Clojure value to the param's native carrier. Integers cross
-  as their low `bits` two's-complement bits, so an unsigned value rides
-  in the signed carrier without truncation."
+  as their low `bits` two's-complement bits, so an unsigned value passes
+  through the signed carrier without truncation."
   [param v]
   (let [{:keys [category bits]} (type/scalar-info (-> param :type :name))]
     (case category
@@ -73,8 +73,8 @@
 
 (defn- marshal-arg
   "Coerce one boundary argument to its native carriers. Pointers and slices
-  ride behind a native segment; a single-item pointer demands a one-element
-  array, guarding against a read past the end."
+  pass as a native segment address; a single-item pointer demands a
+  one-element array, guarding against a read past the end."
   [arena param arg]
   (case (-> param :type :kind)
     :slice   (let [{:keys [address length copy-back]} (marshal-array arena param arg)]
@@ -154,7 +154,7 @@
           (from-return ret result))))))
 
 (comment
-  ;; A whole small pipeline: build -> compile -> bind -> call.
+  ;; A whole small pipeline: build, compile, bind, call.
   (require '[zigar.spec :as spec] '[zigar.source :as source] '[zigar.compile :as compile])
   (let [s   (spec/build-spec '{:ns app.core :name add :signature [x :i64 y :i64 :ret :i64]})
         dir (str (java.nio.file.Files/createTempDirectory
