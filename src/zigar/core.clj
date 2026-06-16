@@ -11,6 +11,7 @@
   (:require [clojure.string :as str]
             [zigar.cache :as cache]
             [zigar.compile :as compile]
+            [zigar.diagnostics :as diagnostics]
             [zigar.ffm :as ffm]
             [zigar.signature :as signature]
             [zigar.source :as source]
@@ -106,11 +107,19 @@
                            {:arglists (list arglist)})]
       `(do
          (def ~fn-name)
-         (let [result# (establish! '~spec ~body)
-               invoke# (:invoke result#)]
-           (alter-var-root (var ~fn-name) (constantly (fn ~arglist (invoke# ~@call-args))))
-           (alter-meta! (var ~fn-name) merge '~var-meta {:zigar/info (dissoc result# :invoke)})
-           (var ~fn-name))))))
+         (try
+           (let [result# (establish! '~spec ~body)
+                 invoke# (:invoke result#)]
+             (alter-var-root (var ~fn-name) (constantly (fn ~arglist (invoke# ~@call-args))))
+             (alter-meta! (var ~fn-name) merge '~var-meta {:zigar/info (dissoc result# :invoke)})
+             (var ~fn-name))
+           ;; Keep the last good binding: the Var's root is untouched, the
+           ;; failed attempt is recorded, and the rendered diagnostic is
+           ;; re-thrown so the REPL shows it immediately.
+           (catch clojure.lang.ExceptionInfo e#
+             (alter-meta! (var ~fn-name) assoc
+                          :zigar/failed-attempt (assoc (ex-data e#) :body ~body))
+             (throw (ex-info (diagnostics/render (ex-data e#)) (ex-data e#) e#))))))))
 
 (defmacro defz
   "Register a Zig declaration usable by the `defnz` bodies in this
