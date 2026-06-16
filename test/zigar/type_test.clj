@@ -16,11 +16,11 @@
       (is (= {:kind :scalar :name kw} (type/normalize kw))))))
 
 (deftest normalizes-named-type-reference
-  (testing "a symbol is a reference to a named type, resolved later (commit 17)"
+  (testing "a symbol is a reference to a named type, resolved later"
     (is (= '{:kind :named :name Point} (type/normalize 'Point)))))
 
 (deftest normalizes-const-slice
-  (testing "the canonical example from docs/03"
+  (testing "the canonical const-slice example"
     (is (= {:kind :slice :const? true :of {:kind :scalar :name :u8}}
            (type/normalize [:slice :const :u8])))))
 
@@ -50,7 +50,7 @@
          (type/normalize [:optional :i32]))))
 
 (deftest normalizes-error-union
-  (testing "the error set is preserved as written; semantics settled by ADR at commit 16"
+  (testing "the error set is preserved as written; its semantics are settled later"
     (is (= '{:kind :error-union :error ParseError :of {:kind :scalar :name :i64}}
            (type/normalize '[:error-union ParseError :i64])))))
 

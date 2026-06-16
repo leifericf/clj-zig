@@ -1,5 +1,5 @@
 (ns zigar.cache
-  "Content-address generated artifacts (ADR 12). The hash of the
+  "Content-address generated artifacts. The hash of the
   normalized spec, body, dependencies, options, Zig version, and target
   becomes the artifact path, so an unchanged form reuses its library and
   a changed form gets a fresh one. The JVM never reloads a stale library.

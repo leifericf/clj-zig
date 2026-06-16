@@ -6,13 +6,13 @@
   On success it returns the library and source paths. On failure it
   throws the structured diagnostic doc 04 fixes: the Var and signature
   first, then the `source.zig` path, then the compiler's stderr and exit
-  code. The core shell catches it to keep the last good binding (ADR 11)."
+  code. The core shell catches it to keep the last good binding."
   (:require [clojure.java.io :as io]
             [clojure.java.shell :as sh]
             [clojure.string :as str]))
 
 (def ^:private optimize-mode
-  "Safety checks stay on; this is part of the cache key (docs/04)."
+  "Safety checks stay on; this is part of the cache key."
   "ReleaseSafe")
 
 (defn dynamic-library-extension
@@ -37,8 +37,8 @@
         lib-abs  (.getAbsolutePath lib-file)]
     (io/make-parents src-file)
     (spit src-file source)
-    ;; zig fmt owns formatting (CLAUDE.md). A syntax error here leaves the
-    ;; file untouched and resurfaces as the authoritative build error
+    ;; zig fmt owns formatting. A syntax error here leaves the file
+    ;; untouched and resurfaces as the authoritative build error
     ;; below, so this exit code is deliberately ignored.
     (sh/sh "zig" "fmt" src-abs :dir (.getParent src-file))
     (let [{:keys [exit err]} (sh/sh "zig" "build-lib" "-dynamic"

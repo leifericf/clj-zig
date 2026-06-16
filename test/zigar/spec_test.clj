@@ -80,7 +80,7 @@
                                          :signature [x :void :ret :i64]})))))
 
 (deftest expands-clojure-side-destructuring-into-native-params
-  (testing "each destructured local becomes a native scalar param (ADR 13)"
+  (testing "each destructured local becomes a native scalar param"
     (let [s (spec/build-spec
              '{:ns app.core :name distance
                :signature [{x1 :x y1 :y} {:x :f64 :y :f64}

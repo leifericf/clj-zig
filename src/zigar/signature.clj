@@ -4,7 +4,7 @@
   structured diagnostic is thrown.
 
   A signature pairs argument bindings with boundary types and ends with
-  a required final `:ret` marker and its return type (ADR 06):
+  a required final `:ret` marker and its return type:
 
       [x :i64
        y :i64
@@ -18,13 +18,13 @@
 
   Type forms are preserved verbatim; `zigar.type` normalizes them. A map
   binding carries Clojure-side destructuring that lowers to native
-  scalars before the call (ADR 13); its argument is marked
+  scalars before the call; its argument is marked
   `:destructured? true`.")
 
 (declare normalize-arg fail)
 
 (def ^:private rest-marker
-  "Reserved for future Clojure-style rest arguments (ADR 06, docs/02)."
+  "Reserved for future Clojure-style rest arguments."
   '&)
 
 (defn normalize
@@ -66,7 +66,7 @@
 
 (defn- normalize-arg
   "Normalize one `[binding type]` pair. A map binding is Clojure-side
-  destructuring (ADR 13); a symbol binding is an ordinary argument."
+  destructuring; a symbol binding is an ordinary argument."
   [signature [binding type]]
   (cond
     (map? binding)    {:binding binding :type type :destructured? true}
@@ -77,7 +77,7 @@
 
 (defn- fail
   "Throw a structured diagnostic carrying the offending signature
-  (docs/04). The shell renders it; callers can branch on `:error/code`."
+  The shell renders it; callers can branch on `:error/code`."
   [signature code message extra]
   (throw (ex-info message
                   (merge {:level :error

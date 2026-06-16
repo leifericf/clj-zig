@@ -15,7 +15,7 @@
        :signature [x :i64 y :i64 :ret :i64]}
 
   `:params` is the flat list of native parameters in call order.
-  Clojure-side destructuring (ADR 13) is expanded here: each destructured
+  Clojure-side destructuring is expanded here: each destructured
   local becomes one native param tagged with `:destructured-from`, so the
   core macro can lower a map argument to scalars before the call."
   (:require [clojure.set :as set]
@@ -59,7 +59,7 @@
 (defn- expand-arg
   "Expand one normalized signature argument into native params. A plain
   argument yields one param; a destructured map yields one param per
-  local, typed from the field-map (ADR 13). `ident` carries the Var and
+  local, typed from the field-map. `ident` carries the Var and
   signature so a field error is as rich as any other diagnostic."
   [ident idx {:keys [binding destructured?] t :type}]
   (if destructured?
@@ -78,8 +78,8 @@
 
 (defn- scalar-names
   "The set of scalar names appearing anywhere in a normalized type.
-  Named-type references resolve against the registry later (commit 17),
-  so their carriers are checked once resolution lands, not here."
+  Named-type references resolve against the registry later, so their
+  carriers are checked once resolution lands, not here."
   [t]
   (case (:kind t)
     :scalar #{(:name t)}

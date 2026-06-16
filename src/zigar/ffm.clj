@@ -1,10 +1,10 @@
 (ns zigar.ffm
   "Load a compiled library and bind a native symbol through the finalized
-  Foreign Function & Memory API (JEP 454, Java 22+). Imperative shell: it
+  Foreign Function & Memory API (Java 22+). Imperative shell: it
   turns a boundary spec into a downcall handle and wraps it in a Clojure
   fn that coerces scalars across the boundary.
 
-  Coercion honors the unsigned-return policy (docs/03): a value that fits
+  Coercion honors the unsigned-return policy: a value that fits
   the signed JVM range comes back as a `Long`; a `:u64`/`:usize` value
   beyond it is promoted to `BigInteger`, never a surprise negative. A
   `:void` return is `nil`."
@@ -67,7 +67,7 @@
   "Load `library-path`, look up the spec's symbol, and return a Clojure
   fn that calls it with scalar coercion. The library is held by the
   global arena for the JVM lifetime; redefinition produces a fresh
-  content-addressed library rather than reloading (ADR 12)."
+  content-addressed library rather than reloading."
   [spec library-path]
   (let [linker (Linker/nativeLinker)
         lookup (SymbolLookup/libraryLookup (.toPath (io/file library-path)) (Arena/global))

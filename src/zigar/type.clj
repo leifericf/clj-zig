@@ -1,10 +1,10 @@
 (ns zigar.type
-  "Normalize boundary type forms into plain data (ADR 15). Pure: a type
+  "Normalize boundary type forms into plain data. Pure: a type
   form goes in, a normalized map comes out, or a diagnostic is thrown.
 
   Scalar types are Zig keywords; compound types are vectors; a symbol
   names a type declared elsewhere (`deftypez`, `defrecordz`, `defenumz`)
-  and resolves against the registry later (commit 17). Per docs/03:
+  and resolves against the named-type registry later. For example:
 
       :i64                  => {:kind :scalar :name :i64}
       [:slice :const :u8]   => {:kind :slice :const? true
@@ -20,7 +20,7 @@
          normalize-array normalize-wrapper normalize-error-union fail)
 
 (def scalars
-  "Documented scalar boundary types (docs/03) and their classification.
+  "The scalar boundary types and their classification.
   `:bits` for `:isize`/`:usize` is the 64-bit value for the development
   target; it is platform-dependent in Zig."
   {:i8       {:category :int :signed? true  :bits 8}
@@ -64,7 +64,7 @@
 
 (defn has-carrier?
   "True when a scalar crosses the FFM boundary as a primitive value.
-  Stable FFM (Java 22, JEP 454) carries 8/16/32/64-bit integers and
+  Stable FFM (Java 22) carries 8/16/32/64-bit integers and
   32/64-bit floats and `bool`; 128-bit integers and 16/80/128-bit floats
   have no carrier, so they are rejected at spec time. `:void` and
   `:noreturn` are not value carriers (a `:void` return carries nothing)."
@@ -135,7 +135,7 @@
 (defn- normalize-error-union
   "`[:error-union E T]` pairs an error set with a value type. The error
   set is preserved as written; its precise mapping is settled by ADR
-  before the marshalling lands (commit 16)."
+  before the marshalling lands."
   [v]
   (if (= 3 (count v))
     {:kind :error-union :error (nth v 1) :of (normalize (nth v 2))}

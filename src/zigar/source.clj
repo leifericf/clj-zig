@@ -10,14 +10,14 @@
           return x + y;
       }
 
-  `zig fmt` owns final formatting (CLAUDE.md); the generator emits
-  already-canonical Zig for the structure it controls, and the compile
-  shell runs `zig fmt` over the whole file to normalize the body."
+  `zig fmt` owns final formatting; the generator emits already-canonical
+  Zig for the structure it controls, and the compile shell runs `zig
+  fmt` over the whole file to normalize the body."
   (:require [clojure.string :as str]))
 
 (defn- zig-type
   "The Zig type name for a normalized boundary type. Scalars only for
-  now; compound types arrive with the type vocabulary in Part 2."
+  now; compound types arrive with the wider type vocabulary."
   [t]
   (case (:kind t)
     :scalar (name (:name t))

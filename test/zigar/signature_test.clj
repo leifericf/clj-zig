@@ -71,7 +71,7 @@
          (error-code #(sig/normalize '[x :i64 & more :ret :i64])))))
 
 (deftest captures-clojure-side-destructuring
-  (testing "a map binding with a field-map type is captured for Clojure-side lowering (ADR 13)"
+  (testing "a map binding with a field-map type is captured for Clojure-side lowering"
     (let [arg (-> (sig/normalize '[{x1 :x y1 :y} {:x :f64 :y :f64} :ret :f64])
                   :args
                   first)]
@@ -80,7 +80,7 @@
       (is (= {:x :f64 :y :f64} (:type arg))))))
 
 (deftest diagnostic-carries-the-signature
-  (testing "a thrown diagnostic includes the offending signature as data (docs/04)"
+  (testing "a thrown diagnostic includes the offending signature as data"
     (try
       (sig/normalize '[x :i64 y :i64])
       (is false "expected a diagnostic")
