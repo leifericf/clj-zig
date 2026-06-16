@@ -118,7 +118,10 @@
             "An :optional argument must wrap a :ptr or :manyptr." {}))
     (when (= :error-union (:kind type))
       (fail spec :zigar/unsupported-error-union
-            "An :error-union is supported in return position only." {})))
+            "An :error-union is supported in return position only." {}))
+    (when (contains? #{:owned :borrowed} (:kind type))
+      (fail spec :zigar/unsupported-ownership
+            "An :owned or :borrowed type is supported in return position only." {})))
   (when (and (= :optional (:kind ret))
              (not= :ptr (:kind (:of ret))))
     (fail spec :zigar/unsupported-optional
@@ -127,6 +130,10 @@
              (not (or (type/void-type? (:of ret)) (= :scalar (:kind (:of ret))))))
     (fail spec :zigar/unsupported-error-union
           "An :error-union return must wrap a scalar or :void value." {}))
+  (when (and (contains? #{:owned :borrowed} (:kind ret))
+             (not= :slice (:kind (:of ret))))
+    (fail spec :zigar/unsupported-ownership
+          "An :owned or :borrowed return must wrap a slice." {}))
   (let [ret-value     (if (= :error-union (:kind ret)) (:of ret) ret)
         ret-scalars   (if (type/void-type? ret-value) #{} (scalar-names ret-value))
         value-scalars (apply set/union ret-scalars (map (comp scalar-names :type) params))

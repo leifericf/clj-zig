@@ -61,13 +61,15 @@
         ;; out-pointer the result is written through. Both export `void`.
         eu?         (= :error-union (:kind ret))
         struct-ret? (and (= :named (:kind ret)) (not (enum-type? ret)))
+        own?        (contains? #{:owned :borrowed} (:kind ret))
         extra       (cond eu?         [ValueLayout/ADDRESS ValueLayout/ADDRESS]
+                          own?        [ValueLayout/ADDRESS ValueLayout/ADDRESS]
                           struct-ret? [ValueLayout/ADDRESS]
                           :else       [])
         arg-layouts (into-array MemoryLayout (concat (mapcat param-layouts (:params spec))
                                                      extra))
         ret-value   (if eu? (:of ret) ret)]
-    (if (or struct-ret? (type/void-type? ret-value))
+    (if (or struct-ret? own? (type/void-type? ret-value))
       (FunctionDescriptor/ofVoid arg-layouts)
       (FunctionDescriptor/of (return-layout ret-value) arg-layouts))))
 
@@ -213,6 +215,18 @@
                    (coerce-scalar type (read-scalar seg type offset))))
           {} (:fields descriptor)))
 
+(defn- read-slice-values
+  "Copy `len` elements of scalar type `elem` from the native address
+  `addr` into an immutable Clojure vector. A zero length reads nothing,
+  so the address is never dereferenced for an empty slice."
+  [addr len elem]
+  (if (zero? len)
+    []
+    (let [bytes (.byteSize (value-layout elem))
+          seg   (.reinterpret (MemorySegment/ofAddress addr) (* (long len) bytes))]
+      (mapv (fn [i] (coerce-scalar elem (read-scalar seg elem (* (long i) bytes))))
+            (range len)))))
+
 (defn- enum-member->value
   "The backing integer for an enum member keyword, or nil when no member
   of `descriptor` carries that name."
@@ -279,6 +293,16 @@
         ;; plain struct return has none and stays a map.
         record-factory (when (and (= :named (:kind ret)) (:record (:layout ret)))
                          (requiring-resolve (:record (:layout ret))))
+        own?    (contains? #{:owned :borrowed} (:kind ret))
+        ;; An owned slice return carries a free shim Zigar calls once it
+        ;; has copied the elements out; a borrowed return frees nothing.
+        free-handle (when (= :owned (:kind ret))
+                      (.downcallHandle linker
+                                       (.orElseThrow (.find lookup (str (:symbol spec) "__free")))
+                                       (FunctionDescriptor/ofVoid
+                                        (into-array MemoryLayout [ValueLayout/JAVA_LONG
+                                                                  ValueLayout/JAVA_LONG]))
+                                       (into-array Linker$Option [])))
         var-sym (symbol (str (:ns spec)) (str (:name spec)))]
     (fn [& args]
       (when (not= (count args) arity)
@@ -297,7 +321,8 @@
               base-carriers (mapcat :carriers marshalled)
               copy-back!    #(run! (fn [m] (when-let [back (:copy-back m)] (back)))
                                    marshalled)]
-          (if (= :error-union (:kind ret))
+          (cond
+            (= :error-union (:kind ret))
             (let [errbuf ^MemorySegment (.allocate arena error-buffer-bytes 1)
                   errlen ^MemorySegment (.allocate arena 8 8)
                   result (->> (concat base-carriers [errbuf errlen])
@@ -308,22 +333,42 @@
                 (let [value-t (:of ret)]
                   (when-not (type/void-type? value-t) (coerce-scalar value-t result)))
                 (read-error-name errbuf n)))
+
+            ;; An owned or borrowed slice return writes its pointer and
+            ;; length to two out-params. Zigar copies the elements into a
+            ;; vector, then frees owned memory through the shim.
+            own?
+            (let [pout ^MemorySegment (.allocate arena 8 8)
+                  lout ^MemorySegment (.allocate arena 8 8)]
+              (->> (concat base-carriers [pout lout])
+                   (object-array)
+                   (.invokeWithArguments handle))
+              (copy-back!)
+              (let [addr   (.get pout ValueLayout/JAVA_LONG 0)
+                    len    (.get lout ValueLayout/JAVA_LONG 0)
+                    result (read-slice-values addr len (-> ret :of :of))]
+                (when free-handle
+                  (.invokeWithArguments free-handle (object-array [addr len])))
+                result))
+
             ;; A struct return is written through a caller-allocated
             ;; out-segment, then read back into a Clojure map. An enum
             ;; return crosses as its backing int and takes the plain path.
-            (if (and (= :named (:kind ret)) (not (enum-type? ret)))
-              (let [desc (:layout ret)
-                    out  ^MemorySegment (.allocate arena (long (:size desc))
-                                                   (long (:align desc)))]
-                (->> (concat base-carriers [out])
-                     (object-array)
-                     (.invokeWithArguments handle))
-                (copy-back!)
-                (let [m (read-struct out desc)]
-                  (if record-factory (record-factory m) m)))
-              (let [result (->> base-carriers (object-array) (.invokeWithArguments handle))]
-                (copy-back!)
-                (from-return ret result)))))))))
+            (and (= :named (:kind ret)) (not (enum-type? ret)))
+            (let [desc (:layout ret)
+                  out  ^MemorySegment (.allocate arena (long (:size desc))
+                                                 (long (:align desc)))]
+              (->> (concat base-carriers [out])
+                   (object-array)
+                   (.invokeWithArguments handle))
+              (copy-back!)
+              (let [m (read-struct out desc)]
+                (if record-factory (record-factory m) m)))
+
+            :else
+            (let [result (->> base-carriers (object-array) (.invokeWithArguments handle))]
+              (copy-back!)
+              (from-return ret result))))))))
 
 (comment
   ;; A whole small pipeline: build, compile, bind, call.

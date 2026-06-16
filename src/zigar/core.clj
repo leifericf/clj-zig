@@ -290,4 +290,11 @@
   ;; An enum bridges Zig members and Clojure keywords.
   (defenumz Suit [clubs 0 diamonds 1 hearts 2 spades 3])
   (defnz red? [s Suit :ret :bool] "return s == .diamonds or s == .hearts;")
-  (red? :hearts))                          ;; => true
+  (red? :hearts)                           ;; => true
+
+  ;; An owned slice return is copied into a vector and then freed.
+  (defnz repeat-byte [b :u8 n :usize :ret [:owned [:slice :u8]]]
+    "const out = std.heap.c_allocator.alloc(u8, n) catch @panic(\"oom\");
+     @memset(out, b);
+     return out;")
+  (repeat-byte 65 3))                      ;; => [65 65 65]

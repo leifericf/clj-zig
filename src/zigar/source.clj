@@ -159,17 +159,48 @@
          "    __ret.* = " sym "__impl(" args-str ");\n"
          "}\n")))
 
+(defn- generate-ownership
+  "An inner impl fn holding the user body returns a slice; the exported
+  wrapper writes the slice's pointer and length to two out-params. An
+  `:owned` return also emits a free shim and a `std` import: the body
+  allocates with `std.heap.c_allocator` and the shim frees it after the
+  caller copies the elements out."
+  [{:keys [params ret] sym :symbol} body]
+  (let [params-str (str/join ", " (mapcat param-decls params))
+        args-str   (str/join ", " (mapcat param-args params))
+        slice      (:of ret)
+        elem-t     (zig-type (:of slice))
+        ret-t      (str "[]" (when (:const? slice) "const ") elem-t)
+        owned?     (= :owned (:kind ret))
+        out-params (str (when (seq params-str) ", ") "__ptr: *usize, __len: *usize")]
+    (str (when owned? "const std = @import(\"std\");\n\n")
+         "fn " sym "__impl(" params-str ") " ret-t " {\n"
+         (indent-body (impl-body params body)) "\n"
+         "}\n\n"
+         "export fn " sym "(" params-str out-params ") void {\n"
+         "    const __r = " sym "__impl(" args-str ");\n"
+         "    __ptr.* = @intFromPtr(__r.ptr);\n"
+         "    __len.* = __r.len;\n"
+         "}\n"
+         (when owned?
+           (str "\nexport fn " sym "__free(__ptr: usize, __len: usize) void {\n"
+                "    const __p: [*]" elem-t " = @ptrFromInt(__ptr);\n"
+                "    std.heap.c_allocator.free(__p[0..__len]);\n"
+                "}\n")))))
+
 (defn generate
   "Emit the Zig wrapper for `spec` with the user's `body` spliced in. An
   error-union return generates an inner impl fn and a translating wrapper;
-  a struct return writes through an out-pointer; every other return is a
-  direct `export fn`."
+  an owned or borrowed slice return writes its pointer and length to
+  out-params; a struct return writes through an out-pointer; every other
+  return is a direct `export fn`."
   [{:keys [ret] :as spec} body]
   (cond
-    (= :error-union (:kind ret))                  (generate-error-union spec body)
-    (and (= :named (:kind ret)) (enum-type? ret)) (generate-plain spec body)
-    (= :named (:kind ret))                        (generate-struct-return spec body)
-    :else                                         (generate-plain spec body)))
+    (= :error-union (:kind ret))                     (generate-error-union spec body)
+    (contains? #{:owned :borrowed} (:kind ret))      (generate-ownership spec body)
+    (and (= :named (:kind ret)) (enum-type? ret))    (generate-plain spec body)
+    (= :named (:kind ret))                           (generate-struct-return spec body)
+    :else                                            (generate-plain spec body)))
 
 (comment
   (require '[zigar.spec :as spec])
