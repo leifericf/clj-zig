@@ -87,6 +87,7 @@ flowchart TD
 5. [Composability and Builders](docs/05-composability-and-builders.md): data-level reuse and macros.
 6. [Proof-of-Concept Plan](docs/06-proof-of-concept-plan.md): scope, phases, acceptance tests.
 7. [Design Principles and Decisions](docs/07-design-principles-and-decisions.md): the principles; decisions are ADRs in [docs/adr/](docs/adr/README.md).
+8. [Test Strategy](docs/08-test-strategy.md): how generative and exhaustive testing prove the boundary, layered on the example suite.
 
 ## Requirements
 
