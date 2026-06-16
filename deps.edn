@@ -15,4 +15,20 @@
                 org.clojars.czan/stateful-check {:mvn/version "0.4.4"}}
    :main-opts ["-m" "cognitect.test-runner"]
    :exec-fn cognitect.test-runner.api/test
+   :jvm-opts ["--enable-native-access=ALL-UNNAMED"]}
+
+  ;; Pure-core coverage gate. Instruments the functional core only; the
+  ;; imperative shell (compile, ffm, core, inspect, diagnostics) is the
+  ;; named allowlist, covered by the native and lifecycle suites but not
+  ;; floored here. Run with `clojure -M:coverage`.
+  :coverage
+  {:extra-paths ["test"]
+   :extra-deps {cloverage/cloverage {:mvn/version "1.2.4"}
+                org.clojure/test.check {:mvn/version "1.1.1"}
+                org.clojars.czan/stateful-check {:mvn/version "0.4.4"}}
+   :main-opts ["-m" "cloverage.coverage"
+               "-p" "src" "-s" "test"
+               "--ns-regex" "zigar\\.(signature|type|spec|source|layout|cache)"
+               "--text" "--no-html"
+               "--fail-threshold" "90"]
    :jvm-opts ["--enable-native-access=ALL-UNNAMED"]}}}
