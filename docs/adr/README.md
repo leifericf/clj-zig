@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-Decisions made while building Zigar, newest-numbered last. Each record
+Decisions made while building clj-zig, newest-numbered last. Each record
 is one screenful: context, decision, consequences, alternatives. A
 decision stands until a later record supersedes it by name.
 
@@ -13,7 +13,7 @@ Later ADRs capture decisions made during development. Written via the
 | ADR | Decision |
 |-----|----------|
 | [01](01-name-zigar.md) | Name the experiment Zigar |
-| [02](02-clojure-library-not-language.md) | Build Zigar as a Clojure library, not a new language |
+| [02](02-clojure-library-not-language.md) | Build clj-zig as a Clojure library, not a new language |
 | [03](03-defnz-primary-form.md) | defnz is the primary function form |
 | [04](04-z-suffix-forms.md) | Zig-aware defining forms use a z suffix |
 | [05](05-return-in-signature-vector.md) | Return type lives in the signature vector |
@@ -36,3 +36,4 @@ Later ADRs capture decisions made during development. Written via the
 | [22](22-opaque-handles.md) | Handles are opaque tagged pointers the caller frees |
 | [23](23-generative-test-strategy.md) | Generative and exhaustive testing over the example suite |
 | [24](24-link-libc-in-every-library.md) | Every compiled library links libc |
+| [25](25-rename-to-clj-zig.md) | Rename the project to clj-zig |
