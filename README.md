@@ -109,6 +109,35 @@ through sdkman), point the Clojure CLI at JDK 26 for one invocation using
 JAVA_CMD="$(/usr/libexec/java_home -v 26)/bin/java" clojure -M:test
 ```
 
+## Installation
+
+Install the toolchain, then depend on Zigar. On macOS with Homebrew:
+
+```bash
+brew install zig clojure/tools/clojure
+brew install --cask temurin
+```
+
+Use your platform's usual installer elsewhere. Zigar reads `zig` from the
+path, so confirm the versions:
+
+```bash
+zig version       # 0.16.x
+java -version     # 22 or newer
+clojure --version
+```
+
+Zigar is not published to a package repository yet. Depend on it from git
+in your `deps.edn`, pinning a commit, and open native access at runtime:
+
+```clojure
+{:deps {io.github.leifericf/zigar {:git/sha "<commit-sha>"}}
+ :aliases
+ {:dev {:jvm-opts ["--enable-native-access=ALL-UNNAMED"]}}}
+```
+
+Or clone the repository and work from its REPL.
+
 ## Running the tests
 
 ```bash
