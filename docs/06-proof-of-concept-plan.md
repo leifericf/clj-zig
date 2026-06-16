@@ -30,7 +30,7 @@ These ideas came out of the original Clojure/Zig discussion. They remain interes
 - Bidirectional interop: Zig calling back into Clojure, making the relationship two-way rather than Clojure-to-Zig only.
 - Embedded Clojure from Zig: Zig hosting a JVM and the Clojure runtime to invoke Clojure functions through JNI or a similar interface.
 - Code as data across the boundary: passing Clojure code representations to an embedded Clojure runtime for evaluation, leaning on homoiconicity. Conceptually possible, but considerably more complex than ordinary function calls.
-- Richer data protocol: a serialization format or a negotiated interop protocol for exchanging rich, nested Clojure structures, should a concrete need outgrow explicit per-function contracts. See DEC-017.
+- Richer data protocol: a serialization format or a negotiated interop protocol for exchanging rich, nested Clojure structures, should a concrete need outgrow explicit per-function contracts. See ADR 17.
 
 ## Required interface
 

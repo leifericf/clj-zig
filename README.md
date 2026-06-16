@@ -42,7 +42,7 @@ flowchart TD
 4. [REPL and Execution Model](docs/04-repl-and-execution-model.md): redefinition, caching, diagnostics.
 5. [Composability and Builders](docs/05-composability-and-builders.md): data-level reuse and macros.
 6. [Proof-of-Concept Plan](docs/06-proof-of-concept-plan.md): scope, phases, acceptance tests.
-7. [Design Principles and Decisions](docs/07-design-principles-and-decisions.md): principles and the decision log.
+7. [Design Principles and Decisions](docs/07-design-principles-and-decisions.md): the principles; decisions are ADRs in [docs/adr/](docs/adr/README.md).
 
 ## Non-goals for the proof of concept
 
