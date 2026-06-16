@@ -73,6 +73,26 @@
       (define! `(core/defnz ~'stepper [~'x :i64 :ret :i64] {:zig/file ~path}))
       (is (= 105 ((the-fn 'stepper) 5))))))
 
+(deftest raw-mode-binds-a-hand-written-export-fn
+  (testing "no wrapper is generated; :zig/symbol names the bound export fn"
+    (let [dir  (scratch-dir)
+          path (write-zig dir "raw.zig"
+                          "export fn raw_add(x: i64, y: i64) i64 {\n    return x + y;\n}\n")
+          v    (define! `(core/defnz ~'r-add [~'x :i64 ~'y :i64 :ret :i64]
+                           {:zig/file ~path :zig/raw true :zig/symbol "raw_add"}))]
+      (is (= 42 ((the-fn 'r-add) 20 22)))
+      (is (= :raw (get-in (meta v) [:clj-zig/info :source-mode])))
+      (testing "the generated source is the file as written, with no export wrapper added"
+        (is (not (str/includes? (zig/generated-source v) "clj_zig_")))))))
+
+(deftest defz-can-be-file-sourced
+  (testing "a shared declaration block loads from a .zig file and bodies call it"
+    (let [dir  (scratch-dir)
+          path (write-zig dir "helpers.zig" "fn dbl(x: i64) i64 {\n    return x * 2;\n}\n")]
+      (define! `(core/defz ~'helpers {:zig/file ~path}))
+      (define! `(core/defnz ~'doubled [~'x :i64 :ret :i64] "return dbl(x);"))
+      (is (= 42 ((the-fn 'doubled) 21))))))
+
 (deftest entry-name-can-be-overridden-or-required
   (testing ":zig/fn names the entry fn when the Clojure name differs"
     (let [dir  (scratch-dir)

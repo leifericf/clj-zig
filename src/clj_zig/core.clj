@@ -312,14 +312,26 @@
             `(establish-binding-from! (var ~fn-name) '~spec '~body ~defining-file
                                       '~var-meta ~wrap))))))
 
+(defn resolve-decl-source
+  "The Zig text for a `defz` declaration: a string as-is, or the contents
+  of the `{:zig/file ...}` it names, resolved relative to `defining-file`.
+  Public because the `defz` expansion calls it at load time."
+  [decl-source defining-file]
+  (if (map? decl-source)
+    (:text (fileref/resolve-and-read defining-file (:zig/file decl-source)))
+    decl-source))
+
 (defmacro defz
   "Register a Zig declaration usable by the `defnz` bodies in this
-  namespace. It is not callable from Clojure; the Var holds its source."
+  namespace. It is not callable from Clojure; the Var holds its source.
+  The source is a string or a `{:zig/file \"shared.zig\"}` descriptor,
+  the natural home for a shared `@cImport` block and helper fns."
   [decl-name decl-source]
-  (let [the-ns (ns-name *ns*)]
-    `(do
-       (register-decl! '~the-ns '~decl-name ~decl-source)
-       (def ~decl-name ~decl-source)
+  (let [the-ns        (ns-name *ns*)
+        defining-file *file*]
+    `(let [src# (resolve-decl-source ~decl-source ~defining-file)]
+       (register-decl! '~the-ns '~decl-name src#)
+       (def ~decl-name src#)
        (alter-meta! (var ~decl-name) assoc :clj-zig/decl true)
        (var ~decl-name))))
 
