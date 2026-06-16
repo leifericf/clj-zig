@@ -85,3 +85,14 @@
                           :message message
                           :signature signature}
                          extra))))
+
+(comment
+  ;; Normalize a signature into boundary-contract data.
+  (normalize '[x :i64 y :i64 :ret :i64])
+  ;; => {:args [{:binding x :type :i64} {:binding y :type :i64}] :ret :i64}
+
+  ;; A map binding is captured for Clojure-side destructuring.
+  (normalize '[{x :x y :y} {:x :f64 :y :f64} :ret :f64])
+
+  ;; An invalid shape throws a data diagnostic.
+  (try (normalize '[x :i64]) (catch clojure.lang.ExceptionInfo e (ex-data e))))

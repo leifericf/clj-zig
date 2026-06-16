@@ -47,3 +47,11 @@
     (str "export fn " sym "(" params-str ") " (zig-type ret) " {\n"
          (indent-body body) "\n"
          "}\n")))
+
+(comment
+  (require '[zigar.spec :as spec])
+  (let [s (spec/build-spec '{:ns app.core :name add :signature [x :i64 y :i64 :ret :i64]})]
+    (print (generate s "return x + y;"))))
+  ;; export fn zigar_app_2e_core_add(x: i64, y: i64) i64 {
+  ;;     return x + y;
+  ;; }

@@ -151,3 +151,10 @@
                           :message message
                           :zigar/type-form form}
                          extra))))
+
+(comment
+  (normalize :i64)                 ;; => {:kind :scalar :name :i64}
+  (normalize [:slice :const :u8])  ;; => {:kind :slice :const? true :of {:kind :scalar :name :u8}}
+  (normalize [:optional [:array 4 :f32]])
+  (scalar-info :u64)               ;; => {:category :int :signed? false :bits 64}
+  (has-carrier? :u128))            ;; => false

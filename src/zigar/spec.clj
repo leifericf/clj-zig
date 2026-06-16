@@ -115,3 +115,13 @@
                            {:var (clojure.core/symbol (str (:ns spec)) (str (:name spec)))
                             :signature (:signature spec)})
                          extra))))
+
+(comment
+  (build-spec '{:ns app.core :name add :signature [x :i64 y :i64 :ret :i64]})
+  ;; => {:ns app.core :name add :symbol "zigar_app_2e_core_add" :params [...] :ret {...} ...}
+
+  (symbol-name 'app.core 'add)     ;; => "zigar_app_2e_core_add"
+
+  ;; A 128-bit carrier is rejected at spec time.
+  (try (build-spec '{:ns a :name f :signature [x :u128 :ret :i64]})
+       (catch clojure.lang.ExceptionInfo e (:error/code (ex-data e)))))

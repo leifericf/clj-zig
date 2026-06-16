@@ -91,3 +91,16 @@
            (object-array)
            (.invokeWithArguments handle)
            (from-return ret)))))
+
+(comment
+  ;; A whole small pipeline: build -> compile -> bind -> call.
+  (require '[zigar.spec :as spec] '[zigar.source :as source] '[zigar.compile :as compile])
+  (let [s   (spec/build-spec '{:ns app.core :name add :signature [x :i64 y :i64 :ret :i64]})
+        dir (str (java.nio.file.Files/createTempDirectory
+                  "zigar" (make-array java.nio.file.attribute.FileAttribute 0)))
+        lib (compile/compile! {:source (source/generate s "return x + y;")
+                               :source-path (str dir "/source.zig")
+                               :library-path (str dir "/libadd." (compile/dynamic-library-extension))
+                               :ctx {:var 'app.core/add :signature (:signature s)}})
+        add (bind s (:library lib))]
+    (add 20 22)))  ;; => 42
