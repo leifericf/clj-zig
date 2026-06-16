@@ -24,8 +24,8 @@ Clojure represents a handle as a tagged value carrying `T`'s name and the
 native pointer. The caller never dereferences or inspects it; it holds
 the handle and passes it back to functions that take `[:handle T]`.
 A call rejects a handle whose tag is not `T` with
-`:zigar/handle-type-mismatch`, and the spec builder rejects `[:handle T]`
-over a `T` that is not a named-type symbol with `:zigar/unsupported-handle`.
+`:clj-zig/handle-type-mismatch`, and the spec builder rejects `[:handle T]`
+over a `T` that is not a named-type symbol with `:clj-zig/unsupported-handle`.
 `T` need not be a `deftypez`; the resource is opaque, so no layout is
 registered.
 
@@ -41,7 +41,7 @@ hook, so a handle never freed leaks, the same as in Zig.
 A native resource lives across calls as ordinary Clojure data the caller
 threads through, and the wrong handle type is caught before the call. The
 costs are the ones the project accepts elsewhere for explicitness. The
-caller must call the destroy function, and a dropped handle leaks. Zigar
+caller must call the destroy function, and a dropped handle leaks. clj-zig
 checks the tag but trusts the pointer, so a handle used after its resource
 is freed is a use-after-free the boundary cannot catch. The resource's Zig type
 lives in a `defz` declaration the boundary contract does not otherwise

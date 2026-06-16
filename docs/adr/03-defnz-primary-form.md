@@ -4,7 +4,7 @@ Date: 2026-06-16
 
 ## Context
 
-Zigar needs a primary form for defining a Clojure-callable, Zig-backed
+clj-zig needs a primary form for defining a Clojure-callable, Zig-backed
 function.
 
 ## Decision

@@ -27,4 +27,4 @@ deferred directions).
 Serialization (EDN, JSON, or a custom binary format) and a negotiated
 interop protocol were both considered. Each handles rich nested data
 well, but both push arbitrary Clojure data across the seam,
-reintroducing the marshalling cost and ambiguity Zigar exists to avoid.
+reintroducing the marshalling cost and ambiguity clj-zig exists to avoid.

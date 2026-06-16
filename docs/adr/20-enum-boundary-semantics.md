@@ -28,7 +28,7 @@ is needed.
 
 On the Clojure side an argument keyword maps to its integer value through
 the member table, and a keyword that names no member is rejected at call
-time with `:zigar/unknown-enum-member`. A return integer maps back to its
+time with `:clj-zig/unknown-enum-member`. A return integer maps back to its
 member keyword; an integer with no matching member returns as the raw
 integer, total and lossless. Both positions are supported because an enum
 is scalar-sized.

@@ -53,7 +53,7 @@ JVM native library unloading is awkward. Recompiled forms should produce fresh a
 Example layout:
 
 ```text
-.zigar/cache/
+.clj-zig/cache/
   macos-aarch64/
     app.core/add-83a1c0/
       source.zig
@@ -101,7 +101,7 @@ Everything should hang off Vars.
 (zig/clean!)
 ```
 
-`zig/source` returns the Zig body as written. `zig/generated-source` returns the full wrapper Zigar generates around it.
+`zig/source` returns the Zig body as written. `zig/generated-source` returns the full wrapper clj-zig generates around it.
 
 ## Diagnostic shape
 
@@ -113,7 +113,7 @@ Diagnostics should be data.
  :message "Could not compile defnz app.core/add."
  :var 'app.core/add
  :signature '[x :i64 y :i64 :ret :i64]
- :zig/source-path ".zigar/cache/.../source.zig"
+ :zig/source-path ".clj-zig/cache/.../source.zig"
  :zig/stderr "..."
  :zig/exit-code 1}
 ```
@@ -129,7 +129,7 @@ Signature:
    :ret :i64]
 
 Generated Zig:
-  .zigar/cache/macos-aarch64/app.core/add-83a1c0/source.zig
+  .clj-zig/cache/macos-aarch64/app.core/add-83a1c0/source.zig
 
 Zig error:
   source.zig:7:12: error: expected type 'i64', found '[]const u8'

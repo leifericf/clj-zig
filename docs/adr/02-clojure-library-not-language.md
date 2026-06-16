@@ -1,4 +1,4 @@
-# ADR 02: Build Zigar as a Clojure library, not a new language
+# ADR 02: Build clj-zig as a Clojure library, not a new language
 
 Date: 2026-06-16
 
@@ -9,7 +9,7 @@ dialect, or building a library that bridges the two existing languages.
 
 ## Decision
 
-Build Zigar as a Clojure library and boundary-contract system, not a
+Build clj-zig as a Clojure library and boundary-contract system, not a
 new Lisp or Zig dialect.
 
 ## Consequences

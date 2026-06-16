@@ -1,6 +1,6 @@
-# Zigar
+# clj-zig
 
-[![CI](https://github.com/leifericf/zigar/actions/workflows/ci.yml/badge.svg)](https://github.com/leifericf/zigar/actions/workflows/ci.yml)
+[![CI](https://github.com/leifericf/clj-zig/actions/workflows/ci.yml/badge.svg)](https://github.com/leifericf/clj-zig/actions/workflows/ci.yml)
 ![Zig 0.16](https://img.shields.io/badge/Zig-0.16-f7a41d?logo=zig&logoColor=white)
 ![Java 22+](https://img.shields.io/badge/Java-22%2B-007396?logo=openjdk&logoColor=white)
 
@@ -8,7 +8,7 @@ An experiment in defining ordinary Clojure functions backed by real Zig.
 
 Stay in the REPL, define a function in a familiar shape, and drop into Zig only where native performance, explicit layout, comptime, or low-level control earns its keep.
 
-The name shortens `Zigarette`: to a Clojure programmer, native code can feel a little dirty, like smoking. It also inverts "close, but no cigar." Zigar aims for the opposite, a narrowly achieved success.
+The name is descriptive rather than clever: `clj` for Clojure, `zig` for the Zig that backs each function.
 
 ## Core idea
 
@@ -56,7 +56,7 @@ Named boundary types cross by value. A `defrecordz` returns a Clojure record:
 ;; => #user.Point{:x 2.0, :y 3.0}
 ```
 
-A `defenumz` member bridges to a keyword. Zigar copies an `[:owned [:slice T]]` return into a vector and frees the native memory; a `[:handle T]` is an opaque native resource the caller frees. Errors cross as data and allocations stay explicit. The [Boundary Contract](docs/03-boundary-contract.md) lists the full type vocabulary.
+A `defenumz` member bridges to a keyword. clj-zig copies an `[:owned [:slice T]]` return into a vector and frees the native memory; a `[:handle T]` is an opaque native resource the caller frees. Errors cross as data and allocations stay explicit. The [Boundary Contract](docs/03-boundary-contract.md) lists the full type vocabulary.
 
 ## Inspect and redefine
 
@@ -84,7 +84,7 @@ flowchart TD
 
 ## Reading order
 
-1. [Vision Brief](docs/01-vision-brief.md): what Zigar is, who it serves, what counts as success.
+1. [Vision Brief](docs/01-vision-brief.md): what clj-zig is, who it serves, what counts as success.
 2. [Interface Design](docs/02-interface-design.md): `defnz` and the family of z-suffixed forms.
 3. [Boundary Contract](docs/03-boundary-contract.md): how values cross and the type vocabulary.
 4. [REPL and Execution Model](docs/04-repl-and-execution-model.md): redefinition, caching, diagnostics.
@@ -95,10 +95,10 @@ flowchart TD
 
 ## Requirements
 
-- **Java 22 or newer.** Zigar uses the finalized Foreign Function & Memory
+- **Java 22 or newer.** clj-zig uses the finalized Foreign Function & Memory
   API (JEP 454); `--enable-preview` is not required. The only flag the JVM
   needs is `--enable-native-access=ALL-UNNAMED`, which the `:test` alias sets.
-- **Zig 0.16.** Zigar shells out to `zig` to compile generated source.
+- **Zig 0.16.** clj-zig shells out to `zig` to compile generated source.
 - **Clojure CLI** (`deps.edn`, not Leiningen).
 
 Development runs on JDK 26. If your shell's default JDK is older (for example
@@ -111,14 +111,14 @@ JAVA_CMD="$(/usr/libexec/java_home -v 26)/bin/java" clojure -M:test
 
 ## Installation
 
-Install the toolchain, then depend on Zigar. On macOS with Homebrew:
+Install the toolchain, then depend on clj-zig. On macOS with Homebrew:
 
 ```bash
 brew install zig clojure/tools/clojure
 brew install --cask temurin
 ```
 
-Use your platform's usual installer elsewhere. Zigar reads `zig` from the
+Use your platform's usual installer elsewhere. clj-zig reads `zig` from the
 path, so confirm the versions:
 
 ```bash
@@ -127,11 +127,11 @@ java -version     # 22 or newer
 clojure --version
 ```
 
-Zigar is not published to a package repository yet. Depend on it from git
+clj-zig is not published to a package repository yet. Depend on it from git
 in your `deps.edn`, pinning a commit, and open native access at runtime:
 
 ```clojure
-{:deps {io.github.leifericf/zigar {:git/sha "<commit-sha>"}}
+{:deps {io.github.leifericf/clj-zig {:git/sha "<commit-sha>"}}
  :aliases
  {:dev {:jvm-opts ["--enable-native-access=ALL-UNNAMED"]}}}
 ```

@@ -1,16 +1,16 @@
-# Zigar agent guide
+# clj-zig agent guide
 
 The design lives in `docs/` (start at `README.md`); the design
 principles are in `docs/07-design-principles-and-decisions.md` and the
 decisions are ADRs in `docs/adr/`. This file covers only how to work,
-not what Zigar is.
+not what clj-zig is.
 
 The project is pre-code. The dossier is the spec; the skills below are
 the discipline.
 
 ## What shapes the code
 
-- Clojure-first: Zigar is a Clojure library. The Zig is generated
+- Clojure-first: clj-zig is a Clojure library. The Zig is generated
   wrapper source plus the user's body.
 - Functional core, imperative shell (ADR 16): parsing, normalization,
   spec construction, and source generation are pure; compiling,

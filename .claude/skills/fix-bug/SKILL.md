@@ -18,7 +18,7 @@ The discipline, in order, do not skip steps:
    fix lands without a confirmed repro; "can't reproduce" goes back to
    the reporter with what you tried.
 2. **Failing test first.** Write the regression test in the right
-   surface (write-tests: pure core → `test/zigar/*_test.clj`, native →
+   surface (write-tests: pure core → `test/clj_zig/*_test.clj`, native →
    a round-trip integration test). Run it; watch it fail for the
    expected reason. Commit it first (`Tests: ...`) so history proves
    fail→pass.
@@ -27,7 +27,7 @@ The discipline, in order, do not skip steps:
    chose is not a bug; report that back instead of fixing it. Then fix at the
    source: the core function, the generator, or the shell defect, never
    a caller-side special case and never a test adjustment. Classify the
-   gap: a real Zigar defect (fix here), an upstream platform difference
+   gap: a real clj-zig defect (fix here), an upstream platform difference
    (document at the site), or harness debt (fix the harness).
 4. **Fix smallest-sufficient.** If the cause is in another namespace
    than expected, follow it, but say so.

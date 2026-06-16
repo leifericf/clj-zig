@@ -1,16 +1,16 @@
 ---
 name: write-zig
-description: Recipe for the Zig Zigar generates and the Zig it compiles: wrapper source emitted by zigar.source, the user's defnz body, and hand-written Zig test fixtures. Invoked when writing or generating Zig.
+description: Recipe for the Zig clj-zig generates and the Zig it compiles: wrapper source emitted by clj-zig.source, the user's defnz body, and hand-written Zig test fixtures. Invoked when writing or generating Zig.
 user-invocable: false
 ---
 
 # write-zig
 
-Zigar has no hand-maintained Zig source tree. "Writing Zig" here means
+clj-zig has no hand-maintained Zig source tree. "Writing Zig" here means
 one of three things, and the standard for all of them is
 `.claude/skills/check-style/references/zig-style.md` (read it first):
 
-1. **Wrapper generation** (`zigar.source`). The Clojure code that
+1. **Wrapper generation** (`clj-zig.source`). The Clojure code that
    emits Zig. The emitted source must be readable Zig that passes `zig
    fmt --check` and follows zig-style.md: deterministic symbol names
    (so the cache key is stable, docs/04), pointer-plus-length wrappers
@@ -21,7 +21,7 @@ one of three things, and the standard for all of them is
 2. **The user's body.** Real Zig inside `defnz`, never a weakened DSL
    (ADR 02). The generated wrapper provides ergonomic locals
    (`xs: []const f64`); inside the body, normal Zig is free: comptime,
-   allocators, SIMD, C imports, packed structs. Zigar does not model or
+   allocators, SIMD, C imports, packed structs. clj-zig does not model or
    constrain these internals (ADR 09).
 3. **Test fixtures.** Hand-written `.zig` used by tests. Follow
    zig-style.md fully; allocating tests use `std.testing.allocator`.

@@ -21,7 +21,7 @@ flag only:
 2. **Core/shell leakage.** IO, a `zig` invocation, a filesystem write,
    or a Var rebinding inside a function that belongs to the pure core
    (ADR 16), or pure decision logic buried in the shell where a test
-   can't reach it. This is the highest-value style finding in Zigar.
+   can't reach it. This is the highest-value style finding in clj-zig.
 3. **Macro overreach.** A `z`-suffixed macro doing work that belongs in
    a data function, so the result is unreachable without the macro
    (docs/05 requires the decomposition).
@@ -34,7 +34,7 @@ When the shard includes prose (docs, DEC entries, docstrings), the
 standard is `references/prose-style.md` in this skill. Apply it the
 same way.
 
-Do not flag: generated artifacts under `.zigar/cache/`, anything an
+Do not flag: generated artifacts under `.clj-zig/cache/`, anything an
 ADR (`docs/adr/`) records as deliberate, or a documented upstream
 platform difference.
 

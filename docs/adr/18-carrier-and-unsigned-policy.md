@@ -22,7 +22,7 @@ truncated. `:void` and `:noreturn` carry no value, and a `:void` return
 is `nil`.
 
 A scalar with no FFM carrier is rejected when the spec is built, with
-error code `:zigar/unsupported-carrier`: the 128-bit integers `:i128`
+error code `:clj-zig/unsupported-carrier`: the 128-bit integers `:i128`
 and `:u128`, and the 16, 80, and 128 bit floats `:f16`, `:f80`, `:f128`.
 
 ## Consequences

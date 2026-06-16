@@ -1,15 +1,15 @@
 ---
 name: write-tests
-description: Recipe for writing Zigar tests: surface selection (Clojure core vs native round-trip), clojure.test conventions, spec-first tests that land before implementation. Invoked when writing tests.
+description: Recipe for writing clj-zig tests: surface selection (Clojure core vs native round-trip), clojure.test conventions, spec-first tests that land before implementation. Invoked when writing tests.
 user-invocable: false
 ---
 
 # write-tests
 
-Write tests for Zigar. Pick the surface first:
+Write tests for clj-zig. Pick the surface first:
 
 - **Pure core behavior** (parsing, normalization, spec construction,
-  source generation, hashing) → `test/zigar/<area>_test.clj`, exercised
+  source generation, hashing) → `test/clj_zig/<area>_test.clj`, exercised
   directly with data in and data out. These are the bulk of the suite,
   because the core is where correctness is decided.
 - **Native round-trip** (compile, load, call) → an integration test
@@ -23,7 +23,7 @@ Write tests for Zigar. Pick the surface first:
 Rules of the suite:
 
 1. **`clojure.test`.** `deftest`/`is`, namespaces
-   `zigar.<area>-test`, one per area under `test/zigar/`.
+   `clj-zig.<area>-test`, one per area under `test/clj_zig/`.
 2. **Self-cleaning fixtures.** Scratch state (cache dirs, compiled
    libraries) lives under a test-owned /tmp path, recreated at the top
    of each `deftest`. Tests pass in any order and on rerun.

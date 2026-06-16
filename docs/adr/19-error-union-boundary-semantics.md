@@ -17,7 +17,7 @@ error set named by symbol, including the builtin `anyerror`; `T` is a
 value-carrying scalar or `:void`. The user body returns `E!T` and may
 either `return error.X` or return a value.
 
-Zigar generates an inner function holding the user body and an export
+clj-zig generates an inner function holding the user body and an export
 wrapper that calls it with `catch`. On success the wrapper returns the
 value (or nothing, for `:void`) and reports no error. On failure it
 copies `@errorName(e)` into a caller-provided byte buffer and writes the
@@ -30,7 +30,7 @@ as data, not a thrown exception, so a caller branches on the result: a
 keyword is the error, anything else is the value.
 
 An error union in argument position is rejected when the spec is built,
-with `:zigar/unsupported-error-union`, as is a value type that is
+with `:clj-zig/unsupported-error-union`, as is a value type that is
 neither a scalar nor `:void`.
 
 ## Consequences

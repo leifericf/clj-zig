@@ -16,9 +16,9 @@ the bytes to Clojure and settling who frees them.
 
 `[:owned T]` and `[:borrowed T]` are supported in return position only;
 an ownership wrapper in argument position is rejected when the spec is
-built, with `:zigar/unsupported-ownership`. For now `T` must be a slice
+built, with `:clj-zig/unsupported-ownership`. For now `T` must be a slice
 of a carrier scalar, `[:slice S]` or `[:slice :const S]`; any other
-wrapped type is rejected with `:zigar/unsupported-ownership`.
+wrapped type is rejected with `:clj-zig/unsupported-ownership`.
 
 Both forms copy the slice into an immutable Clojure vector of the element
 values at the boundary, never a native-backed wrapper. They differ only
@@ -28,13 +28,13 @@ For `:owned`, the body allocates the slice with `std.heap.c_allocator`,
 and the generator provides `const std = @import("std");` and a free shim
 `<symbol>__free`. The export wrapper carries two trailing out-parameters,
 a `*usize` for the pointer and a `*usize` for the length, writes
-`@intFromPtr(result.ptr)` and `result.len`, and returns `void`. Zigar
+`@intFromPtr(result.ptr)` and `result.len`, and returns `void`. clj-zig
 reads the pointer and length, copies the elements into the vector, then
 calls the free shim.
 
 For `:borrowed`, the body returns a view it still owns, such as a
 sub-slice of an argument. The wrapper uses the same two out-parameters,
-Zigar copies the elements, and nothing is freed. The view is read before
+clj-zig copies the elements, and nothing is freed. The view is read before
 the call's confined arena closes, so its lifetime stays within the call.
 
 The lifetime rules stay conservative: Clojure receives an immutable copy,

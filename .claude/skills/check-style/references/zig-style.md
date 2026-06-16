@@ -1,13 +1,13 @@
-# Zigar Zig style: the checkable standard
+# clj-zig Zig style: the checkable standard
 
-The checkable Zig standard for Zigar, grounded in the official language
+The checkable Zig standard for clj-zig, grounded in the official language
 reference, the Zig standard library, and conventions from major Zig
 codebases (TigerBeetle, Bun, Mach, the std lib). `check-style` applies
 this file; `write-zig` writes to it.
 
-The Zig in Zigar is not a hand-maintained source tree. It is two
-things: the wrapper source Zigar **generates** from a boundary contract
-(emitted by `zigar.source`), and the **body** a user writes inside a
+The Zig in clj-zig is not a hand-maintained source tree. It is two
+things: the wrapper source clj-zig **generates** from a boundary contract
+(emitted by `clj-zig.source`), and the **body** a user writes inside a
 `defnz` form. Both must read as ordinary, clean Zig. Acceptance
 requires "readable Zig source" and "pointer-plus-length wrappers for
 slices" (docs/06); this file is what "readable" means. Hand-written Zig
@@ -39,8 +39,8 @@ guide covers what `zig fmt` cannot.
   `i` is a fine loop index. Units last, descending significance:
   `latency_ms_min`.
 - Generated symbol names are derived from the Var, stable, and
-  collision-free (e.g. `zigar_app_core_add`); the scheme lives in
-  `zigar.source` and must stay deterministic so the cache key is stable
+  collision-free (e.g. `clj_zig_app_core_add`); the scheme lives in
+  `clj-zig.source` and must stay deterministic so the cache key is stable
   (docs/04).
 
 ## 2. Formatting
@@ -85,7 +85,7 @@ judgment; the compiler catches only some needless `var`.
 ### Diagnostics at the boundary
 
 Zig errors carry no payload. When the user's body or a generated
-wrapper fails to compile, the failure surfaces through Zigar's
+wrapper fails to compile, the failure surfaces through clj-zig's
 structured diagnostic (docs/04), assembled in the Clojure shell: the
 Var and signature first, then the generated `source.zig` path, then the
 Zig compiler's stderr mapped under `:zig/stderr`. The Zig side does not
@@ -95,7 +95,7 @@ failing operation, never a bare "error".
 ## 6. Memory and the boundary
 
 Zig has no hidden allocations; every allocation is explicit and paired
-with a free. At Zigar's boundary the lifetime rules are conservative
+with a free. At clj-zig's boundary the lifetime rules are conservative
 (docs/03) and the generated wrapper must honor them:
 
 - Scalars are copied across the boundary.
@@ -177,7 +177,7 @@ names and small functions carry the meaning.
   bound. Size and index arithmetic on values crossing the boundary uses
   checked ops (`std.math.add`/`mul`) guarding the access; `+%`/`*%`
   only where wrap is intended and bounded.
-- Unsigned integers beyond signed JVM ranges need Zigar's explicit
+- Unsigned integers beyond signed JVM ranges need clj-zig's explicit
   return policy before they cross back (docs/03); the wrapper does not
   silently truncate.
 - Platform branches are comptime-gated on `builtin.target.os.tag` /

@@ -21,7 +21,7 @@
 
 ## Decisions
 
-The decisions that shaped Zigar are recorded as ADRs in
+The decisions that shaped clj-zig are recorded as ADRs in
 [`adr/`](adr/README.md). ADR 01-17 are the founding decisions, migrated
 from this document; later ADRs capture decisions made during
 development.

@@ -10,7 +10,7 @@ them.
 
 ## The shape of the suite
 
-Zigar is a fat pure core and a thin real shell. Parsing, normalization,
+clj-zig is a fat pure core and a thin real shell. Parsing, normalization,
 spec construction, layout, source generation, and hashing take data and
 return data; compiling, loading, and rebinding are the edge. The core is
 where correctness is decided, so most of the testing weight sits there,
@@ -85,6 +85,6 @@ runs the lifecycle model. `cloverage` measures and floors the pure core.
 - A failing property has found a real bug. Fix it in a dedicated change,
   and pin the shrunk minimal case as a regression beside the property.
 - The generators are ordinary code under the same core-and-shell
-  discipline as the library, in `test/zigar/gen.clj`.
+  discipline as the library, in `test/clj_zig/gen.clj`.
 - The end-to-end matrix reuses the content-addressed cache, so an
   identical shape compiles once and the suite stays affordable.

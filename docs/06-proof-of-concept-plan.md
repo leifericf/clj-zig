@@ -78,11 +78,11 @@ zig/generate-source
 ## Suggested repository layout
 
 ```text
-zigar/
+clj-zig/
   deps.edn
   README.md
   src/
-    zigar/
+    clj-zig/
       core.clj
       signature.clj
       type.clj
@@ -94,7 +94,7 @@ zigar/
       diagnostics.clj
       inspect.clj
   test/
-    zigar/
+    clj-zig/
       signature_test.clj
       type_test.clj
       source_test.clj

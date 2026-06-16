@@ -1,4 +1,4 @@
-# Zigar prose style: the writing standard
+# clj-zig prose style: the writing standard
 
 Applies to everything written for humans: the design dossier (`docs/`),
 decision entries in `docs/07-design-principles-and-decisions.md`,

@@ -4,7 +4,7 @@ Date: 2026-06-16
 
 ## Context
 
-Zigar's pipeline mixes pure transformation (parse, normalize, generate)
+clj-zig's pipeline mixes pure transformation (parse, normalize, generate)
 with side effects (compile, write, load, rebind).
 
 ## Decision

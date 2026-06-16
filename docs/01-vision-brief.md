@@ -2,11 +2,11 @@
 
 ## One-sentence description
 
-Zigar is an experiment/demo/proof-of-concept for a Clojure-first, data-oriented interface to ordinary Clojure functions backed by real Zig implementations.
+clj-zig is an experiment/demo/proof-of-concept for a Clojure-first, data-oriented interface to ordinary Clojure functions backed by real Zig implementations.
 
-## What Zigar is
+## What clj-zig is
 
-Zigar is, for now:
+clj-zig is, for now:
 
 - a proof-of-concept Clojure library;
 - a REPL-native Zig function bridge;
@@ -14,9 +14,9 @@ Zigar is, for now:
 - a way to expose real Zig from Clojure without making users manage shared libraries directly;
 - a foundation for exploring Clojure-side builders that compose Zig boundary types as data.
 
-## What Zigar is not
+## What clj-zig is not
 
-Zigar is not:
+clj-zig is not:
 
 - a new language;
 - a Zig-like DSL;
@@ -29,11 +29,9 @@ Zigar is not:
 
 ## Name
 
-The working name is `Zigar`.
+The name is `clj-zig`.
 
-It comes from `Zigarette`: to a Clojure programmer, writing low-level native Zig inside a high-level Lisp workflow may feel a little dirty and unhealthy, like smoking.
-
-It also plays on "close, but no cigar." The intended joke is inverted: Zigar is not about narrowly missing success, but narrowly achieving it. The demo should be small, sharp, and successful enough to prove the UX.
+It is descriptive rather than clever: `clj` for Clojure, `zig` for the Zig that backs each function. The library defines ordinary Clojure functions whose bodies are real Zig, so the name says what it does.
 
 ## Target users
 
@@ -54,7 +52,7 @@ Clojure: data, macros, homoiconicity, REPL, composition, host orchestration
 Zig: explicit types, layout, allocators, comptime, C interop, performance
 ```
 
-Zigar's experimental bet is that the seam between them should be a small, explicit, Clojure-data boundary contract.
+clj-zig's experimental bet is that the seam between them should be a small, explicit, Clojure-data boundary contract.
 
 ## Product stance
 
@@ -93,7 +91,7 @@ I manually compiled and loaded a native library.
 
 ## Proof-of-concept success criteria
 
-Zigar succeeds if:
+clj-zig succeeds if:
 
 1. `defnz` feels like a natural relative of `defn`.
 2. Zig types are explicit where the native boundary needs them.

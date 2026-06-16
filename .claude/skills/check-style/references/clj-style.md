@@ -1,7 +1,7 @@
-# Zigar Clojure style: the checkable standard
+# clj-zig Clojure style: the checkable standard
 
-Applies to everything written in Clojure for Zigar: `src/zigar/*.clj`,
-`test/zigar/*_test.clj`, `dev/`, `examples/*.clj`, and any build or
+Applies to everything written in Clojure for clj-zig: `src/clj_zig/*.clj`,
+`test/clj_zig/*_test.clj`, `dev/`, `examples/*.clj`, and any build or
 tooling scripts. `check-style` applies this file; `write-clj` writes to
 it. The dossier (`docs/`) is the design spec; this file is the coding
 standard. It is normative: when a general Clojure source disagrees,
@@ -44,14 +44,14 @@ Use these terms with the meanings below.
 - Canonical JVM Clojure defines correct behavior. Follow the community
   Clojure style guide where a norm exists; do not invent house style
   where one already does.
-- Zigar's public surface is ordinary Clojure: a `defnz` form defines a
+- clj-zig's public surface is ordinary Clojure: a `defnz` form defines a
   normal Var, returns Clojure values, and redefines like `defn`
   (docs/04). Match that expectation; surprising semantics at the Clojure
   surface are findings.
 
 ## Functional core, imperative shell (ADR 16)
 
-Zigar's spine separates deciding from doing. This is the project's
+clj-zig's spine separates deciding from doing. This is the project's
 load-bearing structure, not a preference.
 
 - **Pure core:** signature parsing, type normalization, spec
@@ -87,8 +87,8 @@ load-bearing structure, not a preference.
 
 ## `ns` form and namespace structure
 
-- kebab-case namespaces under the `zigar` root: `zigar.signature`,
-  `zigar.source`. Exactly one namespace per file, one file per namespace.
+- kebab-case namespaces under the `clj-zig` root: `clj-zig.signature`,
+  `clj-zig.source`. Exactly one namespace per file, one file per namespace.
   Public API at the top, `defn-` helpers below.
 - Start each file with one `ns` form: `:require` before `:import`.
   `:require :as` over `:refer [...]` over `:refer :all`; avoid `:use`.
@@ -144,7 +144,7 @@ load-bearing structure, not a preference.
   collections throughout the core; no mutable Java collections there.
 - Use `clojure.spec` sparingly, at boundaries and for critical
   invariants, not across internal shapes that context already makes
-  obvious. Zigar's specs carry the boundary contract.
+  obvious. clj-zig's specs carry the boundary contract.
 
 ## Collections and sequences
 
@@ -230,7 +230,7 @@ load-bearing structure, not a preference.
 
 ## Tests
 
-- `clojure.test` under `test/zigar/<area>_test.clj`, with `deftest` names
+- `clojure.test` under `test/clj_zig/<area>_test.clj`, with `deftest` names
   that describe the behavior. Test the pure core directly; never mock.
   Effects run against real scratch state: a /tmp cache dir, a scratch Zig
   compile.
