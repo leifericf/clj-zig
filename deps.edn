@@ -11,7 +11,8 @@
   {:extra-paths ["test"]
    :extra-deps {io.github.cognitect-labs/test-runner
                 {:git/tag "v0.5.1" :git/sha "dfb30dd"}
-                org.clojure/test.check {:mvn/version "1.1.1"}}
+                org.clojure/test.check {:mvn/version "1.1.1"}
+                org.clojars.czan/stateful-check {:mvn/version "0.4.4"}}
    :main-opts ["-m" "cognitect.test-runner"]
    :exec-fn cognitect.test-runner.api/test
    :jvm-opts ["--enable-native-access=ALL-UNNAMED"]}}}
