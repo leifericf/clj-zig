@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+
+# Clojure / tools.deps
+/.cpcache/
+/target/
+
+# Zig
+zig-cache/
+zig-out/
+
+# Zigar artifact cache
+/.zigar/
+
+# Editor / tooling caches
+.clj-kondo/.cache/
+.lsp/.cache/
+
+# Claude Code local, per-user settings
+.claude/settings.local.json
