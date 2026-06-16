@@ -37,9 +37,9 @@
         lib-abs  (.getAbsolutePath lib-file)]
     (io/make-parents src-file)
     (spit src-file source)
-    ;; zig fmt owns formatting (CLAUDE.md); canonicalize in place. A
-    ;; syntax error here leaves the file untouched and resurfaces as the
-    ;; authoritative build error below, so its exit code is ignored.
+    ;; zig fmt owns formatting (CLAUDE.md). A syntax error here leaves the
+    ;; file untouched and resurfaces as the authoritative build error
+    ;; below, so this exit code is deliberately ignored.
     (sh/sh "zig" "fmt" src-abs :dir (.getParent src-file))
     (let [{:keys [exit err]} (sh/sh "zig" "build-lib" "-dynamic"
                                     "-O" optimize-mode
