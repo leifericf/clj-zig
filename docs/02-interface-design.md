@@ -86,6 +86,8 @@ The body is real Zig source, not a DSL.
 
 The generated wrapper provides ergonomic Zig locals such as `xs: []const f64`. Inside the body, Zig should be free to use normal Zig features.
 
+A body may instead live in a real `.zig` file, named with a `{:zig/file "name.zig"}` descriptor in place of the string. The file holds a complete Zig function the generated wrapper calls, keeping editor and `zig fmt` support; the same descriptor can link C libraries so the body may `@cImport` a C header. See [ADR 26](adr/26-external-zig-source-files.md) and [ADR 27](adr/27-compile-options-c-interop.md).
+
 ## `defz`
 
 `defz` defines Zig-side declarations that are not directly Clojure-callable.
