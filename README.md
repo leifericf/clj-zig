@@ -82,6 +82,18 @@ flowchart TD
   F --> G[ordinary Clojure Var]
 ```
 
+## Examples
+
+The [`examples/`](examples/) directory holds small, runnable programs. Load one
+in a REPL and evaluate its `(comment ...)` block. The basics cover each boundary
+type one file at a time. Four go further, into work that is hard or impossible
+from the JVM:
+
+- [`simd.clj`](examples/simd.clj): explicit SIMD over `@Vector` registers.
+- [`memory_layout.clj`](examples/memory_layout.clj): a packed native buffer mutated in place, no allocation, no GC.
+- [`bit_ops.clj`](examples/bit_ops.clj): sub-byte packing and single-instruction bit intrinsics.
+- [`inline_asm.clj`](examples/inline_asm.clj): inline assembly written into a function body.
+
 ## Reading order
 
 1. [Vision Brief](docs/01-vision-brief.md): what clj-zig is, who it serves, what counts as success.
