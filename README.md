@@ -58,6 +58,26 @@ Named boundary types cross by value. A `defrecordz` returns a Clojure record:
 
 A `defenumz` member bridges to a keyword. clj-zig copies an `[:owned [:slice T]]` return into a vector and frees the native memory; a `[:handle T]` is an opaque native resource the caller frees. Errors cross as data and allocations stay explicit. The [Boundary Contract](docs/03-boundary-contract.md) lists the full type vocabulary.
 
+## Bigger bodies and C interop
+
+A body can also live in a real `.zig` file instead of a string. The file is ordinary Zig with full editor and `zig fmt` support; the generated wrapper calls its `pub fn`. The descriptor can link C libraries too, so a body may `@cImport` a C header directly:
+
+```clojure
+(defnz hypotenuse
+  [a :f64 b :f64 :ret :f64]
+  {:zig/file "hyp.zig" :zig/link ["m"]})
+```
+
+```zig
+// hyp.zig
+const c = @cImport({ @cInclude("math.h"); });
+pub fn hypotenuse(a: f64, b: f64) f64 {
+    return c.sqrt(a * a + b * b);
+}
+```
+
+The file path resolves next to the source file, then on the classpath. See [ADR 26](docs/adr/26-external-zig-source-files.md) and [ADR 27](docs/adr/27-compile-options-c-interop.md).
+
 ## Inspect and redefine
 
 Every function is an ordinary Var carrying its spec, source, and build status:
@@ -92,7 +112,9 @@ from the JVM:
 - [`simd.clj`](examples/simd.clj): explicit SIMD over `@Vector` registers.
 - [`memory_layout.clj`](examples/memory_layout.clj): a packed native buffer mutated in place, no allocation, no GC.
 - [`bit_ops.clj`](examples/bit_ops.clj): sub-byte packing and single-instruction bit intrinsics.
-- [`inline_asm.clj`](examples/inline_asm.clj): inline assembly written into a function body.
+- [`inline_asm.clj`](examples/inline_asm.clj): inline assembly, with the bodies in sibling `.zig` files.
+
+And [`cinterop.clj`](examples/cinterop.clj) imports a C header with `@cImport` and links a C library, its body in a sibling `.zig` file.
 
 ## Reading order
 
