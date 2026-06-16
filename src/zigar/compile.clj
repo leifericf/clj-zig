@@ -41,8 +41,13 @@
     ;; untouched and resurfaces as the authoritative build error
     ;; below, so this exit code is deliberately ignored.
     (sh/sh "zig" "fmt" src-abs :dir (.getParent src-file))
+    ;; Link libc: owned and handle returns back their memory with
+    ;; `std.heap.c_allocator`, whose free is the one deallocation that is
+    ;; safe to call across the boundary. macOS links libc implicitly;
+    ;; Linux needs it requested, and a body may reach for libc anywhere.
     (let [{:keys [exit err]} (sh/sh "zig" "build-lib" "-dynamic"
                                     "-O" optimize-mode
+                                    "-lc"
                                     (str "-femit-bin=" lib-abs)
                                     src-abs
                                     :dir (.getParent src-file))]
