@@ -37,3 +37,5 @@ Later ADRs capture decisions made during development. Written via the
 | [23](23-generative-test-strategy.md) | Generative and exhaustive testing over the example suite |
 | [24](24-link-libc-in-every-library.md) | Every compiled library links libc |
 | [25](25-rename-to-clj-zig.md) | Rename the project to clj-zig |
+| [26](26-external-zig-source-files.md) | A defnz body may be sourced from a Zig file |
+| [27](27-compile-options-c-interop.md) | Compile options carry C-interop flags |
