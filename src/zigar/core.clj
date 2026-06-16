@@ -54,7 +54,7 @@
   [ns-sym]
   (let [structs (->> (vals (types-in ns-sym))
                      (sort-by (comp str :name))
-                     (map layout/zig-struct))
+                     (map layout/zig-decl))
         decls   (map :source (get @zig-decls ns-sym))]
     (str/join "\n\n" (concat structs decls))))
 
@@ -239,6 +239,27 @@
            [`(alter-meta! (var ~factory) assoc :doc ~docstring)])
        ~type-name)))
 
+(defmacro defenumz
+  "Define an enum boundary type backed by an `i32`. Members cross as
+  keywords named for each member; the Var holds the descriptor.
+
+      (defenumz ParseStatus
+        [ok 0
+         invalid 1
+         eof 2])"
+  [type-name & tail]
+  (let [[docstring members] (if (string? (first tail))
+                              [(first tail) (second tail)]
+                              [nil (first tail)])
+        the-ns     (ns-name *ns*)
+        descriptor (layout/describe-enum type-name members)]
+    `(do
+       (register-type! '~the-ns '~descriptor)
+       (def ~type-name '~descriptor)
+       (alter-meta! (var ~type-name) merge {:zigar/type-layout true}
+                    ~(when docstring {:doc docstring}))
+       (var ~type-name))))
+
 (comment
   ;; The headline workflow: a Clojure fn with a Zig body.
   (defnz add [x :i64 y :i64 :ret :i64] "return x + y;")
@@ -264,4 +285,9 @@
   ;; record-typed return rebuilds the record.
   (defrecordz Vec2 [x :f64 y :f64])
   (defnz scale [v Vec2 k :f64 :ret Vec2] "return .{ .x = v.x * k, .y = v.y * k };")
-  (scale (->Vec2 2.0 3.0) 2.0))            ;; => #user.Vec2{:x 4.0 :y 6.0}
+  (scale (->Vec2 2.0 3.0) 2.0)             ;; => #user.Vec2{:x 4.0 :y 6.0}
+
+  ;; An enum bridges Zig members and Clojure keywords.
+  (defenumz Suit [clubs 0 diamonds 1 hearts 2 spades 3])
+  (defnz red? [s Suit :ret :bool] "return s == .diamonds or s == .hearts;")
+  (red? :hearts))                          ;; => true

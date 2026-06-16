@@ -18,7 +18,7 @@
 
 (def ^:private two-to-64 (.shiftLeft BigInteger/ONE 64))
 
-(declare marshal-struct)
+(declare marshal-struct enum-member->value enum-value->member)
 
 (defn- value-layout ^ValueLayout [t]
   (let [{:keys [category bits]} (type/scalar-info (:name t))]
@@ -28,20 +28,31 @@
       :float (case bits 32 ValueLayout/JAVA_FLOAT 64 ValueLayout/JAVA_DOUBLE)
       :bool  ValueLayout/JAVA_BOOLEAN)))
 
+(defn- enum-type?
+  "True when a resolved named type is a `defenumz` enum, which crosses as
+  its backing scalar rather than a struct pointer."
+  [t]
+  (boolean (get-in t [:layout :enum])))
+
 (defn- param-layouts
   "The native layouts one boundary param crosses as. A scalar is one
-  layout; a pointer, array, or named struct is an address; a slice is an
-  address and a `usize` length."
+  layout; a pointer, array, or named struct is an address; an enum is its
+  backing scalar; a slice is an address and a `usize` length."
   [{:keys [type]}]
   (case (:kind type)
-    :slice                                    [ValueLayout/ADDRESS ValueLayout/JAVA_LONG]
-    (:ptr :manyptr :array :optional :named)   [ValueLayout/ADDRESS]
+    :slice                            [ValueLayout/ADDRESS ValueLayout/JAVA_LONG]
+    :named                            (if (enum-type? type)
+                                        [(value-layout (-> type :layout :backing))]
+                                        [ValueLayout/ADDRESS])
+    (:ptr :manyptr :array :optional)  [ValueLayout/ADDRESS]
     [(value-layout type)]))
 
 (defn- return-layout ^ValueLayout [ret]
-  (if (= :optional (:kind ret))
-    ValueLayout/ADDRESS
-    (value-layout ret)))
+  (cond
+    (= :optional (:kind ret))                ValueLayout/ADDRESS
+    (and (= :named (:kind ret))
+         (enum-type? ret))                   (value-layout (-> ret :layout :backing))
+    :else                                    (value-layout ret)))
 
 (defn- descriptor ^FunctionDescriptor [spec]
   (let [ret         (:ret spec)
@@ -49,7 +60,7 @@
         ;; error-name buffer and its length; a struct return carries one
         ;; out-pointer the result is written through. Both export `void`.
         eu?         (= :error-union (:kind ret))
-        struct-ret? (= :named (:kind ret))
+        struct-ret? (and (= :named (:kind ret)) (not (enum-type? ret)))
         extra       (cond eu?         [ValueLayout/ADDRESS ValueLayout/ADDRESS]
                           struct-ret? [ValueLayout/ADDRESS]
                           :else       [])
@@ -118,7 +129,16 @@
     :optional (if (nil? arg)
                 {:carriers [MemorySegment/NULL]}
                 (marshal-arg arena (update param :type :of) arg))
-    :named    {:carriers [(marshal-struct arena (-> param :type :layout) arg)]}
+    :named    (let [layout (-> param :type :layout)]
+                (if (:enum layout)
+                  (let [value (enum-member->value layout arg)]
+                    (when (nil? value)
+                      (throw (ex-info (str arg " is not a member of enum " (:name layout) ".")
+                                      {:level :error
+                                       :error/code :zigar/unknown-enum-member
+                                       :type (:name layout) :member arg})))
+                    {:carriers [(int value)]})
+                  {:carriers [(marshal-struct arena layout arg)]}))
     {:carriers [(to-carrier param arg)]}))
 
 (defn- coerce-scalar
@@ -193,6 +213,21 @@
                    (coerce-scalar type (read-scalar seg type offset))))
           {} (:fields descriptor)))
 
+(defn- enum-member->value
+  "The backing integer for an enum member keyword, or nil when no member
+  of `descriptor` carries that name."
+  [descriptor kw]
+  (some (fn [{:keys [name value]}] (when (= kw (keyword (str name))) value))
+        (:values descriptor)))
+
+(defn- enum-value->member
+  "The member keyword for an enum backing integer, or the raw integer when
+  no member of `descriptor` carries that value."
+  [descriptor v]
+  (or (some (fn [{:keys [name value]}] (when (= value v) (keyword (str name))))
+            (:values descriptor))
+      v))
+
 (defn- deref-optional
   "Read the pointee of an `:optional` single-item pointer return: nil when
   the address is null, else the coerced scalar the pointer addresses."
@@ -210,6 +245,8 @@
   (cond
     (type/void-type? ret)     nil
     (= :optional (:kind ret)) (deref-optional ret v)
+    (and (= :named (:kind ret))
+         (enum-type? ret))    (enum-value->member (:layout ret) (long v))
     :else                     (coerce-scalar ret v)))
 
 (def ^:private error-buffer-bytes
@@ -272,8 +309,9 @@
                   (when-not (type/void-type? value-t) (coerce-scalar value-t result)))
                 (read-error-name errbuf n)))
             ;; A struct return is written through a caller-allocated
-            ;; out-segment, then read back into a Clojure map.
-            (if (= :named (:kind ret))
+            ;; out-segment, then read back into a Clojure map. An enum
+            ;; return crosses as its backing int and takes the plain path.
+            (if (and (= :named (:kind ret)) (not (enum-type? ret)))
               (let [desc (:layout ret)
                     out  ^MemorySegment (.allocate arena (long (:size desc))
                                                    (long (:align desc)))]

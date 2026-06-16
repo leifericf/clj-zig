@@ -78,6 +78,34 @@
   (assoc (describe type-name fields)
          :record (symbol (str record-ns) (str "map->" type-name))))
 
+(defn describe-enum
+  "The descriptor for a `defenumz` type: an `i32`-backed enum whose
+  members cross as keywords. Throws for an odd member list or a member
+  with a non-integer value."
+  [type-name members]
+  (when (odd? (count members))
+    (throw (ex-info (str type-name " needs a value for every member.")
+                    {:level :error :error/code :zigar/malformed-members
+                     :type type-name})))
+  {:name    type-name
+   :enum    true
+   :backing {:kind :scalar :name :i32}
+   :values  (mapv (fn [[mname value]]
+                    (when-not (integer? value)
+                      (throw (ex-info (str "Member " mname " of " type-name
+                                           " needs an integer value.")
+                                      {:level :error
+                                       :error/code :zigar/non-integer-member
+                                       :type type-name :member mname})))
+                    {:name mname :value (long value)})
+                  (partition 2 members))})
+
+(defn enum?
+  "True when a layout descriptor describes a `defenumz` enum rather than a
+  struct or record."
+  [descriptor]
+  (boolean (:enum descriptor)))
+
 (defn zig-struct
   "The `extern struct` declaration the generated Zig uses for a layout."
   [{type-name :name :keys [fields]}]
@@ -86,6 +114,21 @@
                              (str "    " fname ": " (name (:name t)) ","))
                            fields))
        "\n};\n"))
+
+(defn zig-enum
+  "The `enum(i32)` declaration the generated Zig uses for an enum layout."
+  [{type-name :name :keys [values]}]
+  (str "const " type-name " = enum(i32) {\n"
+       (str/join "\n" (map (fn [{mname :name value :value}]
+                             (str "    " mname " = " value ","))
+                           values))
+       "\n};\n"))
+
+(defn zig-decl
+  "The Zig declaration for a named type: an `enum` for a `defenumz` and an
+  `extern struct` for a `deftypez` or `defrecordz`."
+  [descriptor]
+  (if (enum? descriptor) (zig-enum descriptor) (zig-struct descriptor)))
 
 (comment
   (describe 'Point '[x :f64 y :f64])

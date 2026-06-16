@@ -31,3 +31,4 @@ Later ADRs capture decisions made during development. Written via the
 | [17](17-explicit-contracts-over-marshalling.md) | Explicit boundary contracts over data marshalling |
 | [18](18-carrier-and-unsigned-policy.md) | Boundary carriers and the unsigned-return policy |
 | [19](19-error-union-boundary-semantics.md) | Error-union boundary semantics |
+| [20](20-enum-boundary-semantics.md) | Enum boundary semantics |

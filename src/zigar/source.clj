@@ -41,6 +41,12 @@
   [{:keys [kind] :as t}]
   (str (case kind :ptr "*" :manyptr "[*]") (pointee t)))
 
+(defn- enum-type?
+  "True when a resolved named type is a `defenumz` enum, which crosses as
+  a scalar backing int rather than a struct pointer."
+  [t]
+  (boolean (get-in t [:layout :enum])))
+
 (defn- param-decls
   "The Zig parameter declarations for one boundary param. A scalar,
   pointer, or optional pointer is one declaration; a fixed-size array
@@ -53,7 +59,9 @@
     (:ptr :manyptr)   [(str binding ": " (pointer-type type))]
     :optional         [(str binding ": " (zig-type type))]
     :array            [(str binding "_ptr: *const [" (:length type) "]" (zig-type (:of type)))]
-    :named            [(str binding "_ptr: *const " (zig-type type))]
+    :named            (if (enum-type? type)
+                        [(str binding ": " (zig-type type))]
+                        [(str binding "_ptr: *const " (zig-type type))])
     [(str binding ": " (zig-type type))]))
 
 (defn- reconstruction
@@ -62,7 +70,9 @@
   [{:keys [binding type]}]
   (case (:kind type)
     :slice          (str "const " binding " = " binding "_ptr[0.." binding "_len];")
-    (:array :named) (str "const " binding " = " binding "_ptr.*;")
+    :array          (str "const " binding " = " binding "_ptr.*;")
+    :named          (when-not (enum-type? type)
+                      (str "const " binding " = " binding "_ptr.*;"))
     nil))
 
 (defn- param-args
@@ -71,7 +81,8 @@
   [{:keys [binding type]}]
   (case (:kind type)
     :slice          [(str binding "_ptr") (str binding "_len")]
-    (:array :named) [(str binding "_ptr")]
+    :array          [(str binding "_ptr")]
+    :named          (if (enum-type? type) [(str binding)] [(str binding "_ptr")])
     [(str binding)]))
 
 (defn- indent-body
@@ -155,9 +166,10 @@
   direct `export fn`."
   [{:keys [ret] :as spec} body]
   (cond
-    (= :error-union (:kind ret)) (generate-error-union spec body)
-    (= :named (:kind ret))       (generate-struct-return spec body)
-    :else                        (generate-plain spec body)))
+    (= :error-union (:kind ret))                  (generate-error-union spec body)
+    (and (= :named (:kind ret)) (enum-type? ret)) (generate-plain spec body)
+    (= :named (:kind ret))                        (generate-struct-return spec body)
+    :else                                         (generate-plain spec body)))
 
 (comment
   (require '[zigar.spec :as spec])
