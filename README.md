@@ -1,5 +1,9 @@
 # Zigar
 
+[![CI](https://github.com/leifericf/zigar/actions/workflows/ci.yml/badge.svg)](https://github.com/leifericf/zigar/actions/workflows/ci.yml)
+![Zig 0.16](https://img.shields.io/badge/Zig-0.16-f7a41d?logo=zig&logoColor=white)
+![Java 22+](https://img.shields.io/badge/Java-22%2B-007396?logo=openjdk&logoColor=white)
+
 An experiment in defining ordinary Clojure functions backed by real Zig.
 
 Stay in the REPL, define a function in a familiar shape, and drop into Zig only where native performance, explicit layout, comptime, or low-level control earns its keep.
