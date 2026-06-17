@@ -226,23 +226,24 @@
                {} modules))))
 
 (defn- module-root
-  "The root source path a module reference compiles from: a dev `:path` ref
-  uses its path directly. A pinned `:git/sha` ref resolves against a checkout
-  the in-place compile loop does not provide; that is a bake-time concern
-  (ADR 34), so it is an error here."
-  [name ref]
-  (or (:path ref)
-      (throw (ex-info (str "The Zig module " (pr-str name) " is git-pinned; a"
-                           " local :path is needed to compile it in place.")
-                      {:level :error :error/code :clj-zig/module-not-checked-out
-                       :module name}))))
+  "The local source path a module reference compiles from, or nil when none
+  is available here. A dev `:path` ref, or a pinned ref carrying a local
+  `:path` checkout (ADR 36), uses that path. A pinned ref with no `:path` has
+  no source in this environment — a consumer resolving a baked library — so
+  it yields nil and compiles only if its baked artifact is missing."
+  [_name ref]
+  (:path ref))
 
 (defn module-roots
-  "Each external module's root source path, keyed by import name, for the
-  compile shell to pass as `-M<name>=<root>`; nil when there are none. The
-  path counterpart to `modules-fingerprint`, which feeds the content hash."
+  "Each resolvable external module's root source path, keyed by import name,
+  for the compile shell to pass as `-M<name>=<root>`; nil when none resolve. A
+  pinned reference with no local checkout is omitted (ADR 36). The path
+  counterpart to `modules-fingerprint`, which feeds the content hash."
   [modules]
-  (not-empty (reduce-kv (fn [m name ref] (assoc m name (module-root name ref)))
+  (not-empty (reduce-kv (fn [m name ref]
+                          (if-let [root (module-root name ref)]
+                            (assoc m name root)
+                            m))
                         {} modules)))
 
 (defn library-present?
@@ -332,7 +333,17 @@
         (assoc paths :hash artifact-key :cached? false :bundled? true))
 
       :else
-      (do
+      (let [missing (remove (set (keys module-roots)) (keys (:modules inputs)))]
+        ;; A fresh compile needs every declared module's source. A pinned
+        ;; module with no local checkout (ADR 36) resolves a baked library
+        ;; above; reaching here means none shipped for this target.
+        (when (seq missing)
+          (throw (ex-info (str "Cannot compile: Zig module(s) "
+                               (str/join ", " (map pr-str missing))
+                               " are pinned with no local checkout, and no baked"
+                               " library ships for " (:target inputs) ".")
+                          {:level :error :error/code :clj-zig/module-not-checked-out
+                           :modules (vec missing) :target (:target inputs)})))
         (compile!-fn {:source       source
                       :source-path  (:source-path paths)
                       :library-path (:library-path paths)

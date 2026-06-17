@@ -58,3 +58,31 @@
       (let [coords {:target (cache/target-triple) :ns 'clj-zig.bake-module-fixture
                     :name 'ask :hash (cache/cache-key (assoc inputs :target (cache/target-triple)))}]
         (is (= (cache/bundled-resource-path coords) (:resource (first results))))))))
+
+(deftest bakes-a-pinned-module-and-a-consumer-resolves-without-the-checkout
+  ;; ADR 36: a pinned module with a local :path bakes from the checkout; a
+  ;; consumer declaring the same pinned reference with NO :path reproduces the
+  ;; hash, so it resolves the bundled library with no zig and no module source.
+  (let [out     (scratch-root)
+        results (bake/bake! {:ns 'clj-zig.bake-pinned-fixture :out out :targets :host})
+        info    (:clj-zig/info (meta (resolve 'clj-zig.bake-pinned-fixture/ask-pinned)))
+        inputs  (#'bake/function-inputs info)]
+    (testing "bake resolves the pinned module's local checkout for compilation"
+      (is (seq (:module-roots inputs))))
+    (testing "the pinned module-dependent function bakes into a loadable library"
+      (let [{:keys [library]} (first results)]
+        (is (.exists (io/file library)))
+        (is (= 42 ((ffm/bind (:spec info) library))))))
+    (testing "a consumer reproduces the key from the pin alone, with no fs read"
+      (let [boom             {:stat (fn [_] (throw (AssertionError. "no fs read")))
+                              :read (fn [_] (throw (AssertionError. "no fs read")))}
+            consumer-modules {"answers" (cache/module-fingerprint
+                                         {:git/sha "0000000000000000000000000000000000000000"
+                                          :root    "src/root.zig"}
+                                         boom)}
+            consumer-inputs  (assoc inputs :modules consumer-modules
+                                    :target (cache/target-triple))
+            coords           {:target (cache/target-triple)
+                              :ns 'clj-zig.bake-pinned-fixture :name 'ask-pinned
+                              :hash (cache/cache-key consumer-inputs)}]
+        (is (= (cache/bundled-resource-path coords) (:resource (first results))))))))

@@ -91,7 +91,12 @@
       (is (= fp (cache/module-fingerprint {:git/sha "abc123" :root "src/root.zig"} boom))))
     (testing "a different sha or root yields a different fingerprint"
       (is (not= fp (cache/module-fingerprint {:git/sha "def456" :root "src/root.zig"} boom)))
-      (is (not= fp (cache/module-fingerprint {:git/sha "abc123" :root "src/other.zig"} boom))))))
+      (is (not= fp (cache/module-fingerprint {:git/sha "abc123" :root "src/other.zig"} boom))))
+    (testing "a local :path does not change the pinned identity (ADR 36)"
+      ;; A baker (pinned + local checkout) and a consumer (pinned, no path)
+      ;; must hash identically, so the consumer reproduces the baked key.
+      (is (= fp (cache/module-fingerprint
+                 {:git/sha "abc123" :root "src/root.zig" :path "/co/root.zig"} boom))))))
 
 (deftest module-roots-resolve-dev-path-refs-for-compilation
   (testing "a dev :path ref resolves to its root source path"
@@ -100,10 +105,16 @@
   (testing "no modules resolve to nil"
     (is (nil? (cache/module-roots nil)))
     (is (nil? (cache/module-roots {}))))
-  (testing "a git-pinned ref needs a checkout, deferred to bake time"
-    (is (= :clj-zig/module-not-checked-out
-           (try (cache/module-roots {"mymod" {:git/sha "abc" :root "src/root.zig"}}) nil
-                (catch clojure.lang.ExceptionInfo e (:error/code (ex-data e))))))))
+  (testing "a pinned ref with a local :path resolves to that checkout (ADR 36)"
+    (is (= {"mymod" "/co/root.zig"}
+           (cache/module-roots {"mymod" {:git/sha "abc" :root "src/root.zig"
+                                         :path "/co/root.zig"}}))))
+  (testing "a pinned ref with no local :path is omitted, not an error (ADR 36)"
+    (is (nil? (cache/module-roots {"mymod" {:git/sha "abc" :root "src/root.zig"}})))
+    (testing "and only the resolvable modules remain when mixed"
+      (is (= {"local" "/co/root.zig"}
+             (cache/module-roots {"local"  {:path "/co/root.zig"}
+                                  "remote" {:git/sha "abc" :root "src/root.zig"}}))))))
 
 (deftest artifact-paths-follow-the-documented-layout
   (let [p (cache/artifact-paths {:root "/tmp/c" :target "macos-aarch64"

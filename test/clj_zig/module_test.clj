@@ -26,6 +26,11 @@
     (is (= {"clojo" {:git/sha "abc123" :root "src/root.zig"}}
            (core/zig-modules {:zig/modules {"clojo" {:git/sha "abc123"
                                                      :root "src/root.zig"}}}))))
+  (testing "a pinned reference keeps an optional local :path (ADR 36)"
+    (is (= {"clojo" {:git/sha "abc123" :root "src/root.zig" :path "/co/root.zig"}}
+           (core/zig-modules {:zig/modules {"clojo" {:git/sha "abc123"
+                                                     :root "src/root.zig"
+                                                     :path "/co/root.zig"}}}))))
   (testing "several modules normalize together"
     (is (= {"a" {:path "a.zig"} "b" {:path "b.zig"}}
            (core/zig-modules {:zig/modules {"a" {:path "a.zig"}

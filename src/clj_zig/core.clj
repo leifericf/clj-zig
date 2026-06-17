@@ -104,11 +104,14 @@
                        :requested v
                        :pinned toolchain/pinned-version}))))
   (cond
+    ;; A pinned reference fingerprints from sha and root; an optional :path is
+    ;; a local checkout bake and the dev loop compile from (ADR 36).
+    (and (:git/sha descriptor) (:root descriptor))
+    (cond-> {:git/sha (str (:git/sha descriptor)) :root (str (:root descriptor))}
+      (:path descriptor) (assoc :path (str (:path descriptor))))
+
     (:path descriptor)
     {:path (str (:path descriptor))}
-
-    (and (:git/sha descriptor) (:root descriptor))
-    {:git/sha (str (:git/sha descriptor)) :root (str (:root descriptor))}
 
     :else
     (throw (ex-info (str "The Zig module " (pr-str module-name)
