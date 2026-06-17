@@ -83,6 +83,7 @@
       :library-path (.getPath lib)
       :options      (:options in)
       :target       triple
+      :module-roots (:module-roots in)
       :aux-files    (mapv (fn [{:keys [rel text]}]
                             {:path (.getPath (io/file build rel)) :text text})
                           (:aux-files in))

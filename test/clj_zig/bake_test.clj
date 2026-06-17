@@ -41,3 +41,20 @@
             coords   {:target (cache/target-triple) :ns 'clj-zig.bake-fixture
                       :name 'add :hash (cache/cache-key (assoc inputs :target (cache/target-triple)))}]
         (is (some #(= (cache/bundled-resource-path coords) (:resource %)) results))))))
+
+(deftest bakes-a-module-dependent-function
+  (let [out     (scratch-root)
+        results (bake/bake! {:ns 'clj-zig.bake-module-fixture :out out :targets :host})
+        info    (:clj-zig/info (meta (resolve 'clj-zig.bake-module-fixture/ask)))
+        inputs  (#'bake/function-inputs info)]
+    (testing "the function's build inputs carry the external module"
+      (is (seq (:modules inputs)) "the module fingerprint enters the hash")
+      (is (seq (:module-roots inputs)) "the module root is resolved for compile"))
+    (testing "the module-dependent function bakes into a loadable library"
+      (let [{:keys [library]} (first results)]
+        (is (.exists (io/file library)))
+        (is (= 42 ((ffm/bind (:spec info) library))))))
+    (testing "the baked hash equals the in-place hash, so it is reproducible"
+      (let [coords {:target (cache/target-triple) :ns 'clj-zig.bake-module-fixture
+                    :name 'ask :hash (cache/cache-key (assoc inputs :target (cache/target-triple)))}]
+        (is (= (cache/bundled-resource-path coords) (:resource (first results))))))))
