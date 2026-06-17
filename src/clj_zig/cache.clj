@@ -223,4 +223,10 @@
     (cache-key {:spec s :body "return x + y;" :options {:optimize "ReleaseSafe"}
                 :zig-version (zig-version) :target (target-triple)}))
   (target-triple)   ;; => "macos-aarch64"
-  (zig-version))    ;; => "0.16.0"
+  (zig-version)     ;; => "0.16.0"
+
+  ;; The classpath layout a baked library ships under: the loader looks a
+  ;; resource up by this path before compiling.
+  ;; => "clj-zig/native/linux-x86_64/app.core/add-83a1c0f9e1b2/libadd-83a1c0f9e1b2.so"
+  (bundled-resource-path {:target "linux-x86_64" :ns 'app.core
+                          :name 'add :hash "83a1c0f9e1b2"}))

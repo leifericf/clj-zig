@@ -101,4 +101,15 @@
     (compile! {:source (source/generate s "return x + y;")
                :source-path (str dir "/source.zig")
                :library-path (str dir "/libadd." (dynamic-library-extension))
+               :ctx {:var 'app.core/add :signature (:signature s)}}))
+
+  ;; Cross-compile the same function for another platform. The artifact is
+  ;; produced even on a host that cannot load it.
+  (let [s   (spec/build-spec '{:ns app.core :name add :signature [x :i64 y :i64 :ret :i64]})
+        dir (str (java.nio.file.Files/createTempDirectory
+                  "clj-zig" (make-array java.nio.file.attribute.FileAttribute 0)))]
+    (compile! {:source (source/generate s "return x + y;")
+               :source-path (str dir "/source.zig")
+               :library-path (str dir "/libadd.so")
+               :target "x86_64-linux-musl"
                :ctx {:var 'app.core/add :signature (:signature s)}})))
