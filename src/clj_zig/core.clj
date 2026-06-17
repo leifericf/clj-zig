@@ -49,6 +49,33 @@
   [ns-sym]
   (get @named-types ns-sym {}))
 
+(defonce ^:private ns-deps (atom {}))
+
+(defn c-options
+  "The C-interop compile options a descriptor's `:c/*` keys carry, or nil
+  when it carries none. These reach `zig build-lib` as flags and enter the
+  content hash. Shared by a per-function `{:zig/file ...}` descriptor and a
+  namespace-level `zig-deps`."
+  [descriptor]
+  (not-empty
+   (cond-> {}
+     (:c/include-path descriptor)        (assoc :include-path (vec (:c/include-path descriptor)))
+     (:c/system-include-path descriptor) (assoc :system-include-path (vec (:c/system-include-path descriptor)))
+     (:c/link-path descriptor)           (assoc :link-path (vec (:c/link-path descriptor)))
+     (:c/link descriptor)                (assoc :link (vec (:c/link descriptor))))))
+
+(defn register-deps!
+  "Register the namespace-level C-interop options for `ns-sym`, replacing
+  any previous registration. Public because the `zig-deps` expansion calls
+  it from the user's namespace."
+  [ns-sym descriptor]
+  (swap! ns-deps assoc ns-sym (c-options descriptor)))
+
+(defn deps-in
+  "The namespace-level C-interop options registered for `ns-sym`, or nil."
+  [ns-sym]
+  (get @ns-deps ns-sym))
+
 (defn- preamble
   "The Zig declarations registered in `ns-sym`: the named-type structs,
   then the `defz` declarations, joined for splicing ahead of a wrapper."
@@ -72,7 +99,10 @@
   identity that the content hash includes. `gen` selects the source shape:
   inline splices the body string into a wrapper; file concatenates the
   user's file text and a wrapper that calls its `pub fn`; raw uses the file
-  text as-is. `gen` also carries any C-interop `:options-extra`."
+  text as-is. `gen` also carries any C-interop `:options-extra`. Options
+  layer by precedence: the optimize default, then the namespace `zig-deps`,
+  then the descriptor, so a function inherits its namespace's link flags
+  and may still override them."
   ([spec body] (build-inputs spec body {:mode :inline}))
   ([spec body {:keys [mode entry options-extra] :or {mode :inline}}]
    (let [decls (preamble (:ns spec))
@@ -84,7 +114,7 @@
       :body        body
       :source      src
       :deps        decls
-      :options     (merge {:optimize "ReleaseSafe"} options-extra)
+      :options     (merge {:optimize "ReleaseSafe"} (deps-in (:ns spec)) options-extra)
       :zig-version (cache/zig-version)
       :target      (cache/target-triple)})))
 
@@ -189,18 +219,6 @@
                           {:level :error :error/code :clj-zig/entry-name-needed
                            :name (:name spec)}))))))
 
-(defn- descriptor->options
-  "The C-interop compile options a `{:zig/file ...}` descriptor carries, or
-  nil when it carries none. These reach `zig build-lib` as flags and enter
-  the content hash."
-  [descriptor]
-  (not-empty
-   (cond-> {}
-     (:c/include-path descriptor)        (assoc :include-path (vec (:c/include-path descriptor)))
-     (:c/system-include-path descriptor) (assoc :system-include-path (vec (:c/system-include-path descriptor)))
-     (:c/link-path descriptor)           (assoc :link-path (vec (:c/link-path descriptor)))
-     (:c/link descriptor)                (assoc :link (vec (:c/link descriptor))))))
-
 (defn establish-binding-from!
   "Resolve a `{:zig/file ...}` descriptor relative to `defining-file`, read
   the Zig source, and establish the binding for `the-var`. File mode
@@ -211,7 +229,7 @@
   [the-var spec descriptor defining-file var-meta wrap]
   (let [{:keys [text path]} (fileref/resolve-and-read defining-file (:zig/file descriptor))
         raw?     (boolean (:zig/raw descriptor))
-        opts     (descriptor->options descriptor)
+        opts     (c-options descriptor)
         the-spec (cond-> spec
                    (:zig/symbol descriptor) (assoc :symbol (:zig/symbol descriptor)))
         gen      (cond-> {:mode (if raw? :raw :file) :source-file path}
@@ -334,6 +352,22 @@
        (def ~decl-name src#)
        (alter-meta! (var ~decl-name) assoc :clj-zig/decl true)
        (var ~decl-name))))
+
+(defmacro zig-deps
+  "Declare the C-interop options shared by every `defnz` in this namespace,
+  so a co-located `.zig` may `@cImport` a header and link its library
+  without repeating the flags on each function:
+
+      (zig-deps {:c/link [\"m\"]})
+
+  A function descriptor still overrides these. The options enter each
+  function's content hash, so changing them recompiles the namespace's
+  functions."
+  [descriptor]
+  (let [the-ns (ns-name *ns*)]
+    `(do
+       (register-deps! '~the-ns ~descriptor)
+       nil)))
 
 (defmacro deftypez
   "Define a named boundary type with an `extern struct` layout. The
