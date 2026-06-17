@@ -10,7 +10,8 @@
   `:void` return is `nil`."
   (:require [clojure.java.io :as io]
             [clj-zig.type :as type])
-  (:import (java.lang.foreign Arena FunctionDescriptor Linker Linker$Option
+  (:import (java.lang IllegalCallerException)
+           (java.lang.foreign Arena FunctionDescriptor Linker Linker$Option
                               MemoryLayout MemorySegment SymbolLookup ValueLayout)
            (java.lang.invoke MethodHandle)
            (java.lang.reflect Array)
@@ -301,6 +302,30 @@
     (MemorySegment/copy buf ValueLayout/JAVA_BYTE 0 bytes (int 0) (int n))
     (keyword (String. bytes "UTF-8"))))
 
+(defn- native-access-disabled
+  "The diagnostic for a JVM that denied native access, naming the flag and
+  the ready-made aliases instead of the raw FFM `IllegalCallerException`.
+  Calling compiled Zig is a restricted operation the JVM grants only with
+  the flag; clj-zig cannot grant it from inside a running JVM."
+  [cause]
+  (ex-info (str "clj-zig needs native access to call compiled Zig, but this JVM denied it. "
+                "Add the JVM option --enable-native-access=ALL-UNNAMED "
+                "(the :repl and :test aliases in deps.edn already set it).")
+           {:level :error
+            :error/code :clj-zig/native-access-disabled
+            :clj-zig/jvm-option "--enable-native-access=ALL-UNNAMED"}
+           cause))
+
+(defn- with-native-access
+  "Run `thunk`, translating a denied-native-access failure into the clear
+  diagnostic. A restricted FFM call throws `IllegalCallerException` when
+  the JVM denies native access; every other outcome passes through."
+  [thunk]
+  (try
+    (thunk)
+    (catch IllegalCallerException e
+      (throw (native-access-disabled e)))))
+
 (defn bind
   "Load `library-path`, look up the spec's symbol, and return a Clojure
   fn that calls it with scalar coercion. The library is held by the
@@ -308,7 +333,11 @@
   content-addressed library rather than reloading."
   [spec library-path]
   (let [linker (Linker/nativeLinker)
-        lookup (SymbolLookup/libraryLookup (.toPath (io/file library-path)) (Arena/global))
+        ;; Loading a native library is a restricted operation; a JVM that
+        ;; denies native access fails here, so translate it into a
+        ;; diagnostic that names the flag rather than the raw FFM error.
+        lookup (with-native-access
+                 #(SymbolLookup/libraryLookup (.toPath (io/file library-path)) (Arena/global)))
         sym    ^MemorySegment (.orElseThrow (.find lookup (:symbol spec)))
         handle ^MethodHandle (.downcallHandle linker sym (descriptor spec)
                                               (into-array Linker$Option []))
