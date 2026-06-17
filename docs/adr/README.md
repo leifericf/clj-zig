@@ -42,3 +42,4 @@ Later ADRs capture decisions made during development. Written via the
 | [28](28-namespace-as-zig-namespace.md) | A Clojure namespace is a Zig namespace |
 | [29](29-multi-file-zig-imports.md) | Multi-file Zig imports copy the import closure into the build |
 | [30](30-bootstrap-the-zig-toolchain.md) | Bootstrap the Zig toolchain |
+| [31](31-distribute-precompiled-artifacts.md) | Distribute precompiled artifacts, bake the cache |
