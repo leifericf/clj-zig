@@ -145,14 +145,14 @@ Redefine like any `defn`, and a fresh library compiles. When a new body fails to
 
 ## Pipeline
 
-```mermaid
-flowchart TD
-  A[Clojure form] --> B[signature data]
-  B --> C[normalized boundary contract]
-  C --> D[generated Zig wrapper]
-  D --> E[Zig compilation]
-  E --> F[native library loading]
-  F --> G[ordinary Clojure Var]
+```text
+Clojure form
+  ->  signature data
+  ->  normalized boundary contract
+  ->  generated Zig wrapper
+  ->  Zig compilation
+  ->  native library loading
+  ->  ordinary Clojure Var
 ```
 
 ## Examples
@@ -249,12 +249,12 @@ tests compile and load native code, so they need `zig` on the path and JDK 22+.
 - No arbitrary Clojure object marshalling.
 - No hiding of Zig's type system.
 - No production packaging before the REPL experience is proven.
+- No DSL that pretends to be Zig but is not.
 
 ## Acknowledgements
 
 clj-zig grew out of several conversations with my friend
 [@teodorlu](https://github.com/teodorlu) in the Norwegian Clojure community.
-- No DSL that pretends to be Zig but is not.
 
 ## License
 

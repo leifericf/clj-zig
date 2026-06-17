@@ -7,7 +7,8 @@
   (:require [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.java.shell :as sh]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [clj-zig.fs :as fs]))
 
 (def pinned-version
   "The Zig release the bootstrap installs and the generated wrappers
@@ -178,11 +179,6 @@
                   (io/copy zin os)))))
         (recur)))))
 
-(defn- delete-recursively [^java.io.File f]
-  (when (.isDirectory f)
-    (run! delete-recursively (.listFiles f)))
-  (.delete f))
-
 (defn- install-pinned!
   "Download, verify, and extract the pinned Zig so `(pinned-dir)` holds a
   runnable `zig`. The one network and filesystem step; staging stays under
@@ -195,7 +191,7 @@
         parent  (.getParentFile target)
         staging (io/file parent (str ".staging-" stem))
         archive (io/file staging (str stem "." (archive-ext os)))]
-    (when (.exists staging) (delete-recursively staging))
+    (when (.exists staging) (fs/delete-recursively! staging))
     (.mkdirs staging)
     (try
       (download-to! (download-url os arch pinned-version) archive)
@@ -203,13 +199,13 @@
       (if (= os "windows")
         (extract-zip! archive staging)
         (extract-tar! archive staging))
-      (when (.exists target) (delete-recursively target))
+      (when (.exists target) (fs/delete-recursively! target))
       (when-not (.renameTo (io/file staging stem) target)
         (throw (ex-info (str "Could not move the extracted Zig into " (.getPath target) ".")
                         {:level :error :error/code :clj-zig/zig-install-failed
                          :clj-zig/target (.getPath target)})))
       (finally
-        (delete-recursively staging)))))
+        (fs/delete-recursively! staging)))))
 
 (defn ensure-pinned!
   "Install the pinned hermetic Zig on first use and return its path. Prints

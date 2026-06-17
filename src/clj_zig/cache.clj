@@ -16,6 +16,7 @@
             [clojure.java.shell :as sh]
             [clojure.pprint :as pprint]
             [clojure.string :as str]
+            [clj-zig.fs :as fs]
             [clj-zig.toolchain :as toolchain]))
 
 ;; --- Pure: hashing and path layout --------------------------------------
@@ -143,17 +144,12 @@
     (when (.exists f)
       (read-string (slurp f)))))
 
-(defn- delete-recursively [^java.io.File f]
-  (when (.isDirectory f)
-    (run! delete-recursively (.listFiles f)))
-  (.delete f))
-
 (defn clean!
   "Remove the entire artifact cache under `root` (default `.clj-zig/cache`)."
   ([] (clean! ".clj-zig/cache"))
   ([root]
    (let [d (io/file root)]
-     (when (.exists d) (delete-recursively d)))))
+     (when (.exists d) (fs/delete-recursively! d)))))
 
 (defn evict!
   "Remove the single cached artifact for these `inputs`, so the next build
@@ -162,7 +158,7 @@
   (let [paths (artifact-paths {:root root :target (:target inputs)
                                :ns (:ns spec) :name (:name spec)
                                :hash (cache-key inputs)})]
-    (delete-recursively (io/file (:dir paths)))))
+    (fs/delete-recursively! (io/file (:dir paths)))))
 
 (defn- bundled-library
   "The classpath URL of a baked library for these coordinates, or nil when
