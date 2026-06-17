@@ -60,8 +60,85 @@
                                 (mapv parse-param))]
             {:name fn-name :params params :ret ret}))))))
 
+;; --- Mapping Zig type strings to boundary type forms --------------------
+
+(def ^:private scalar-types
+  #{:i8 :i16 :i32 :i64 :i128 :u8 :u16 :u32 :u64 :u128 :isize :usize
+    :f16 :f32 :f64 :f80 :f128 :bool :void})
+
+(defn- strip-const
+  "Split a leading `const ` qualifier off a pointee type, returning
+  `[const? rest]`."
+  [s]
+  (if (str/starts-with? s "const ")
+    [true (str/trim (subs s 6))]
+    [false s]))
+
+(defn- top-level-index
+  "The index of the first `ch` in `s` at bracket depth zero, or nil."
+  [s ch]
+  (loop [i 0, depth 0]
+    (when (< i (count s))
+      (let [c (.charAt ^String s i)]
+        (cond
+          (#{\[ \( \{} c)            (recur (inc i) (inc depth))
+          (#{\] \) \}} c)            (recur (inc i) (dec depth))
+          (and (= c ch) (zero? depth)) i
+          :else                       (recur (inc i) depth))))))
+
+(defn- parse-type
+  "A Zig type string into a boundary type form: a scalar keyword, a
+  compound vector, or a symbol for a named struct or enum."
+  [s]
+  (let [s (str/trim s)]
+    (cond
+      (str/starts-with? s "[]")
+      (let [[c inner] (strip-const (str/trim (subs s 2)))]
+        (if c [:slice :const (parse-type inner)] [:slice (parse-type inner)]))
+
+      (str/starts-with? s "[*]")
+      (let [[c inner] (strip-const (str/trim (subs s 3)))]
+        (if c [:manyptr :const (parse-type inner)] [:manyptr (parse-type inner)]))
+
+      (re-find #"^\[\d+\]" s)
+      (let [[_ n inner] (re-find #"^\[(\d+)\](.*)$" s)]
+        [:array (Long/parseLong n) (parse-type inner)])
+
+      (str/starts-with? s "?")
+      [:optional (parse-type (subs s 1))]
+
+      (str/starts-with? s "*")
+      (let [[c inner] (strip-const (str/trim (subs s 1)))]
+        (if c [:ptr :const (parse-type inner)] [:ptr (parse-type inner)]))
+
+      (top-level-index s \!)
+      (let [i (top-level-index s \!)]
+        [:error-union (symbol (str/trim (subs s 0 i)))
+         (parse-type (subs s (inc i)))])
+
+      (scalar-types (keyword s)) (keyword s)
+
+      :else (symbol s))))
+
+(defn zig-type->boundary
+  "The boundary type form for a Zig type string. The default reads a
+  parameter, whose shape is fully determined by the type. A `:return`
+  position yields `::policy-needed` when the type is a slice or a pointer,
+  because a returned `[]T` or `*T` carries no ownership or handle policy in
+  its type; that policy is a Clojure-side decision and needs an explicit
+  signature."
+  ([type-str] (zig-type->boundary type-str :param))
+  ([type-str position]
+   (let [b (parse-type type-str)]
+     (if (and (= position :return)
+              (vector? b)
+              (#{:slice :ptr :manyptr} (first b)))
+       ::policy-needed
+       b))))
+
 (comment
   (prototype "pub fn add(x: i64, y: i64) i64 {\n    return x + y;\n}\n" "add")
   ;; => {:name "add" :params [{:binding "x" :zig-type "i64"}
   ;;                          {:binding "y" :zig-type "i64"}] :ret "i64"}
-  (prototype "pub fn dot(a: []const f64, b: []const f64) f64 {}" "dot"))
+  (zig-type->boundary "[]const f64")          ;; => [:slice :const :f64]
+  (zig-type->boundary "[]u8" :return))        ;; => :clj-zig.infer/policy-needed

@@ -54,3 +54,37 @@
 
 (deftest returns-nil-when-the-function-is-absent
   (is (nil? (infer/prototype "pub fn other() void {}" "missing"))))
+
+(deftest maps-scalar-types
+  (is (= :i64 (infer/zig-type->boundary "i64")))
+  (is (= :f64 (infer/zig-type->boundary "f64")))
+  (is (= :bool (infer/zig-type->boundary "bool")))
+  (is (= :void (infer/zig-type->boundary "void")))
+  (is (= :usize (infer/zig-type->boundary "usize"))))
+
+(deftest maps-compound-types
+  (is (= [:slice :const :f64] (infer/zig-type->boundary "[]const f64")))
+  (is (= [:slice :u8] (infer/zig-type->boundary "[]u8")))
+  (is (= [:array 4 :i32] (infer/zig-type->boundary "[4]i32")))
+  (is (= [:optional :f64] (infer/zig-type->boundary "?f64")))
+  (is (= [:ptr :const :u8] (infer/zig-type->boundary "*const u8")))
+  (is (= [:ptr :i64] (infer/zig-type->boundary "*i64")))
+  (is (= [:manyptr :u8] (infer/zig-type->boundary "[*]u8")))
+  (is (= [:error-union 'Err :void] (infer/zig-type->boundary "Err!void"))))
+
+(deftest maps-a-named-type-to-a-symbol
+  (is (= 'Point (infer/zig-type->boundary "Point"))))
+
+(deftest a-return-shape-is-determined-for-by-value-types
+  (testing "scalars, arrays, optionals, and named returns need no policy"
+    (is (= :f64 (infer/zig-type->boundary "f64" :return)))
+    (is (= [:array 4 :f32] (infer/zig-type->boundary "[4]f32" :return)))
+    (is (= [:optional :i64] (infer/zig-type->boundary "?i64" :return)))
+    (is (= 'Point (infer/zig-type->boundary "Point" :return)))))
+
+(deftest a-returned-slice-or-pointer-needs-a-policy
+  (testing "ownership of a []T and handle-vs-ptr of a *T are not in the type"
+    (is (= :clj-zig.infer/policy-needed (infer/zig-type->boundary "[]u8" :return)))
+    (is (= :clj-zig.infer/policy-needed (infer/zig-type->boundary "[]const f64" :return)))
+    (is (= :clj-zig.infer/policy-needed (infer/zig-type->boundary "*Point" :return)))
+    (is (= :clj-zig.infer/policy-needed (infer/zig-type->boundary "[*]u8" :return)))))
