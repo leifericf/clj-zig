@@ -143,6 +143,34 @@
         (finally
           (.setContextClassLoader (Thread/currentThread) prev))))))
 
+(deftest a-mismatched-hash-does-not-load-a-baked-library
+  (testing "a baked resource under a different hash is a clean miss; the
+  loader compiles rather than loading the wrong library"
+    (let [in       (assoc (inputs nil "return x + y;")
+                          :target (cache/target-triple)
+                          :zig-version (cache/zig-version))
+          coords   {:target (:target in) :ns 'app.core :name 'add :hash "000000000000"}
+          res-root (scratch-root)
+          res-file (io/file res-root (cache/bundled-resource-path coords))
+          prev     (.getContextClassLoader (Thread/currentThread))
+          loader   (java.net.URLClassLoader.
+                    (into-array java.net.URL [(.toURL (.toURI (io/file res-root)))])
+                    prev)
+          compiled (atom 0)
+          stub     (fn [{:keys [library-path]}]
+                     (swap! compiled inc)
+                     (io/make-parents (io/file library-path))
+                     (spit library-path "stub"))]
+      (io/make-parents res-file)
+      (spit res-file "not the right library")
+      (try
+        (.setContextClassLoader (Thread/currentThread) loader)
+        (let [r (cache/ensure-library! (assoc in :root (scratch-root)) stub)]
+          (is (not (:bundled? r)) "the mismatched resource is ignored")
+          (is (= 1 @compiled) "the loader compiles instead of loading it"))
+        (finally
+          (.setContextClassLoader (Thread/currentThread) prev))))))
+
 (deftest real-compile-reuses-on-second-call
   (testing "content addressing over a genuine zig build"
     (let [root (scratch-root)

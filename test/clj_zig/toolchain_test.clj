@@ -3,6 +3,7 @@
   override is an error, and otherwise a zig on PATH is used."
   (:require [clojure.java.io :as io]
             [clojure.java.shell :as sh]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [clj-zig.toolchain :as toolchain]))
 
@@ -50,6 +51,16 @@
   (testing "the release-index key is arch-os"
     (is (= "x86_64-linux" (#'toolchain/archive-key "linux" "x86_64")))
     (is (= "aarch64-macos" (#'toolchain/archive-key "macos" "aarch64")))))
+
+(deftest every-host-in-the-matrix-has-a-well-formed-url
+  (testing "across the OS and architecture matrix the URL names the pinned
+  release and ends in the right archive suffix"
+    (doseq [os   ["linux" "macos" "windows"]
+            arch ["x86_64" "aarch64"]]
+      (let [url (#'toolchain/download-url os arch "0.16.0")]
+        (is (str/includes? url (str "zig-" arch "-" os "-0.16.0")))
+        (is (str/starts-with? url "https://ziglang.org/download/0.16.0/"))
+        (is (str/ends-with? url (if (= os "windows") ".zip" ".tar.xz")))))))
 
 (defn- temp-dir []
   (let [d (.toFile (java.nio.file.Files/createTempDirectory
