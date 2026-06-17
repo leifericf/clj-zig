@@ -41,3 +41,4 @@ Later ADRs capture decisions made during development. Written via the
 | [27](27-compile-options-c-interop.md) | Compile options carry C-interop flags |
 | [28](28-namespace-as-zig-namespace.md) | A Clojure namespace is a Zig namespace |
 | [29](29-multi-file-zig-imports.md) | Multi-file Zig imports copy the import closure into the build |
+| [30](30-bootstrap-the-zig-toolchain.md) | Bootstrap the Zig toolchain |
