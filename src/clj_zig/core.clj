@@ -219,6 +219,21 @@
                           {:level :error :error/code :clj-zig/entry-name-needed
                            :name (:name spec)}))))))
 
+(defn namespace-zig-file
+  "The `.zig` file co-located with a namespace's Clojure source: the
+  defining file's path with its `.clj`/`.cljc` extension replaced by
+  `.zig`. A bodyless `defnz` sources its body from this file's matching
+  `pub fn`. Pure; the filesystem and classpath resolution happens in
+  `establish-binding-from!`. Throws when there is no defining file, as at
+  the REPL, where a bodyless `defnz` has no co-located file to read."
+  [defining-file]
+  (when (or (nil? defining-file) (= defining-file "NO_SOURCE_PATH"))
+    (throw (ex-info (str "A bodyless defnz needs a file-loaded namespace with"
+                         " a co-located .zig; give an explicit {:zig/file ...}"
+                         " body when there is no defining file.")
+                    {:level :error :error/code :clj-zig/no-namespace-file})))
+  (str/replace defining-file #"\.cljc?$" ".zig"))
+
 (defn establish-binding-from!
   "Resolve a `{:zig/file ...}` descriptor relative to `defining-file`, read
   the Zig source, and establish the binding for `the-var`. File mode
@@ -286,8 +301,9 @@
 
 (defmacro defnz
   "Define a Clojure function whose body is Zig. The signature vector is
-  the boundary contract; the trailing form is the Zig body, either a
-  string or a `{:zig/file \"name.zig\"}` descriptor:
+  the boundary contract; the trailing form is the Zig body, a string or a
+  `{:zig/file \"name.zig\"}` descriptor, and may be omitted to source the
+  body from the namespace's co-located `.zig`:
 
       (defnz add
         [x :i64
@@ -301,15 +317,22 @@
          :ret :f64]
         {:zig/file \"dot.zig\"})
 
-  A file holds a complete Zig `pub fn` the generated wrapper calls; the
-  descriptor may also carry C-interop options (`:c/link`,
-  `:c/include-path`, ...), an entry name (`:zig/fn`), and a raw escape
-  hatch (`:zig/raw`, `:zig/symbol`). Redefining recompiles; a failed
+      ;; body in app/geometry.zig's `pub fn hypotenuse`
+      (defnz hypotenuse
+        [a :f64 b :f64 :ret :f64])
+
+  A file holds a complete Zig `pub fn` the generated wrapper calls; a
+  bodyless form calls the `pub fn` of the same name in the `.zig` beside
+  the namespace's source. The descriptor may also carry C-interop options
+  (`:c/link`, `:c/include-path`, ...), an entry name (`:zig/fn`), and a raw
+  escape hatch (`:zig/raw`, `:zig/symbol`). Redefining recompiles; a failed
   recompile keeps the last good binding."
   [fn-name & tail]
-  (let [{:keys [docstring attr-map signature body]} (parse-defnz tail)]
-    (when-not (or (string? body) (and (map? body) (contains? body :zig/file)))
-      (throw (ex-info "defnz needs a Zig body: a string or a {:zig/file ...} descriptor."
+  (let [{:keys [docstring attr-map signature body]} (parse-defnz tail)
+        file-body? (and (map? body) (contains? body :zig/file))
+        bodyless?  (and (nil? body) (vector? signature))]
+    (when-not (or (string? body) file-body? bodyless?)
+      (throw (ex-info "defnz needs a Zig body: a string, a {:zig/file ...} descriptor, or a signature with the body in the namespace's .zig."
                       {:level :error :error/code :clj-zig/malformed-defnz
                        :var fn-name})))
     (let [the-ns        (ns-name *ns*)
@@ -322,12 +345,15 @@
           var-meta      (merge (when docstring {:doc docstring})
                                attr-map
                                {:arglists (list arglist)})
-          wrap          `(fn [invoke#] (fn ~arglist (invoke# ~@call-args)))]
+          wrap          `(fn [invoke#] (fn ~arglist (invoke# ~@call-args)))
+          descriptor    (if bodyless?
+                          `{:zig/file (namespace-zig-file ~defining-file)}
+                          body)]
       `(do
          (def ~fn-name)
          ~(if (string? body)
             `(establish-binding! (var ~fn-name) '~spec ~body '~var-meta ~wrap)
-            `(establish-binding-from! (var ~fn-name) '~spec ~body ~defining-file
+            `(establish-binding-from! (var ~fn-name) '~spec ~descriptor ~defining-file
                                       '~var-meta ~wrap))))))
 
 (defn resolve-decl-source
