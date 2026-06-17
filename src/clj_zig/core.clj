@@ -234,15 +234,40 @@
                     {:level :error :error/code :clj-zig/no-namespace-file})))
   (str/replace defining-file #"\.cljc?$" ".zig"))
 
+(defn declared-namespace
+  "The namespace a `.zig` file asserts it belongs to via a leading
+  `//! clj-zig: <ns>` doc-comment line, or nil when it makes no such
+  assertion. Pure."
+  [zig-text]
+  (some (fn [line]
+          (second (re-matches #"\s*//!\s*clj-zig:\s*(\S+)\s*" line)))
+        (str/split-lines zig-text)))
+
+(defn- check-namespace!
+  "Throw when a `.zig` file's `//! clj-zig: <ns>` header names a namespace
+  other than the one using it. The path binds the file to its namespace;
+  the header only catches a file wired to the wrong namespace."
+  [expected-ns text file]
+  (when-let [declared (declared-namespace text)]
+    (when (not= declared (str expected-ns))
+      (throw (ex-info (str "The Zig file " (pr-str file) " declares namespace "
+                           declared " but is used from " expected-ns ".")
+                      {:level :error :error/code :clj-zig/namespace-mismatch
+                       :clj-zig/file file
+                       :clj-zig/declared declared
+                       :clj-zig/expected (str expected-ns)})))))
+
 (defn establish-binding-from!
   "Resolve a `{:zig/file ...}` descriptor relative to `defining-file`, read
   the Zig source, and establish the binding for `the-var`. File mode
   generates a wrapper that calls the user's `pub fn`; `:zig/raw` skips the
-  wrapper and binds `:zig/symbol` (or the spec's symbol) directly. Public
-  because the `defnz` expansion calls it at load time, so re-evaluating the
-  form re-reads the file."
+  wrapper and binds `:zig/symbol` (or the spec's symbol) directly. An
+  optional `//! clj-zig: <ns>` header in the file must match the using
+  namespace. Public because the `defnz` expansion calls it at load time,
+  so re-evaluating the form re-reads the file."
   [the-var spec descriptor defining-file var-meta wrap]
   (let [{:keys [text path]} (fileref/resolve-and-read defining-file (:zig/file descriptor))
+        _        (check-namespace! (:ns spec) text path)
         raw?     (boolean (:zig/raw descriptor))
         opts     (c-options descriptor)
         the-spec (cond-> spec
