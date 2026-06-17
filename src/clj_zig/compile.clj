@@ -9,7 +9,8 @@
   code. The core shell catches it to keep the last good binding."
   (:require [clojure.java.io :as io]
             [clojure.java.shell :as sh]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [clj-zig.toolchain :as toolchain]))
 
 (def ^:private optimize-mode
   "Safety checks stay on; this is part of the cache key."
@@ -44,7 +45,8 @@
   `aux-files` are imported Zig files to write beside the source first, each
   `{:path <absolute> :text <content>}`."
   [{:keys [source source-path library-path ctx options aux-files]}]
-  (let [src-file (io/file source-path)
+  (let [zig      (toolchain/zig-exe)
+        src-file (io/file source-path)
         lib-file (io/file library-path)
         src-abs  (.getAbsolutePath src-file)
         lib-abs  (.getAbsolutePath lib-file)]
@@ -60,13 +62,13 @@
     ;; zig fmt owns formatting. A syntax error here leaves the file
     ;; untouched and resurfaces as the authoritative build error
     ;; below, so this exit code is deliberately ignored.
-    (sh/sh "zig" "fmt" src-abs :dir (.getParent src-file))
+    (sh/sh zig "fmt" src-abs :dir (.getParent src-file))
     ;; Link libc: owned and handle returns back their memory with
     ;; `std.heap.c_allocator`, whose free is the one deallocation that is
     ;; safe to call across the boundary. macOS links libc implicitly;
     ;; Linux needs it requested, and a body may reach for libc anywhere.
     ;; C-interop include and link flags from `options` follow `-lc`.
-    (let [build-args (concat ["zig" "build-lib" "-dynamic" "-O" optimize-mode "-lc"]
+    (let [build-args (concat [zig "build-lib" "-dynamic" "-O" optimize-mode "-lc"]
                              (options->flags options)
                              [(str "-femit-bin=" lib-abs) src-abs
                               :dir (.getParent src-file)])

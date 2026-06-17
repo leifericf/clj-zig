@@ -15,7 +15,8 @@
   (:require [clojure.java.io :as io]
             [clojure.java.shell :as sh]
             [clojure.pprint :as pprint]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [clj-zig.toolchain :as toolchain]))
 
 ;; --- Pure: hashing and path layout --------------------------------------
 
@@ -79,7 +80,7 @@
 (defn zig-version
   "The `zig` compiler version string, part of the cache key."
   []
-  (str/trim (:out (sh/sh "zig" "version"))))
+  (str/trim (:out (sh/sh (toolchain/zig-exe) "version"))))
 
 (defn target-triple
   "The development target as `<os>-<arch>`, part of the cache key and the
