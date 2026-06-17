@@ -57,6 +57,12 @@
   [the-var]
   (inspect/status the-var))
 
+(defn modules
+  "The external Zig modules the function links, each `{:name :fingerprint
+  :status}`, or nil when it depends on none."
+  [the-var]
+  (inspect/modules the-var))
+
 (defn source-mode
   "How the body was supplied: `:inline`, `:file`, or `:raw`."
   [the-var]

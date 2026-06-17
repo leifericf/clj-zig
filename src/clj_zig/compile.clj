@@ -74,6 +74,20 @@
                    (module-args module-roots source-abs link-flags)
                    (concat link-flags [source-abs]))))))
 
+(defn attribute-failure
+  "Attribute a compile failure to an external module or to the wrapper by
+  matching the compiler's `stderr` against each module's source directory
+  (ADR 34, ADR 11). A module match carries its import name, so a developer
+  sees which dependency failed rather than only that the build did; with no
+  modules, or an error in the generated `source.zig`, it is the wrapper.
+  Pure."
+  [stderr module-roots]
+  (or (some (fn [[name root]]
+              (when (str/includes? stderr (str (.getParent (io/file ^String root))))
+                {:zig/origin :module :zig/module name}))
+            module-roots)
+      {:zig/origin :wrapper}))
+
 (defn compile!
   "Compile `source` into a dynamic library at `library-path`, writing the
   canonical source to `source-path` first. Returns
@@ -131,6 +145,8 @@
                                   :zig/source-path src-abs
                                   :zig/stderr err
                                   :zig/exit-code exit}
+                                 (when (seq module-roots)
+                                   (attribute-failure err module-roots))
                                  ctx))))))))
 
 (comment

@@ -39,10 +39,68 @@
         (is (= (:library a1) (:library a2))))
       (testing "the bound function calls into the module"
         (is (= 42 ((ffm/bind spec (:library a1))))))
+      (testing "the build records the module it linked, with its fingerprint"
+        (is (= [{:name "mymod" :status :local}]
+               (mapv #(dissoc % :fingerprint) (:modules a1))))
+        (is (re-matches #"[0-9a-f]{12}" (:fingerprint (first (:modules a1))))))
       (testing "Zig's persistent global cache is populated (ADR 35)"
         (let [g (io/file (compile/global-cache-dir))]
           (is (.exists g))
           (is (seq (.listFiles g))))))))
+
+(deftest a-module-dependent-defnz-surfaces-its-modules-on-the-var
+  (let [pkg   (temp-dir)
+        root  (str pkg "/root.zig")
+        nonce (System/nanoTime)]
+    (spit root (str "// fixture " nonce "\npub fn answer() i32 {\n    return 7;\n}\n"))
+    (binding [*ns* (the-ns 'clj-zig.module-e2e-test)]
+      (eval `(core/zig-deps {:zig/modules {"mymod" {:path ~root}}}))
+      (eval `(core/defnz ~'ask7 [:ret :i32]
+               "const m = @import(\"mymod\");\n    return m.answer();")))
+    (let [v (ns-resolve 'clj-zig.module-e2e-test 'ask7)]
+      (testing "the function calls into the module"
+        (is (= 7 (v))))
+      (testing "zig/modules reads the module info off the Var"
+        (let [m (first (zig/modules v))]
+          (is (= "mymod" (:name m)))
+          (is (= :local (:status m)))
+          (is (re-matches #"[0-9a-f]{12}" (:fingerprint m))))))))
+
+(deftest a-module-compile-error-is-attributed-to-the-module
+  (let [pkg   (temp-dir)
+        root  (str pkg "/root.zig")
+        nonce (System/nanoTime)
+        ns    'mod.e2e.brokenmod]
+    (spit root (str "// fixture " nonce "\npub fn answer() i32 {\n    return notdefined;\n}\n"))
+    (core/register-deps! ns {:zig/modules {"mymod" {:path root}}})
+    (let [spec (zig/build-spec {:ns ns :name 'ask :signature [:ret :i32]})
+          body "const m = @import(\"mymod\");\n    return m.answer();"]
+      (try
+        (core/artifact spec body)
+        (is false "expected a module compile failure")
+        (catch clojure.lang.ExceptionInfo e
+          (let [d (ex-data e)]
+            (is (= :zig/compile-failed (:error/code d)))
+            (is (= :module (:zig/origin d)))
+            (is (= "mymod" (:zig/module d)))))))))
+
+(deftest a-wrapper-compile-error-is-attributed-to-the-wrapper
+  (let [pkg   (temp-dir)
+        root  (str pkg "/root.zig")
+        nonce (System/nanoTime)
+        ns    'mod.e2e.brokenwrap]
+    (spit root (str "// fixture " nonce "\npub fn answer() i32 {\n    return 3;\n}\n"))
+    (core/register-deps! ns {:zig/modules {"mymod" {:path root}}})
+    (let [spec (zig/build-spec {:ns ns :name 'ask :signature [:ret :i32]})
+          body "const m = @import(\"mymod\");\n    return ;"]
+      (try
+        (core/artifact spec body)
+        (is false "expected a wrapper compile failure")
+        (catch clojure.lang.ExceptionInfo e
+          (let [d (ex-data e)]
+            (is (= :zig/compile-failed (:error/code d)))
+            (is (= :wrapper (:zig/origin d)))
+            (is (nil? (:zig/module d)))))))))
 
 (deftest a-changed-module-relinks-the-dependent-function
   (testing "editing the module flips its fingerprint, so the dependent

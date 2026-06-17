@@ -52,6 +52,12 @@
   [the-var]
   (:status (info the-var)))
 
+(defn modules
+  "The external Zig modules the function links, each `{:name :fingerprint
+  :status}`, or nil when it depends on none (ADR 34)."
+  [the-var]
+  (:modules (info the-var)))
+
 (defn source-mode
   "How the body was supplied: inline (`:inline`), from a complete Zig file
   the wrapper calls (`:file`), or as a raw export fn (`:raw`)."

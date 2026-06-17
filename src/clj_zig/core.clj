@@ -203,22 +203,36 @@
        mods      (assoc :modules      (cache/modules-fingerprint mods)
                         :module-roots (cache/module-roots mods))))))
 
+(defn- module-info
+  "The external modules a build linked, for inspection (ADR 34): each
+  declared module's import name, content fingerprint, and provenance
+  (`:local` for a dev `:path`, `:pinned` for a reproducible reference),
+  sorted by name. Nil when the function depends on no modules."
+  [{:keys [modules module-roots]}]
+  (when modules
+    (mapv (fn [[name fingerprint]]
+            {:name name :fingerprint fingerprint
+             :status (if (get module-roots name) :local :pinned)})
+          (sort-by key modules))))
+
 (defn artifact
   "Compile or reuse the native library for `spec` and `body`. Returns the
   inspection data describing the build: the spec, the body, the generated
-  source, the library and source paths, the symbol, and whether the
-  library was reused (`:cached`) or freshly built (`:compiled`)."
+  source, the library and source paths, the symbol, whether the library was
+  reused (`:cached`) or freshly built (`:compiled`), and the external modules
+  it links (`:modules`) when the namespace declares any."
   ([spec body] (artifact spec body {:mode :inline}))
   ([spec body gen]
    (let [inputs (build-inputs spec body gen)
          paths  (cache/ensure-library! inputs compile/compile!)]
-     {:spec             spec
-      :body             body
-      :generated-source (:source inputs)
-      :library          (:library-path paths)
-      :source-path      (:source-path paths)
-      :symbol           (:symbol spec)
-      :status           (if (:cached? paths) :cached :compiled)})))
+     (cond-> {:spec             spec
+              :body             body
+              :generated-source (:source inputs)
+              :library          (:library-path paths)
+              :source-path      (:source-path paths)
+              :symbol           (:symbol spec)
+              :status           (if (:cached? paths) :cached :compiled)}
+       (module-info inputs) (assoc :modules (module-info inputs))))))
 
 (defn establish!
   "Build the artifact for `spec` and `body` and bind its symbol. Returns

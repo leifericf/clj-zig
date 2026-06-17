@@ -64,6 +64,18 @@
     (testing "the link flags attach to the main module, before -Mroot"
       (is (< (.indexOf args "-lc") (.indexOf args "-Mroot=/b/source.zig"))))))
 
+(deftest attribute-failure-points-at-the-module-or-the-wrapper
+  (let [roots {"mymod" "/pkg/src/root.zig"}]
+    (testing "stderr under a module's source dir is attributed to that module"
+      (is (= {:zig/origin :module :zig/module "mymod"}
+             (compile/attribute-failure "/pkg/src/util.zig:3:1: error: bad" roots))))
+    (testing "stderr in the wrapper source is attributed to the wrapper"
+      (is (= {:zig/origin :wrapper}
+             (compile/attribute-failure "/cache/x/source.zig:2:1: error: bad" roots))))
+    (testing "with no modules a failure is always the wrapper"
+      (is (= {:zig/origin :wrapper}
+             (compile/attribute-failure "/cache/x/source.zig:2:1: error" nil))))))
+
 (deftest compiles-a-scalar-function
   (let [dir    (scratch-dir)
         result (compile-add dir "return x + y;")]
