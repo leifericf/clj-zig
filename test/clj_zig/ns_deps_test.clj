@@ -4,8 +4,13 @@
   function descriptor still overrides. The round-trip links libm through a
   namespace declaration rather than a per-function descriptor."
   (:require [clojure.test :refer [deftest is testing]]
+            [clj-zig.cache :as cache]
             [clj-zig.core :as core]
             [clj-zig :as zig]))
+
+(defn- temp-dir []
+  (str (java.nio.file.Files/createTempDirectory
+        "clj-zig-mod" (make-array java.nio.file.attribute.FileAttribute 0))))
 
 (defn- define! [form]
   (binding [*ns* (the-ns 'clj-zig.ns-deps-test)]
@@ -39,6 +44,25 @@
     (testing "modules do not leak into the content-hashed build options"
       (is (= {:optimize "ReleaseSafe" :link ["m"]}
              (:options (core/build-inputs spec "return a;")))))))
+
+(deftest module-fingerprint-enters-build-inputs
+  (let [dir  (temp-dir)
+        root (str dir "/root.zig")]
+    (spit root "pub fn render() void {}")
+    (core/register-deps! 'ns.deps.modfp {:zig/modules {"pkg" {:path root}}})
+    (let [spec (zig/build-spec '{:ns ns.deps.modfp :name f :signature [a :f64 :ret :f64]})
+          in1  (core/build-inputs spec "return a;")
+          in2  (core/build-inputs spec "return a + 1.0;")]
+      (testing "the namespace's module contributes a fingerprint to the inputs"
+        (is (re-matches #"[0-9a-f]{12}" (get (:modules in1) "pkg"))))
+      (testing "a wrapper-body edit leaves the module fingerprint untouched"
+        (is (= (:modules in1) (:modules in2))))
+      (testing "the module fingerprint enters the content-hashed key"
+        (is (not= (cache/cache-key (dissoc in1 :modules))
+                  (cache/cache-key in1))))
+      (testing "the modules stay out of the build options"
+        (is (not (contains? (:options in1) :modules)))
+        (is (not (contains? (:options in1) :zig/modules)))))))
 
 (deftest namespace-link-resolves-a-c-call
   (testing "zig-deps links libm so a body calling c.sqrt round-trips"

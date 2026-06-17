@@ -53,6 +53,15 @@
       (is (map? (spec/build-spec c))
           (str "case must build a spec: " (:signature c))))))
 
+(defspec module-trees-yield-aligned-stats-and-contents 100
+  (prop/for-all [tree g/gen-module-tree]
+    (let [stats (g/tree->stats tree)
+          conts (g/tree->contents tree)]
+      (and (= (count tree) (count stats) (count conts))
+           (= (set (keys tree)) (set (map :path stats)) (set (map :path conts)))
+           (every? #(and (integer? (:size %)) (integer? (:mtime %))) stats)
+           (every? #(string? (:content %)) conts)))))
+
 (deftest carrier-vocabulary-is-sound
   (is (every? type/has-carrier? g/carrier-scalars))
   (is (not-any? type/has-carrier? [:u128 :i128 :f16 :f80 :f128 :void :noreturn]))

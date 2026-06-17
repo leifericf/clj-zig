@@ -248,6 +248,39 @@
             values (gen/vector-distinct (gen/choose 0 999) {:num-elements n})]
     (vec (mapcat (fn [i v] [(symbol (str "m" i)) v]) (range) values))))
 
+;; --- Module file closures (ADR 34 fingerprint) -------------------------
+
+(def gen-rel-path
+  "A relative path within a fake module file closure."
+  (gen/fmap #(str "src/f" % ".zig") (gen/choose 0 999)))
+
+(def gen-module-tree
+  "A fake module file closure: a map of relative path to a `{:content :size
+  :mtime}` entry, one to six distinct files. Size and mtime vary
+  independently of content, so the directory-signature heuristic can be
+  driven directly; the fingerprint properties run without touching the
+  filesystem."
+  (gen/let [paths   (gen/not-empty (gen/vector-distinct gen-rel-path {:max-elements 6}))
+            entries (gen/vector (gen/hash-map
+                                 :content (gen/fmap #(apply str %)
+                                                    (gen/vector gen/char-alphanumeric 0 40))
+                                 :size    (gen/choose 0 100000)
+                                 :mtime   (gen/choose 0 2000000000))
+                                (count paths))]
+    (zipmap paths entries)))
+
+(defn tree->stats
+  "The `cache/dir-signature` stat entries for a fake module tree: each file's
+  path, size, and mtime, no contents read."
+  [tree]
+  (mapv (fn [[path {:keys [size mtime]}]] {:path path :size size :mtime mtime}) tree))
+
+(defn tree->contents
+  "The `cache/content-fingerprint` content entries for a fake module tree:
+  each file's path and contents."
+  [tree]
+  (mapv (fn [[path {:keys [content]}]] {:path path :content content}) tree))
+
 ;; --- Negative space ----------------------------------------------------
 
 (def junk-forms

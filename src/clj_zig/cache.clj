@@ -46,13 +46,50 @@
   even when the spec and body are unchanged; the spec, body, dependencies,
   options, Zig version, and target enter it as well. A body that imports
   other Zig files adds their contents under `:aux`, so editing an imported
-  file recompiles; a body with no imports hashes exactly as before."
-  [{:keys [spec body source deps options zig-version target aux-files]}]
+  file recompiles; a body with no imports hashes exactly as before. External
+  Zig modules enter as `:modules`, a name-to-fingerprint map, so a changed
+  module relinks its dependents while leaving every other key untouched."
+  [{:keys [spec body source deps options zig-version target aux-files modules]}]
   (subs (sha256-hex (canonical (cond-> {:spec spec :body body :source source :deps deps
                                         :options options :zig-version zig-version
                                         :target target}
-                                 (seq aux-files) (assoc :aux aux-files))))
+                                 (seq aux-files) (assoc :aux aux-files)
+                                 (seq modules)   (assoc :modules modules))))
         0 12))
+
+;; --- Pure: external-module fingerprint (ADR 34) -------------------------
+
+(defn dir-signature
+  "A cheap, order-independent signature over a module's file closure, keyed
+  on each file's path, size, and mtime, no contents read. An untouched tree
+  yields the same signature; a changed size or mtime flips it. `stats` is a
+  seq of `{:path :size :mtime}` gathered by the shell."
+  [stats]
+  (sha256-hex (canonical (set (map (juxt :path :size :mtime) stats)))))
+
+(defn content-fingerprint
+  "The twelve-char content fingerprint of a module's file closure: each
+  file's path paired with the hash of its contents. Order-independent, so it
+  depends only on the set of files and their contents. `contents` is a seq
+  of `{:path :content}` read by the shell."
+  [contents]
+  (subs (sha256-hex (canonical (into {} (map (fn [{:keys [path content]}]
+                                               [path (sha256-hex content)]))
+                                     contents)))
+        0 12))
+
+(defn memoized-fingerprint
+  "Resolve a module's fingerprint against a prior memo `entry` (`{:signature
+  :fingerprint}`, or nil when none) and the current `signature`. Returns
+  `[fingerprint next-entry]`. When the signature matches the memo, the
+  fingerprint is reused and `compute` is never called; otherwise `compute`
+  produces a fresh fingerprint that the returned entry records. Pure; the
+  atom that carries the entry across calls is the shell."
+  [entry signature compute]
+  (if (= (:signature entry) signature)
+    [(:fingerprint entry) entry]
+    (let [fp (compute)]
+      [fp {:signature signature :fingerprint fp}])))
 
 (defn- extension-for-target
   "The shared-library suffix for a target triple, without the dot."
@@ -112,6 +149,81 @@
                    (#{"x86_64" "amd64"} arch)  "x86_64"
                    :else                       arch)]
     (str os "-" arch)))
+
+;; --- Shell: external-module fingerprint (ADR 34) ------------------------
+
+(defn- closure-files
+  "The `.zig` files in a module root's directory tree. The closure is a
+  heuristic for the module's sources: every Zig file under the directory
+  holding the root. A path with no directory yields an empty closure."
+  [root-path]
+  (let [root (io/file root-path)
+        dir  (if (.isDirectory root) root (.getParentFile root))]
+    (when dir
+      (->> (file-seq dir)
+           (filter (fn [^java.io.File f]
+                     (and (.isFile f) (str/ends-with? (.getName f) ".zig"))))))))
+
+(defn- stat-closure
+  "The `dir-signature` stat entries for a module root's closure."
+  [root-path]
+  (mapv (fn [^java.io.File f]
+          {:path (.getPath f) :size (.length f) :mtime (.lastModified f)})
+        (closure-files root-path)))
+
+(defn- read-closure
+  "The `content-fingerprint` content entries for a module root's closure."
+  [root-path]
+  (mapv (fn [^java.io.File f] {:path (.getPath f) :content (slurp f)})
+        (closure-files root-path)))
+
+(defn- git-fingerprint
+  "The twelve-char fingerprint of a pinned `:git/sha` module reference,
+  derived from the sha and root alone: a pinned ref is already
+  content-addressed, so no file is read."
+  [{:keys [git/sha root]}]
+  (subs (sha256-hex (canonical {:git/sha sha :root root})) 0 12))
+
+(defonce ^:private module-fingerprint-cache
+  ;; Per module-root path, the last seen `{:signature :fingerprint}`, so an
+  ;; unchanged tree reuses its fingerprint without rereading contents.
+  (atom {}))
+
+(def fs-io
+  "The filesystem reader `module-fingerprint` uses outside tests: `:stat`
+  gathers a closure's stat entries for the signature, `:read` its contents
+  for the fingerprint."
+  {:stat stat-closure :read read-closure})
+
+(defn module-fingerprint
+  "The twelve-char fingerprint for one external module reference, the single
+  value it contributes to a dependent function's content hash (ADR 34). A
+  pinned `:git/sha` ref fingerprints from the sha and root, with no
+  filesystem read; a dev `:path` ref fingerprints its file closure, memoized
+  behind the cheap `dir-signature` so an unchanged tree reuses the
+  fingerprint without rereading contents. `fs-io` supplies `:stat` and
+  `:read` over the closure; tests inject fakes."
+  [ref {:keys [stat read]}]
+  (if (:git/sha ref)
+    (git-fingerprint ref)
+    (let [path        (:path ref)
+          signature   (dir-signature (stat path))
+          [fp entry]  (memoized-fingerprint (get @module-fingerprint-cache path)
+                                            signature
+                                            #(content-fingerprint (read path)))]
+      (swap! module-fingerprint-cache assoc path entry)
+      fp)))
+
+(defn modules-fingerprint
+  "The fingerprint of each external module in a `name -> ref` map, keyed by
+  import name, for the content hash; nil when there are none. Two wrappers
+  over the same module share a fingerprint, so the cache stays
+  content-addressed."
+  ([modules] (modules-fingerprint modules fs-io))
+  ([modules io]
+   (not-empty
+    (reduce-kv (fn [m name ref] (assoc m name (module-fingerprint ref io)))
+               {} modules))))
 
 (defn library-present?
   "True when a usable library exists. A zero-byte file (left by a failed

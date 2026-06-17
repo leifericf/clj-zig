@@ -187,6 +187,7 @@
   ([spec body] (build-inputs spec body {:mode :inline}))
   ([spec body {:keys [mode entry options-extra aux-files] :or {mode :inline}}]
    (let [decls (preamble (:ns spec))
+         mods  (modules-in (:ns spec))
          src   (case mode
                  :raw  (join-sources [decls body])
                  :file (join-sources [decls body (source/generate spec body {:mode :file :entry entry})])
@@ -198,7 +199,8 @@
               :options     (merge {:optimize "ReleaseSafe"} (deps-in (:ns spec)) options-extra)
               :zig-version toolchain/pinned-version
               :target      (cache/target-triple)}
-       aux-files (assoc :aux-files aux-files)))))
+       aux-files (assoc :aux-files aux-files)
+       mods      (assoc :modules (cache/modules-fingerprint mods))))))
 
 (defn artifact
   "Compile or reuse the native library for `spec` and `body`. Returns the

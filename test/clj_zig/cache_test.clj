@@ -6,6 +6,7 @@
             [clj-zig.cache :as cache]
             [clj-zig.compile :as compile]
             [clj-zig.ffm :as ffm]
+            [clj-zig.gen :as g]
             [clj-zig.source :as source]
             [clj-zig.spec :as spec]))
 
@@ -46,6 +47,51 @@
     (testing "options change"
       (is (not= base (cache/cache-key (assoc (inputs nil "return x + y;")
                                              :options {:optimize "Debug"})))))))
+
+(deftest cache-key-includes-module-fingerprints
+  (let [base (cache/cache-key (inputs nil "return x + y;"))
+        with (cache/cache-key (assoc (inputs nil "return x + y;")
+                                     :modules {"clojo" "0123456789ab"}))]
+    (testing "a declared module shifts the key"
+      (is (not= base with)))
+    (testing "a changed module fingerprint shifts it again"
+      (is (not= with (cache/cache-key (assoc (inputs nil "return x + y;")
+                                             :modules {"clojo" "ffffffffffff"})))))
+    (testing "no modules hashes exactly as before"
+      (is (= base (cache/cache-key (assoc (inputs nil "return x + y;") :modules nil)))))))
+
+(deftest module-fingerprint-memoizes-behind-the-dir-signature
+  (let [tree  {"src/a.zig" {:content "A" :size 1 :mtime 10}
+               "src/b.zig" {:content "B" :size 1 :mtime 20}}
+        reads (atom 0)
+        io    {:stat (fn [_] (g/tree->stats tree))
+               :read (fn [_] (swap! reads inc) (g/tree->contents tree))}
+        ref   {:path (str "mod-" (System/nanoTime) ".zig")}]
+    (testing "the first call reads the closure and fingerprints it"
+      (let [fp (cache/module-fingerprint ref io)]
+        (is (re-matches #"[0-9a-f]{12}" fp))
+        (is (= 1 @reads))))
+    (testing "an unchanged tree reuses the fingerprint without rereading"
+      (let [fp1 (cache/module-fingerprint ref io)
+            fp2 (cache/module-fingerprint ref io)]
+        (is (= fp1 fp2))
+        (is (= 1 @reads))))
+    (testing "a changed stat signature recomputes from the contents"
+      (let [io2 {:stat (fn [_] (g/tree->stats (assoc-in tree ["src/a.zig" :size] 99)))
+                 :read (fn [_] (swap! reads inc) (g/tree->contents tree))}]
+        (cache/module-fingerprint ref io2)
+        (is (= 2 @reads))))))
+
+(deftest a-pinned-module-fingerprints-without-reading-the-filesystem
+  (let [boom {:stat (fn [_] (throw (AssertionError. "stat must not run")))
+              :read (fn [_] (throw (AssertionError. "read must not run")))}
+        fp   (cache/module-fingerprint {:git/sha "abc123" :root "src/root.zig"} boom)]
+    (testing "a :git/sha ref hashes from the sha and root alone"
+      (is (re-matches #"[0-9a-f]{12}" fp))
+      (is (= fp (cache/module-fingerprint {:git/sha "abc123" :root "src/root.zig"} boom))))
+    (testing "a different sha or root yields a different fingerprint"
+      (is (not= fp (cache/module-fingerprint {:git/sha "def456" :root "src/root.zig"} boom)))
+      (is (not= fp (cache/module-fingerprint {:git/sha "abc123" :root "src/other.zig"} boom))))))
 
 (deftest artifact-paths-follow-the-documented-layout
   (let [p (cache/artifact-paths {:root "/tmp/c" :target "macos-aarch64"
