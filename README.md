@@ -65,7 +65,7 @@ A body can also live in a real `.zig` file instead of a string. The file is ordi
 ```clojure
 (defnz hypotenuse
   [a :f64 b :f64 :ret :f64]
-  {:zig/file "hyp.zig" :zig/link ["m"]})
+  {:zig/file "hyp.zig" :c/link ["m"]})
 ```
 
 ```zig

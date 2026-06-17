@@ -19,9 +19,9 @@ but the compile shell ignored it.
 ## Decision
 
 A `{:zig/file ...}` descriptor may carry C-interop options that become
-`zig build-lib` flags: `:zig/include-path` -> `-I`,
-`:zig/system-include-path` -> `-isystem`, `:zig/link-path` -> `-L`, and
-`:zig/link` -> `-l`. The pure core collects them into the `:options` map;
+`zig build-lib` flags: `:c/include-path` -> `-I`,
+`:c/system-include-path` -> `-isystem`, `:c/link-path` -> `-L`, and
+`:c/link` -> `-l`. The pure core collects them into the `:options` map;
 the compile shell maps `:options` to flag tokens and appends them after
 `-lc`, before the output and source arguments. `-lc` stays unconditional.
 
@@ -36,7 +36,7 @@ same descriptor:
 
     (defnz hyp
       [a :f64 b :f64 :ret :f64]
-      {:zig/file "hyp.zig" :zig/link ["m"]})
+      {:zig/file "hyp.zig" :c/link ["m"]})
 
 The flags are per function, which matches the content-addressed cache: a
 function records exactly the build that produced its library. A library

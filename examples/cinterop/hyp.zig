@@ -1,6 +1,6 @@
 // A C header imported straight into Zig: `@cImport` pulls in math.h, and
 // the function calls C's `sqrt` directly. The compiler needs libm linked,
-// which the Clojure side requests with `:zig/link ["m"]`.
+// which the Clojure side requests with `:c/link ["m"]`.
 const c = @cImport({
     @cInclude("math.h");
 });

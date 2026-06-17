@@ -196,10 +196,10 @@
   [descriptor]
   (not-empty
    (cond-> {}
-     (:zig/include-path descriptor)        (assoc :include-path (vec (:zig/include-path descriptor)))
-     (:zig/system-include-path descriptor) (assoc :system-include-path (vec (:zig/system-include-path descriptor)))
-     (:zig/link-path descriptor)           (assoc :link-path (vec (:zig/link-path descriptor)))
-     (:zig/link descriptor)                (assoc :link (vec (:zig/link descriptor))))))
+     (:c/include-path descriptor)        (assoc :include-path (vec (:c/include-path descriptor)))
+     (:c/system-include-path descriptor) (assoc :system-include-path (vec (:c/system-include-path descriptor)))
+     (:c/link-path descriptor)           (assoc :link-path (vec (:c/link-path descriptor)))
+     (:c/link descriptor)                (assoc :link (vec (:c/link descriptor))))))
 
 (defn establish-binding-from!
   "Resolve a `{:zig/file ...}` descriptor relative to `defining-file`, read
@@ -284,8 +284,8 @@
         {:zig/file \"dot.zig\"})
 
   A file holds a complete Zig `pub fn` the generated wrapper calls; the
-  descriptor may also carry C-interop options (`:zig/link`,
-  `:zig/include-path`, ...), an entry name (`:zig/fn`), and a raw escape
+  descriptor may also carry C-interop options (`:c/link`,
+  `:c/include-path`, ...), an entry name (`:zig/fn`), and a raw escape
   hatch (`:zig/raw`, `:zig/symbol`). Redefining recompiles; a failed
   recompile keeps the last good binding."
   [fn-name & tail]
