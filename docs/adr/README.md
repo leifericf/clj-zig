@@ -40,3 +40,4 @@ Later ADRs capture decisions made during development. Written via the
 | [26](26-external-zig-source-files.md) | A defnz body may be sourced from a Zig file |
 | [27](27-compile-options-c-interop.md) | Compile options carry C-interop flags |
 | [28](28-namespace-as-zig-namespace.md) | A Clojure namespace is a Zig namespace |
+| [29](29-multi-file-zig-imports.md) | Multi-file Zig imports copy the import closure into the build |
