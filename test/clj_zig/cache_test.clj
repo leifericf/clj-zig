@@ -5,6 +5,7 @@
             [clojure.test :refer [deftest is testing]]
             [clj-zig.cache :as cache]
             [clj-zig.compile :as compile]
+            [clj-zig.ffm :as ffm]
             [clj-zig.source :as source]
             [clj-zig.spec :as spec]))
 
@@ -95,6 +96,52 @@
     (is (.exists (io/file root)))
     (cache/clean! root)
     (is (not (.exists (io/file root))))))
+
+(deftest bundled-resource-path-mirrors-the-cache-layout
+  (testing "a baked library is keyed by target, namespace, name, and hash
+  under the resource root"
+    (is (= "clj-zig/native/macos-aarch64/app.core/add-83a1c0f9e1b2/libadd-83a1c0f9e1b2.dylib"
+           (cache/bundled-resource-path {:target "macos-aarch64" :ns 'app.core
+                                         :name 'add :hash "83a1c0f9e1b2"})))
+    (is (= "clj-zig/native/linux-x86_64/app.core/add-83a1c0f9e1b2/libadd-83a1c0f9e1b2.so"
+           (cache/bundled-resource-path {:target "linux-x86_64" :ns 'app.core
+                                         :name 'add :hash "83a1c0f9e1b2"})))))
+
+(deftest a-bundled-library-loads-without-compiling
+  (testing "a baked library on the classpath is extracted and loaded, and
+  the compiler is never invoked"
+    (let [in        (assoc (inputs nil "return x + y;")
+                           :target (cache/target-triple)
+                           :zig-version (cache/zig-version))
+          key       (cache/cache-key in)
+          coords    {:target (:target in) :ns 'app.core :name 'add :hash key}
+          res-root  (scratch-root)
+          res-file  (io/file res-root (cache/bundled-resource-path coords))
+          build-dir (scratch-root)
+          built     (compile/compile!
+                     {:source       (:source in)
+                      :source-path  (str build-dir "/source.zig")
+                      :library-path (str build-dir "/libadd." (compile/dynamic-library-extension))
+                      :ctx          {:var 'app.core/add :signature (:signature add-spec)}})
+          prev      (.getContextClassLoader (Thread/currentThread))
+          loader    (java.net.URLClassLoader.
+                     (into-array java.net.URL [(.toURL (.toURI (io/file res-root)))])
+                     prev)
+          compiled? (atom false)]
+      (io/make-parents res-file)
+      (io/copy (io/file (:library built)) res-file)
+      (try
+        (.setContextClassLoader (Thread/currentThread) loader)
+        (let [r (cache/ensure-library! (assoc in :root (scratch-root))
+                                       (fn [_] (reset! compiled? true)))]
+          (is (true? (:bundled? r)) "the library resolves from the classpath")
+          (is (false? @compiled?) "the bundled path never invokes the compiler")
+          (is (.exists (io/file (:library-path r))) "it is extracted into the cache")
+          (testing "the extracted library binds and runs"
+            (let [add (ffm/bind add-spec (:library-path r))]
+              (is (= 42 (add 20 22))))))
+        (finally
+          (.setContextClassLoader (Thread/currentThread) prev))))))
 
 (deftest real-compile-reuses-on-second-call
   (testing "content addressing over a genuine zig build"

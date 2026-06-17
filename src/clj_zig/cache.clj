@@ -72,6 +72,21 @@
      :library-path  (str dir "/lib" name "-" hash "." (extension-for-target target))
      :manifest-path (str dir "/manifest.edn")}))
 
+(def ^:private resource-root
+  "The classpath root under which a library ships its baked native code.
+  The layout below it mirrors the filesystem cache, so a baked artifact is
+  found by the same target, namespace, name, and hash."
+  "clj-zig/native")
+
+(defn bundled-resource-path
+  "The classpath resource path for a baked library, mirroring the cache
+  layout under the resource root. The library's content hash is in the
+  path, so a resource matches a function's hash for a target or it does
+  not."
+  [{:keys [target ns name hash]}]
+  (str resource-root "/" target "/" ns "/" name "-" hash
+       "/lib" name "-" hash "." (extension-for-target target)))
+
 ;; --- Shell: environment, filesystem -------------------------------------
 
 (defn- var-symbol [spec]
@@ -149,19 +164,46 @@
                                :hash (cache-key inputs)})]
     (delete-recursively (io/file (:dir paths)))))
 
+(defn- bundled-library
+  "The classpath URL of a baked library for these coordinates, or nil when
+  none ships on the classpath."
+  [coords]
+  (io/resource (bundled-resource-path coords)))
+
+(defn- extract-bundled!
+  "Copy a baked library resource into the filesystem cache at
+  `library-path`, so a bundled artifact loads like a locally built one."
+  [resource library-path]
+  (let [out (io/file library-path)]
+    (io/make-parents out)
+    (with-open [in (io/input-stream resource)]
+      (io/copy in out))))
+
 (defn ensure-library!
-  "Return the cached artifact paths for these `inputs`, compiling through
-  `compile!-fn` only when the library is absent. Identical inputs reuse
-  the cached library; any change rebuilds under a fresh path. `inputs`
-  carries `:spec`, `:body`, `:source`, `:deps`, `:options`,
+  "Return the cached artifact paths for these `inputs`, resolving a library
+  in three steps: a present filesystem artifact, then a baked library on
+  the classpath, then a fresh compile through `compile!-fn`. A baked
+  library is extracted into the cache and loaded without invoking Zig.
+  Identical inputs reuse a resolved library; any change resolves a fresh
+  path. `inputs` carries `:spec`, `:body`, `:source`, `:deps`, `:options`,
   `:zig-version`, `:target`, and an optional `:root`."
   [{:keys [spec source root aux-files] :as inputs} compile!-fn]
   (let [artifact-key (cache-key inputs)
-        paths        (artifact-paths {:root root :target (:target inputs)
-                                      :ns (:ns spec) :name (:name spec)
-                                      :hash artifact-key})]
-    (if (library-present? paths)
+        coords       {:target (:target inputs) :ns (:ns spec) :name (:name spec)
+                      :hash artifact-key}
+        paths        (artifact-paths (assoc coords :root root))
+        bundled      (bundled-library coords)]
+    (cond
+      (library-present? paths)
       (assoc paths :hash artifact-key :cached? true)
+
+      bundled
+      (do
+        (extract-bundled! bundled (:library-path paths))
+        (write-manifest! paths inputs artifact-key)
+        (assoc paths :hash artifact-key :cached? false :bundled? true))
+
+      :else
       (do
         (compile!-fn {:source       source
                       :source-path  (:source-path paths)
