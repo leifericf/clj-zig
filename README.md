@@ -88,8 +88,8 @@ A Clojure namespace is a Zig namespace. Name a function without a body and clj-z
 
 (zig-deps {:c/link ["m"]})         ;; link libm for the whole namespace
 
-(defnz hypotenuse [a :f64 b :f64 :ret :f64])   ;; body: geometry.zig's pub fn hypotenuse
-(defnz circle-area [r :f64 :ret :f64])
+(defnz hypotenuse)                 ;; signature and body from geometry.zig's pub fn hypotenuse
+(defnz circle-area)
 ```
 
 ```zig
@@ -100,6 +100,8 @@ fn square(x: f64) f64 { return x * x; }
 pub fn hypotenuse(a: f64, b: f64) f64 { return c.sqrt(square(a) + square(b)); }
 pub fn circle_area(r: f64) f64 { return 3.141592653589793 * square(r); }
 ```
+
+With no signature, the boundary contract is inferred from the `pub fn` prototype: `pub fn hypotenuse(a: f64, b: f64) f64` gives `[a :f64 b :f64 :ret :f64]`. A Zig type fixes the shape, but a returned `[]T` or `*T` carries no ownership or handle policy in its type, so a function returning one needs an explicit signature declaring `[:owned ...]` or `[:handle ...]`; until then it reports `:clj-zig/contract-policy-needed`.
 
 Each function still compiles to its own content-addressed library, so redefining one recompiles only that one and a failed compile keeps the last good binding. A kebab-case name maps to its snake_case `pub fn` (`circle-area` to `circle_area`); the optional `//! clj-zig: <ns>` header asserts the file belongs to the namespace. A body file may `@import` sibling and subdirectory `.zig` files, which are reproduced and compiled alongside it. See [ADR 28](docs/adr/28-namespace-as-zig-namespace.md) and [ADR 29](docs/adr/29-multi-file-zig-imports.md).
 

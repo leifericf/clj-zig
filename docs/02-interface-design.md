@@ -102,6 +102,15 @@ The body may be omitted entirely. A `defnz` with a signature but no body takes i
 
 The Clojure namespace is the Zig namespace: shared imports, helpers, and types live once in that file, and `zig-deps` declares the namespace's C link flags. A kebab-case name maps to its snake_case `pub fn`. An optional `//! clj-zig: <ns>` first-line header asserts the file belongs to the namespace. A body file may `@import` sibling and subdirectory `.zig` files. See [ADR 28](adr/28-namespace-as-zig-namespace.md) and [ADR 29](adr/29-multi-file-zig-imports.md).
 
+The signature may be omitted as well:
+
+```clojure
+;; signature inferred from app/geometry.zig's pub fn hypotenuse
+(defnz hypotenuse)
+```
+
+A Zig type fixes the shape of each argument and the return, so the boundary contract is read straight from the `pub fn` prototype. Policy that a Zig type cannot express is the exception: a returned `[]T` carries no ownership rule and a returned `*T` is a pointer or an opaque handle by the caller's choice, so a function returning either needs an explicit signature stating `[:owned ...]` or `[:handle ...]`. Inferring one reports `:clj-zig/contract-policy-needed` instead of guessing.
+
 ## `defz`
 
 `defz` defines Zig-side declarations that are not directly Clojure-callable.
