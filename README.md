@@ -78,6 +78,31 @@ pub fn hypotenuse(a: f64, b: f64) f64 {
 
 The file path resolves next to the source file, then on the classpath. See [ADR 26](docs/adr/26-external-zig-source-files.md) and [ADR 27](docs/adr/27-compile-options-c-interop.md).
 
+## A namespace of native functions
+
+A Clojure namespace is a Zig namespace. Name a function without a body and clj-zig takes the body from the `pub fn` of the same name in the `.zig` file beside the namespace's source: `app/geometry.clj` pairs with `app/geometry.zig`. Shared imports, helpers, and types live once in that file, and `zig-deps` declares the namespace's C link flags so each function inherits them:
+
+```clojure
+(ns geometry
+  (:require [clj-zig.core :refer [defnz zig-deps]]))
+
+(zig-deps {:c/link ["m"]})         ;; link libm for the whole namespace
+
+(defnz hypotenuse [a :f64 b :f64 :ret :f64])   ;; body: geometry.zig's pub fn hypotenuse
+(defnz circle-area [r :f64 :ret :f64])
+```
+
+```zig
+//! clj-zig: geometry
+const c = @cImport({ @cInclude("math.h"); });
+fn square(x: f64) f64 { return x * x; }
+
+pub fn hypotenuse(a: f64, b: f64) f64 { return c.sqrt(square(a) + square(b)); }
+pub fn circle_area(r: f64) f64 { return 3.141592653589793 * square(r); }
+```
+
+Each function still compiles to its own content-addressed library, so redefining one recompiles only that one and a failed compile keeps the last good binding. A kebab-case name maps to its snake_case `pub fn` (`circle-area` to `circle_area`); the optional `//! clj-zig: <ns>` header asserts the file belongs to the namespace. A body file may `@import` sibling and subdirectory `.zig` files, which are reproduced and compiled alongside it. See [ADR 28](docs/adr/28-namespace-as-zig-namespace.md) and [ADR 29](docs/adr/29-multi-file-zig-imports.md).
+
 ## Inspect and redefine
 
 Every function is an ordinary Var carrying its spec, source, and build status:
@@ -114,7 +139,10 @@ from the JVM:
 - [`bit_ops.clj`](examples/bit_ops.clj): sub-byte packing and single-instruction bit intrinsics.
 - [`inline_asm.clj`](examples/inline_asm.clj): inline assembly, with the bodies in sibling `.zig` files.
 
-And [`cinterop.clj`](examples/cinterop.clj) imports a C header with `@cImport` and links a C library, its body in a sibling `.zig` file.
+And two show a namespace backed by a co-located `.zig`:
+
+- [`cinterop.clj`](examples/cinterop.clj): imports a C header with `@cImport` and links a C library, its body in a sibling `.zig` file.
+- [`geometry.clj`](examples/geometry.clj): bodyless functions sourced from the co-located `geometry.zig`, with `zig-deps` linking libm for the whole namespace.
 
 ## Reading order
 

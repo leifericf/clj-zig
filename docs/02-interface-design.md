@@ -88,6 +88,20 @@ The generated wrapper provides ergonomic Zig locals such as `xs: []const f64`. I
 
 A body may instead live in a real `.zig` file, named with a `{:zig/file "name.zig"}` descriptor in place of the string. The file holds a complete Zig function the generated wrapper calls, keeping editor and `zig fmt` support; the same descriptor can link C libraries so the body may `@cImport` a C header. See [ADR 26](adr/26-external-zig-source-files.md) and [ADR 27](adr/27-compile-options-c-interop.md).
 
+## Bodyless functions and the namespace file
+
+The body may be omitted entirely. A `defnz` with a signature but no body takes its body from the `pub fn` of the same name in the `.zig` file co-located with the namespace's source, the same stem as the `.clj`:
+
+```clojure
+;; body: the pub fn hypotenuse in app/geometry.zig, beside app/geometry.clj
+(defnz hypotenuse
+  [a :f64
+   b :f64
+   :ret :f64])
+```
+
+The Clojure namespace is the Zig namespace: shared imports, helpers, and types live once in that file, and `zig-deps` declares the namespace's C link flags. A kebab-case name maps to its snake_case `pub fn`. An optional `//! clj-zig: <ns>` first-line header asserts the file belongs to the namespace. A body file may `@import` sibling and subdirectory `.zig` files. See [ADR 28](adr/28-namespace-as-zig-namespace.md) and [ADR 29](adr/29-multi-file-zig-imports.md).
+
 ## `defz`
 
 `defz` defines Zig-side declarations that are not directly Clojure-callable.
