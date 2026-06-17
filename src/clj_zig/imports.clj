@@ -4,11 +4,13 @@
 
   A file-mode body is inlined into the generated `source.zig`, so its
   `@import(\"util.zig\")` statements resolve relative to `source.zig`'s
-  location. To make a body's relative imports resolve, the importing
-  files are reproduced inside the cache entry: the import graph's common
-  ancestor directory becomes the entry directory, and `source.zig` sits at
-  the body's position within it. Subdirectory imports, `../` imports, and
-  cycles then resolve exactly as Zig resolves them from the original tree.
+  location. To make a body's relative imports resolve, the imported files
+  are reproduced inside the cache entry at their paths relative to the body
+  file. `source.zig` is the module root, so its directory is the module
+  path; sibling and subdirectory imports resolve and may themselves use
+  `..` as long as they stay within it. An import that escapes the body's
+  directory hits Zig's own \"import outside module path\" rule, exactly as
+  it would were the body compiled directly as a root file.
 
   `scan` is pure; `closure` reads the filesystem."
   (:require [clojure.java.io :as io]
@@ -43,48 +45,44 @@
 (defn- to-slash [s]
   (str/replace s java.io.File/separator "/"))
 
-(defn- common-ancestor
-  "The deepest directory containing every file in `files`."
-  [files]
-  (let [sep        (re-pattern (java.util.regex.Pattern/quote java.io.File/separator))
-        dir-parts  (map (fn [^java.io.File f]
-                          (str/split (.getPath (.getParentFile f)) sep))
-                        files)
-        prefix     (->> (apply map list dir-parts)
-                        (take-while (fn [col] (apply = col)))
-                        (map first))]
-    (str/join java.io.File/separator prefix)))
+(defn- relativize [^java.io.File dir ^java.io.File f]
+  (to-slash (str (.relativize (.toPath dir) (.toPath f)))))
 
-(defn- relativize [root ^java.io.File f]
-  (to-slash (str (.relativize (.toPath (io/file root)) (.toPath f)))))
+(defn- within?
+  "True when `f` is at or below `dir`, so it is inside the module path
+  rooted there. A file above `dir` relativizes to a `..`-prefixed path."
+  [^java.io.File dir ^java.io.File f]
+  (not (str/starts-with? (relativize dir f) "..")))
 
 (defn closure
-  "The file-mode body's import graph, reproduced as paths relative to the
-  graph's common ancestor. `body-path` is the resolved body file and
-  `body-text` its content. Returns `{:source-reldir <body's directory
-  relative to the common ancestor> :files [{:rel <path under the ancestor>
-  :text <content>}...]}` covering the body and every relative `.zig` it
-  transitively imports, the body first. An import that does not resolve to
-  a file is left out, for the Zig compiler to report against the import
-  line. Shell: reads the filesystem."
+  "The relative `.zig` files a file-mode body imports, reproduced as paths
+  relative to the body's directory. `body-path` is the resolved body file
+  and `body-text` its content. Returns `{:files [{:rel <path under the
+  body's directory> :text <content>}...]}` for every relative `.zig`
+  transitively imported within the body's directory, sorted by path. The
+  body itself is not included; it is inlined into `source.zig`. An import
+  that does not resolve to a file, or that escapes the body's directory, is
+  left out for the Zig compiler to report against the import line. Shell:
+  reads the filesystem."
   [body-path body-text]
-  (let [body (canonical-file body-path)
-        graph (loop [acc   {body body-text}
-                     queue (vec (imported-files body body-text))]
-                (if (empty? queue)
-                  acc
-                  (let [f (first queue)]
-                    (cond
-                      (contains? acc f) (recur acc (subvec queue 1))
-                      (not (.isFile f)) (recur acc (subvec queue 1))
-                      :else             (let [t (slurp f)]
-                                          (recur (assoc acc f t)
-                                                 (into (subvec queue 1)
-                                                       (imported-files f t))))))))
-        root  (common-ancestor (keys graph))]
-    {:source-reldir (relativize root (.getParentFile body))
-     :files (->> graph
-                 (map (fn [[^java.io.File f t]] {:rel (relativize root f) :text t}))
+  (let [body     (canonical-file body-path)
+        body-dir (.getParentFile body)
+        graph    (loop [acc   {}
+                        queue (vec (imported-files body body-text))]
+                   (if (empty? queue)
+                     acc
+                     (let [^java.io.File f (first queue)
+                           rest-q (subvec queue 1)]
+                       (if (or (= f body)
+                               (contains? acc f)
+                               (not (.isFile f))
+                               (not (within? body-dir f)))
+                         (recur acc rest-q)
+                         (let [t (slurp f)]
+                           (recur (assoc acc f t)
+                                  (into rest-q (imported-files f t))))))))]
+    {:files (->> graph
+                 (map (fn [[^java.io.File f t]] {:rel (relativize body-dir f) :text t}))
                  (sort-by :rel)
                  vec)}))
 

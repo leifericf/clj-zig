@@ -40,13 +40,22 @@
   canonical source to `source-path` first. Returns
   `{:library <path> :source-path <path>}` on success; throws a
   structured diagnostic on failure. `ctx` adds `:var` and `:signature`
-  to that diagnostic. `options` carries C-interop include and link flags."
-  [{:keys [source source-path library-path ctx options]}]
+  to that diagnostic. `options` carries C-interop include and link flags;
+  `aux-files` are imported Zig files to write beside the source first, each
+  `{:path <absolute> :text <content>}`."
+  [{:keys [source source-path library-path ctx options aux-files]}]
   (let [src-file (io/file source-path)
         lib-file (io/file library-path)
         src-abs  (.getAbsolutePath src-file)
         lib-abs  (.getAbsolutePath lib-file)]
     (io/make-parents src-file)
+    ;; Reproduce the body's imported files at their resolved relative
+    ;; positions so the body's `@import` statements resolve from
+    ;; `source.zig` the way they resolve from the original file.
+    (doseq [{:keys [path text]} aux-files]
+      (let [f (io/file path)]
+        (io/make-parents f)
+        (spit f text)))
     (spit src-file source)
     ;; zig fmt owns formatting. A syntax error here leaves the file
     ;; untouched and resurfaces as the authoritative build error

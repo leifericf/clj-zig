@@ -32,19 +32,18 @@
   (testing "whitespace inside the call is tolerated"
     (is (= ["a.zig"] (imports/scan "@import(\n  \"a.zig\"\n)")))))
 
-(deftest closure-of-a-bodyless-import-is-just-the-body
+(deftest closure-of-a-body-with-no-imports-is-empty
   (let [dir  (scratch-dir)
-        body (write dir "geometry.zig" "pub fn f() void {}\n")
-        out  (imports/closure body (slurp body))]
-    (is (= "" (:source-reldir out)))
-    (is (= ["geometry.zig"] (rels out)))))
+        body (write dir "geometry.zig" "pub fn f() void {}\n")]
+    (is (= [] (rels (imports/closure body (slurp body)))))))
 
 (deftest closure-follows-a-transitive-chain
   (let [dir  (scratch-dir)
         body (write dir "a.zig" "const b = @import(\"b.zig\");\npub fn f() void {}\n")]
     (write dir "b.zig" "const c = @import(\"c.zig\");\n")
     (write dir "c.zig" "pub const K = 1;\n")
-    (is (= ["a.zig" "b.zig" "c.zig"] (rels (imports/closure body (slurp body)))))))
+    (testing "the body is inlined, not copied; its imports follow transitively"
+      (is (= ["b.zig" "c.zig"] (rels (imports/closure body (slurp body))))))))
 
 (deftest closure-collapses-a-diamond
   (let [dir  (scratch-dir)
@@ -52,25 +51,32 @@
     (write dir "b.zig" "const d = @import(\"d.zig\");\n")
     (write dir "c.zig" "const d = @import(\"d.zig\");\n")
     (write dir "d.zig" "pub const K = 1;\n")
-    (is (= ["a.zig" "b.zig" "c.zig" "d.zig"] (rels (imports/closure body (slurp body)))))))
+    (is (= ["b.zig" "c.zig" "d.zig"] (rels (imports/closure body (slurp body)))))))
 
 (deftest closure-tolerates-a-cycle
   (let [dir  (scratch-dir)
         body (write dir "a.zig" "const b = @import(\"b.zig\");\n")]
     (write dir "b.zig" "const a = @import(\"a.zig\");\n")
-    (is (= ["a.zig" "b.zig"] (rels (imports/closure body (slurp body)))))))
+    (testing "b imports a back; a is the inlined body, so only b is copied"
+      (is (= ["b.zig"] (rels (imports/closure body (slurp body))))))))
 
-(deftest closure-spans-parent-directories
+(deftest closure-keeps-subdirectory-imports
+  (let [dir  (scratch-dir)
+        body (write dir "geometry.zig" "const v = @import(\"math/vec.zig\");\n")]
+    (write dir "math/vec.zig" "const s = @import(\"scalar.zig\");\n")
+    (write dir "math/scalar.zig" "pub const K = 1;\n")
+    (testing "a subdirectory import and its sibling keep their relative paths"
+      (is (= ["math/scalar.zig" "math/vec.zig"] (rels (imports/closure body (slurp body))))))))
+
+(deftest closure-drops-an-import-above-the-body-directory
   (let [dir  (scratch-dir)
         body (write dir "app/geometry.zig" "const m = @import(\"../lib/math.zig\");\n")]
     (write dir "lib/math.zig" "pub const PI = 3.14;\n")
-    (let [out (imports/closure body (slurp body))]
-      (testing "the common ancestor places the body under its real directory"
-        (is (= "app" (:source-reldir out)))
-        (is (= ["app/geometry.zig" "lib/math.zig"] (rels out)))))))
+    (testing "an import outside the body's directory is left for zig to reject"
+      (is (= [] (rels (imports/closure body (slurp body))))))))
 
 (deftest closure-leaves-a-missing-import-for-the-compiler
   (let [dir  (scratch-dir)
         body (write dir "a.zig" "const gone = @import(\"missing.zig\");\n")]
     (testing "an unresolved import is not in the closure; zig reports it"
-      (is (= ["a.zig"] (rels (imports/closure body (slurp body))))))))
+      (is (= [] (rels (imports/closure body (slurp body))))))))

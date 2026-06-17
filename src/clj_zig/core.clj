@@ -14,6 +14,7 @@
             [clj-zig.diagnostics :as diagnostics]
             [clj-zig.ffm :as ffm]
             [clj-zig.fileref :as fileref]
+            [clj-zig.imports :as imports]
             [clj-zig.layout :as layout]
             [clj-zig.signature :as signature]
             [clj-zig.source :as source]
@@ -102,21 +103,23 @@
   text as-is. `gen` also carries any C-interop `:options-extra`. Options
   layer by precedence: the optimize default, then the namespace `zig-deps`,
   then the descriptor, so a function inherits its namespace's link flags
-  and may still override them."
+  and may still override them. A file body that imports other Zig files
+  carries them as `:aux-files`, reproduced beside the source."
   ([spec body] (build-inputs spec body {:mode :inline}))
-  ([spec body {:keys [mode entry options-extra] :or {mode :inline}}]
+  ([spec body {:keys [mode entry options-extra aux-files] :or {mode :inline}}]
    (let [decls (preamble (:ns spec))
          src   (case mode
                  :raw  (join-sources [decls body])
                  :file (join-sources [decls body (source/generate spec body {:mode :file :entry entry})])
                  (join-sources [decls (source/generate spec body)]))]
-     {:spec        spec
-      :body        body
-      :source      src
-      :deps        decls
-      :options     (merge {:optimize "ReleaseSafe"} (deps-in (:ns spec)) options-extra)
-      :zig-version (cache/zig-version)
-      :target      (cache/target-triple)})))
+     (cond-> {:spec        spec
+              :body        body
+              :source      src
+              :deps        decls
+              :options     (merge {:optimize "ReleaseSafe"} (deps-in (:ns spec)) options-extra)
+              :zig-version (cache/zig-version)
+              :target      (cache/target-triple)}
+       aux-files (assoc :aux-files aux-files)))))
 
 (defn artifact
   "Compile or reuse the native library for `spec` and `body`. Returns the
@@ -165,7 +168,8 @@
            info   (cond-> (merge (dissoc result :invoke) {:source-mode (:mode gen)})
                     (:source-file gen)   (assoc :source-file (:source-file gen))
                     (:entry gen)         (assoc :entry (:entry gen))
-                    (:options-extra gen) (assoc :options-extra (:options-extra gen)))]
+                    (:options-extra gen) (assoc :options-extra (:options-extra gen))
+                    (:aux-files gen)     (assoc :aux-files (:aux-files gen)))]
        (alter-var-root the-var (constantly (wrap (:invoke result))))
        (swap! rebinders assoc the-var wrap)
        (alter-meta! the-var
@@ -182,11 +186,13 @@
   cached artifact, and rebind. Returns the Var. Rebuilds in the same mode
   the function was defined with (inline, file, or raw)."
   [the-var]
-  (let [{:keys [spec body source-mode entry source-file options-extra]} (:clj-zig/info (meta the-var))
+  (let [{:keys [spec body source-mode entry source-file options-extra aux-files]}
+        (:clj-zig/info (meta the-var))
         gen  (cond-> {:mode (or source-mode :inline)}
                entry         (assoc :entry entry)
                source-file   (assoc :source-file source-file)
-               options-extra (assoc :options-extra options-extra))
+               options-extra (assoc :options-extra options-extra)
+               aux-files     (assoc :aux-files aux-files))
         wrap (get @rebinders the-var)]
     (when-not (and spec wrap)
       (throw (ex-info "recompile! needs a defnz Var with a current binding."
@@ -261,20 +267,24 @@
   "Resolve a `{:zig/file ...}` descriptor relative to `defining-file`, read
   the Zig source, and establish the binding for `the-var`. File mode
   generates a wrapper that calls the user's `pub fn`; `:zig/raw` skips the
-  wrapper and binds `:zig/symbol` (or the spec's symbol) directly. An
-  optional `//! clj-zig: <ns>` header in the file must match the using
-  namespace. Public because the `defnz` expansion calls it at load time,
-  so re-evaluating the form re-reads the file."
+  wrapper and binds `:zig/symbol` (or the spec's symbol) directly. The
+  body's relative `@import`s are resolved and carried along so they compile
+  in the cache directory. An optional `//! clj-zig: <ns>` header in the
+  file must match the using namespace. Public because the `defnz`
+  expansion calls it at load time, so re-evaluating the form re-reads the
+  file and its imports."
   [the-var spec descriptor defining-file var-meta wrap]
   (let [{:keys [text path]} (fileref/resolve-and-read defining-file (:zig/file descriptor))
         _        (check-namespace! (:ns spec) text path)
         raw?     (boolean (:zig/raw descriptor))
         opts     (c-options descriptor)
+        {:keys [files]} (imports/closure path text)
         the-spec (cond-> spec
                    (:zig/symbol descriptor) (assoc :symbol (:zig/symbol descriptor)))
         gen      (cond-> {:mode (if raw? :raw :file) :source-file path}
-                   opts       (assoc :options-extra opts)
-                   (not raw?) (assoc :entry (entry-name spec descriptor)))]
+                   opts        (assoc :options-extra opts)
+                   (not raw?)  (assoc :entry (entry-name spec descriptor))
+                   (seq files) (assoc :aux-files files))]
     (establish-binding! the-var the-spec text var-meta wrap gen)))
 
 ;; --- defnz / defz -------------------------------------------------------

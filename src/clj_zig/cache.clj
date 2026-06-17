@@ -42,11 +42,14 @@
   "The content hash for these build inputs. The generated `source` enters
   the hash directly, so a change to the source generator yields a new key
   even when the spec and body are unchanged; the spec, body, dependencies,
-  options, Zig version, and target enter it as well."
-  [{:keys [spec body source deps options zig-version target]}]
-  (subs (sha256-hex (canonical {:spec spec :body body :source source :deps deps
-                                :options options :zig-version zig-version
-                                :target target}))
+  options, Zig version, and target enter it as well. A body that imports
+  other Zig files adds their contents under `:aux`, so editing an imported
+  file recompiles; a body with no imports hashes exactly as before."
+  [{:keys [spec body source deps options zig-version target aux-files]}]
+  (subs (sha256-hex (canonical (cond-> {:spec spec :body body :source source :deps deps
+                                        :options options :zig-version zig-version
+                                        :target target}
+                                 (seq aux-files) (assoc :aux aux-files))))
         0 12))
 
 (defn- extension-for-target
@@ -151,7 +154,7 @@
   the cached library; any change rebuilds under a fresh path. `inputs`
   carries `:spec`, `:body`, `:source`, `:deps`, `:options`,
   `:zig-version`, `:target`, and an optional `:root`."
-  [{:keys [spec source root] :as inputs} compile!-fn]
+  [{:keys [spec source root aux-files] :as inputs} compile!-fn]
   (let [artifact-key (cache-key inputs)
         paths        (artifact-paths {:root root :target (:target inputs)
                                       :ns (:ns spec) :name (:name spec)
@@ -163,6 +166,9 @@
                       :source-path  (:source-path paths)
                       :library-path (:library-path paths)
                       :options      (:options inputs)
+                      :aux-files    (mapv (fn [{:keys [rel text]}]
+                                            {:path (str (:dir paths) "/" rel) :text text})
+                                          aux-files)
                       :ctx          {:var (var-symbol spec)
                                      :signature (:signature spec)}})
         (write-manifest! paths inputs artifact-key)
