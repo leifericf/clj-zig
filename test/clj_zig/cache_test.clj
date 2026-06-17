@@ -93,6 +93,18 @@
       (is (not= fp (cache/module-fingerprint {:git/sha "def456" :root "src/root.zig"} boom)))
       (is (not= fp (cache/module-fingerprint {:git/sha "abc123" :root "src/other.zig"} boom))))))
 
+(deftest module-roots-resolve-dev-path-refs-for-compilation
+  (testing "a dev :path ref resolves to its root source path"
+    (is (= {"mymod" "/pkg/root.zig"}
+           (cache/module-roots {"mymod" {:path "/pkg/root.zig"}}))))
+  (testing "no modules resolve to nil"
+    (is (nil? (cache/module-roots nil)))
+    (is (nil? (cache/module-roots {}))))
+  (testing "a git-pinned ref needs a checkout, deferred to bake time"
+    (is (= :clj-zig/module-not-checked-out
+           (try (cache/module-roots {"mymod" {:git/sha "abc" :root "src/root.zig"}}) nil
+                (catch clojure.lang.ExceptionInfo e (:error/code (ex-data e))))))))
+
 (deftest artifact-paths-follow-the-documented-layout
   (let [p (cache/artifact-paths {:root "/tmp/c" :target "macos-aarch64"
                                  :ns 'app.core :name 'add :hash "83a1c0f9e1b2"})]

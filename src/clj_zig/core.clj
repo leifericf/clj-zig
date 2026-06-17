@@ -200,7 +200,8 @@
               :zig-version toolchain/pinned-version
               :target      (cache/target-triple)}
        aux-files (assoc :aux-files aux-files)
-       mods      (assoc :modules (cache/modules-fingerprint mods))))))
+       mods      (assoc :modules      (cache/modules-fingerprint mods)
+                        :module-roots (cache/module-roots mods))))))
 
 (defn artifact
   "Compile or reuse the native library for `spec` and `body`. Returns the

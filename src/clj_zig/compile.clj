@@ -36,6 +36,44 @@
                (mapcat (fn [p] ["-L" p]) link-path)
                (map (fn [lib] (str "-l" lib)) link))))
 
+(defn global-cache-dir
+  "The project-local directory Zig memoizes its intermediate build artifacts
+  in across compiles (ADR 35). Keeping it stable lets a wrapper miss over an
+  unchanged module relink the already-built module rather than rebuild it,
+  and it shares the `.clj-zig/` lifecycle the toolchain and artifact cache
+  already own. It is build-tool state, not part of any content hash."
+  []
+  (.getAbsolutePath (io/file ".clj-zig" "global-cache")))
+
+(defn- module-args
+  "The `--dep`/`-M` arguments that make the source the main module and link
+  each external module by name (ADR 34): a `--dep name` populates the main
+  module's import table, the per-module `link-flags` and `-Mroot=<source>`
+  define it, and a `-M<name>=<root>` defines each imported module. Pure."
+  [module-roots source-abs link-flags]
+  (concat (mapcat (fn [[name _]] ["--dep" name]) module-roots)
+          link-flags
+          [(str "-Mroot=" source-abs)]
+          (map (fn [[name root]] (str "-M" name "=" root)) module-roots)))
+
+(defn build-arguments
+  "The full `zig build-lib` argument vector for a compile (pure). Without
+  `:module-roots`, the source is the positional root and the per-module link
+  flags precede it, exactly as a single-file build. With modules, the source
+  becomes the main module and each module is declared and defined by name
+  (ADR 34). `--global-cache-dir` is always present so Zig memoizes
+  intermediate artifacts across compiles (ADR 35). A `:target` triple
+  cross-compiles for another platform."
+  [zig {:keys [source-abs library-abs options target module-roots global-cache-dir]}]
+  (let [link-flags (into ["-lc"] (options->flags options))]
+    (vec (concat [zig "build-lib" "-dynamic" "-O" optimize-mode]
+                 (when target ["-target" target])
+                 ["--global-cache-dir" global-cache-dir
+                  (str "-femit-bin=" library-abs)]
+                 (if (seq module-roots)
+                   (module-args module-roots source-abs link-flags)
+                   (concat link-flags [source-abs]))))))
+
 (defn compile!
   "Compile `source` into a dynamic library at `library-path`, writing the
   canonical source to `source-path` first. Returns
@@ -43,10 +81,11 @@
   structured diagnostic on failure. `ctx` adds `:var` and `:signature`
   to that diagnostic. `options` carries C-interop include and link flags;
   `aux-files` are imported Zig files to write beside the source first, each
-  `{:path <absolute> :text <content>}`. `target` is a Zig target triple to
-  cross-compile for (e.g. `x86_64-linux-musl`); omit it to build for the
-  host."
-  [{:keys [source source-path library-path ctx options aux-files target]}]
+  `{:path <absolute> :text <content>}`. `module-roots` names external Zig
+  modules the body may `@import`, each mapped to its root source path.
+  `target` is a Zig target triple to cross-compile for (e.g.
+  `x86_64-linux-musl`); omit it to build for the host."
+  [{:keys [source source-path library-path ctx options aux-files target module-roots]}]
   (let [zig      (toolchain/zig-exe)
         src-file (io/file source-path)
         lib-file (io/file library-path)
@@ -69,14 +108,15 @@
     ;; `std.heap.c_allocator`, whose free is the one deallocation that is
     ;; safe to call across the boundary. macOS links libc implicitly;
     ;; Linux needs it requested, and a body may reach for libc anywhere.
-    ;; A `target` cross-compiles for another platform; absent, the host is
-    ;; the target. C-interop include and link flags from `options` follow.
-    (let [build-args (concat [zig "build-lib" "-dynamic" "-O" optimize-mode]
-                             (when target ["-target" target])
-                             ["-lc"]
-                             (options->flags options)
-                             [(str "-femit-bin=" lib-abs) src-abs
-                              :dir (.getParent src-file)])
+    ;; build-arguments adds the cross-compile target, C-interop flags, the
+    ;; external-module imports, and the persistent global cache dir.
+    (let [build-args (conj (build-arguments zig {:source-abs src-abs
+                                                 :library-abs lib-abs
+                                                 :options options
+                                                 :target target
+                                                 :module-roots module-roots
+                                                 :global-cache-dir (global-cache-dir)})
+                           :dir (.getParent src-file))
           {:keys [exit err]} (apply sh/sh build-args)]
       (if (zero? exit)
         {:library lib-abs :source-path src-abs}

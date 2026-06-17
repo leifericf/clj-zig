@@ -33,6 +33,37 @@
                                     :link-path ["/lib"]
                                     :link ["m" "z"]})))))
 
+(deftest build-arguments-without-modules-pass-the-source-positionally
+  (let [args (compile/build-arguments
+              "zig" {:source-abs "/b/source.zig" :library-abs "/b/lib.dylib"
+                     :options {:link ["m"]} :global-cache-dir "/g"})]
+    (testing "the persistent global cache dir is always present (ADR 35)"
+      (is (= ["--global-cache-dir" "/g"]
+             (subvec args (.indexOf args "--global-cache-dir")
+                     (+ 2 (.indexOf args "--global-cache-dir"))))))
+    (testing "the source is the positional root, after the per-module flags"
+      (is (= "/b/source.zig" (last args)))
+      (is (< (.indexOf args "-lc") (.indexOf args "/b/source.zig")))
+      (is (< (.indexOf args "-lm") (.indexOf args "/b/source.zig"))))
+    (testing "no module flags appear"
+      (is (not-any? #(and (string? %) (str/starts-with? % "-M")) args))
+      (is (not ((set args) "--dep"))))))
+
+(deftest build-arguments-with-modules-declare-and-define-each-module
+  (let [args (compile/build-arguments
+              "zig" {:source-abs "/b/source.zig" :library-abs "/b/lib.dylib"
+                     :options nil :global-cache-dir "/g"
+                     :module-roots {"mylib" "/pkg/root.zig"}})]
+    (testing "the source becomes the main module and each module is declared and defined"
+      (is ((set args) "--dep"))
+      (is ((set args) "mylib"))
+      (is ((set args) "-Mroot=/b/source.zig"))
+      (is ((set args) "-Mmylib=/pkg/root.zig")))
+    (testing "a --dep precedes the main module so the import resolves"
+      (is (< (.indexOf args "--dep") (.indexOf args "-Mroot=/b/source.zig"))))
+    (testing "the link flags attach to the main module, before -Mroot"
+      (is (< (.indexOf args "-lc") (.indexOf args "-Mroot=/b/source.zig"))))))
+
 (deftest compiles-a-scalar-function
   (let [dir    (scratch-dir)
         result (compile-add dir "return x + y;")]

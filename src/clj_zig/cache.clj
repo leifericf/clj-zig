@@ -225,6 +225,26 @@
     (reduce-kv (fn [m name ref] (assoc m name (module-fingerprint ref io)))
                {} modules))))
 
+(defn- module-root
+  "The root source path a module reference compiles from: a dev `:path` ref
+  uses its path directly. A pinned `:git/sha` ref resolves against a checkout
+  the in-place compile loop does not provide; that is a bake-time concern
+  (ADR 34), so it is an error here."
+  [name ref]
+  (or (:path ref)
+      (throw (ex-info (str "The Zig module " (pr-str name) " is git-pinned; a"
+                           " local :path is needed to compile it in place.")
+                      {:level :error :error/code :clj-zig/module-not-checked-out
+                       :module name}))))
+
+(defn module-roots
+  "Each external module's root source path, keyed by import name, for the
+  compile shell to pass as `-M<name>=<root>`; nil when there are none. The
+  path counterpart to `modules-fingerprint`, which feeds the content hash."
+  [modules]
+  (not-empty (reduce-kv (fn [m name ref] (assoc m name (module-root name ref)))
+                        {} modules)))
+
 (defn library-present?
   "True when a usable library exists. A zero-byte file (left by a failed
   build) does not count, so a poisoned path recompiles instead of loading
@@ -295,7 +315,7 @@
   Identical inputs reuse a resolved library; any change resolves a fresh
   path. `inputs` carries `:spec`, `:body`, `:source`, `:deps`, `:options`,
   `:zig-version`, `:target`, and an optional `:root`."
-  [{:keys [spec source root aux-files] :as inputs} compile!-fn]
+  [{:keys [spec source root aux-files module-roots] :as inputs} compile!-fn]
   (let [artifact-key (cache-key inputs)
         coords       {:target (:target inputs) :ns (:ns spec) :name (:name spec)
                       :hash artifact-key}
@@ -317,6 +337,7 @@
                       :source-path  (:source-path paths)
                       :library-path (:library-path paths)
                       :options      (:options inputs)
+                      :module-roots module-roots
                       :aux-files    (mapv (fn [{:keys [rel text]}]
                                             {:path (str (:dir paths) "/" rel) :text text})
                                           aux-files)
