@@ -240,9 +240,12 @@
 
 (def gen-enum-members
   "A `defenumz` member list: one to six `name value` pairs with distinct
-  integer values, so the value-to-member mapping is unambiguous."
+  integer values, so the value-to-member mapping is unambiguous. The values
+  are drawn from a fixed range rather than `gen/nat`, whose span shrinks with
+  the generator size: `vector-distinct` must always find `n` distinct values,
+  and a size-bounded element generator cannot when the size is below `n`."
   (gen/let [n      (gen/choose 1 6)
-            values (gen/vector-distinct gen/nat {:num-elements n})]
+            values (gen/vector-distinct (gen/choose 0 999) {:num-elements n})]
     (vec (mapcat (fn [i v] [(symbol (str "m" i)) v]) (range) values))))
 
 ;; --- Negative space ----------------------------------------------------

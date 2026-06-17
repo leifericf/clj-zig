@@ -21,6 +21,11 @@
     (let [s (spec/build-spec {:ns 'clj-zig.gen-test :name 'f :signature sig})]
       (and (= sig (:signature s)) (vector? (:params s))))))
 
+(deftest enum-members-generate-at-the-smallest-size
+  ;; vector-distinct must find up to six distinct values even when the
+  ;; generator size is zero; a size-bounded element generator exhausts there.
+  (is (every? vector? (doall (repeatedly 200 #(gen/generate g/gen-enum-members 0))))))
+
 (defspec generated-field-lists-describe 100
   (prop/for-all [fields g/gen-field-list]
     (let [desc (layout/describe 'T fields)]
