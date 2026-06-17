@@ -136,9 +136,36 @@
        ::policy-needed
        b))))
 
+(defn infer-signature
+  "The boundary signature vector inferred from `fn-name`'s prototype in
+  `zig-text`: each parameter's binding and boundary type, then `:ret` and
+  the return type. Throws `:clj-zig/inferred-fn-not-found` when the file
+  declares no such `pub fn`, and `:clj-zig/contract-policy-needed` when the
+  return is a slice or pointer, whose ownership or handle policy must be
+  stated in an explicit signature."
+  [zig-text fn-name]
+  (let [proto (prototype zig-text fn-name)]
+    (when-not proto
+      (throw (ex-info (str "No `pub fn " fn-name "` to infer a signature from.")
+                      {:level :error :error/code :clj-zig/inferred-fn-not-found
+                       :name fn-name})))
+    (let [ret (zig-type->boundary (:ret proto) :return)]
+      (when (= ret ::policy-needed)
+        (throw (ex-info (str "The return of `" fn-name "` is a slice or pointer,"
+                             " whose ownership or handle policy is not in the"
+                             " Zig type; give an explicit signature.")
+                        {:level :error :error/code :clj-zig/contract-policy-needed
+                         :name fn-name :ret (:ret proto)})))
+      (-> (vec (mapcat (fn [{:keys [binding zig-type]}]
+                         [(symbol binding) (zig-type->boundary zig-type)])
+                       (:params proto)))
+          (conj :ret ret)))))
+
 (comment
   (prototype "pub fn add(x: i64, y: i64) i64 {\n    return x + y;\n}\n" "add")
   ;; => {:name "add" :params [{:binding "x" :zig-type "i64"}
   ;;                          {:binding "y" :zig-type "i64"}] :ret "i64"}
   (zig-type->boundary "[]const f64")          ;; => [:slice :const :f64]
-  (zig-type->boundary "[]u8" :return))        ;; => :clj-zig.infer/policy-needed
+  (zig-type->boundary "[]u8" :return)         ;; => :clj-zig.infer/policy-needed
+  (infer-signature "pub fn add(x: i64, y: i64) i64 {}" "add"))
+  ;; => [x :i64 y :i64 :ret :i64]

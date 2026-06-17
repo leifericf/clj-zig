@@ -15,6 +15,7 @@
             [clj-zig.ffm :as ffm]
             [clj-zig.fileref :as fileref]
             [clj-zig.imports :as imports]
+            [clj-zig.infer :as infer]
             [clj-zig.layout :as layout]
             [clj-zig.signature :as signature]
             [clj-zig.source :as source]
@@ -356,22 +357,33 @@
       (defnz hypotenuse
         [a :f64 b :f64 :ret :f64])
 
+      ;; signature inferred from app/geometry.zig's `pub fn hypotenuse`
+      (defnz hypotenuse)
+
   A file holds a complete Zig `pub fn` the generated wrapper calls; a
   bodyless form calls the `pub fn` of the same name in the `.zig` beside
-  the namespace's source. The descriptor may also carry C-interop options
+  the namespace's source, inferring the signature from it when the
+  signature is omitted too. The descriptor may also carry C-interop options
   (`:c/link`, `:c/include-path`, ...), an entry name (`:zig/fn`), and a raw
   escape hatch (`:zig/raw`, `:zig/symbol`). Redefining recompiles; a failed
   recompile keeps the last good binding."
   [fn-name & tail]
   (let [{:keys [docstring attr-map signature body]} (parse-defnz tail)
         file-body? (and (map? body) (contains? body :zig/file))
-        bodyless?  (and (nil? body) (vector? signature))]
-    (when-not (or (string? body) file-body? bodyless?)
+        bodyless?  (and (nil? body) (vector? signature))
+        infer?     (and (nil? body) (nil? signature))]
+    (when-not (or (string? body) file-body? bodyless? infer?)
       (throw (ex-info "defnz needs a Zig body: a string, a {:zig/file ...} descriptor, or a signature with the body in the namespace's .zig."
                       {:level :error :error/code :clj-zig/malformed-defnz
                        :var fn-name})))
     (let [the-ns        (ns-name *ns*)
           defining-file *file*
+          signature     (if infer?
+                          (infer/infer-signature
+                           (:text (fileref/resolve-and-read
+                                   defining-file (namespace-zig-file defining-file)))
+                           (str/replace (name fn-name) "-" "_"))
+                          signature)
           signature     (prepare-signature the-ns signature)
           spec          (spec/build-spec {:ns the-ns :name fn-name :signature signature
                                           :types (types-in the-ns)})
@@ -381,7 +393,7 @@
                                attr-map
                                {:arglists (list arglist)})
           wrap          `(fn [invoke#] (fn ~arglist (invoke# ~@call-args)))
-          descriptor    (if bodyless?
+          descriptor    (if (or bodyless? infer?)
                           `{:zig/file (namespace-zig-file ~defining-file)}
                           body)]
       `(do
