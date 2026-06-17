@@ -43,3 +43,5 @@ Later ADRs capture decisions made during development. Written via the
 | [29](29-multi-file-zig-imports.md) | Multi-file Zig imports copy the import closure into the build |
 | [30](30-bootstrap-the-zig-toolchain.md) | Bootstrap the Zig toolchain |
 | [31](31-distribute-precompiled-artifacts.md) | Distribute precompiled artifacts, bake the cache |
+| [32](32-generate-zig-source-not-a-lower-ir.md) | Generate Zig source, not a lower IR |
+| [33](33-compile-out-of-process-warm-not-embed.md) | Compile out of process, warm the compiler rather than embed it |
