@@ -42,6 +42,22 @@
       (let [{:keys [out]} (sh/sh "nm" "-gU" (:library result))]
         (is (str/includes? out "clj_zig_app_2e_core_add"))))))
 
+(deftest cross-compiles-for-a-named-target
+  (testing "a target triple cross-compiles for another platform; the
+  artifact is produced even though the host cannot load it"
+    (let [dir (scratch-dir)
+          lib (str dir "/libadd.so")
+          {:keys [library]} (compile/compile!
+                             {:source (source/generate add-spec "return x + y;")
+                              :source-path (str dir "/source.zig")
+                              :library-path lib
+                              :target "x86_64-linux-musl"
+                              :ctx {:var 'app.core/add
+                                    :signature '[x :i64 y :i64 :ret :i64]}})]
+      (is (.exists (io/file library)))
+      (testing "the artifact is an ELF object, not a host Mach-O or PE"
+        (is (str/includes? (:out (sh/sh "file" library)) "ELF"))))))
+
 (deftest writes-canonical-source
   (let [dir    (scratch-dir)
         result (compile-add dir "const s = x + y;\nreturn s;")

@@ -43,8 +43,10 @@
   structured diagnostic on failure. `ctx` adds `:var` and `:signature`
   to that diagnostic. `options` carries C-interop include and link flags;
   `aux-files` are imported Zig files to write beside the source first, each
-  `{:path <absolute> :text <content>}`."
-  [{:keys [source source-path library-path ctx options aux-files]}]
+  `{:path <absolute> :text <content>}`. `target` is a Zig target triple to
+  cross-compile for (e.g. `x86_64-linux-musl`); omit it to build for the
+  host."
+  [{:keys [source source-path library-path ctx options aux-files target]}]
   (let [zig      (toolchain/zig-exe)
         src-file (io/file source-path)
         lib-file (io/file library-path)
@@ -67,8 +69,11 @@
     ;; `std.heap.c_allocator`, whose free is the one deallocation that is
     ;; safe to call across the boundary. macOS links libc implicitly;
     ;; Linux needs it requested, and a body may reach for libc anywhere.
-    ;; C-interop include and link flags from `options` follow `-lc`.
-    (let [build-args (concat [zig "build-lib" "-dynamic" "-O" optimize-mode "-lc"]
+    ;; A `target` cross-compiles for another platform; absent, the host is
+    ;; the target. C-interop include and link flags from `options` follow.
+    (let [build-args (concat [zig "build-lib" "-dynamic" "-O" optimize-mode]
+                             (when target ["-target" target])
+                             ["-lc"]
                              (options->flags options)
                              [(str "-femit-bin=" lib-abs) src-abs
                               :dir (.getParent src-file)])
