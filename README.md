@@ -4,7 +4,9 @@
 ![Zig 0.16](https://img.shields.io/badge/Zig-0.16-f7a41d?logo=zig&logoColor=white)
 ![Java 22+](https://img.shields.io/badge/Java-22%2B-007396?logo=openjdk&logoColor=white)
 
-An experiment in defining ordinary Clojure functions backed by real Zig.
+**clj-zig is an experiment, a proof of concept.** It begins with a question: what would it look and feel like to bring systems-level programming into Clojure, and can that be done while keeping the data-oriented, REPL-driven workflow Clojure developers work in? Can a Clojure developer reach for Zig where native code is the right tool, in a form that stays idiomatic Clojure, without restricting what the native side can do?
+
+This project explores how far those questions can be carried.
 
 Stay in the REPL, define a function in a familiar shape, and drop into Zig only where native performance, explicit layout, comptime, or low-level control earns its keep.
 
@@ -101,7 +103,7 @@ pub fn hypotenuse(a: f64, b: f64) f64 { return c.sqrt(square(a) + square(b)); }
 pub fn circle_area(r: f64) f64 { return 3.141592653589793 * square(r); }
 ```
 
-With no signature, the boundary contract is inferred from the `pub fn` prototype: `pub fn hypotenuse(a: f64, b: f64) f64` gives `[a :f64 b :f64 :ret :f64]`. A Zig type fixes the shape, but a returned `[]T` or `*T` carries no ownership or handle policy in its type, so a function returning one needs an explicit signature declaring `[:owned ...]` or `[:handle ...]`; until then it reports `:clj-zig/contract-policy-needed`.
+With no signature, the boundary contract is inferred from the `pub fn` prototype: `pub fn hypotenuse(a: f64, b: f64) f64` gives `[a :f64 b :f64 :ret :f64]`. A Zig type fixes the shape, but a returned `[]T` or `*T` carries no ownership or handle policy in its type. A function returning one needs an explicit signature declaring `[:owned ...]` or `[:handle ...]`; until then it reports `:clj-zig/contract-policy-needed`.
 
 Each function still compiles to its own content-addressed library, so redefining one recompiles only that one and a failed compile keeps the last good binding. A kebab-case name maps to its snake_case `pub fn` (`circle-area` to `circle_area`); the optional `//! clj-zig: <ns>` header asserts the file belongs to the namespace. A body file may `@import` sibling and subdirectory `.zig` files, which are reproduced and compiled alongside it. See [ADR 28](docs/adr/28-namespace-as-zig-namespace.md) and [ADR 29](docs/adr/29-multi-file-zig-imports.md).
 
@@ -247,6 +249,11 @@ tests compile and load native code, so they need `zig` on the path and JDK 22+.
 - No arbitrary Clojure object marshalling.
 - No hiding of Zig's type system.
 - No production packaging before the REPL experience is proven.
+
+## Acknowledgements
+
+clj-zig grew out of several conversations with my friend
+[@teodorlu](https://github.com/teodorlu) in the Norwegian Clojure community.
 - No DSL that pretends to be Zig but is not.
 
 ## License
