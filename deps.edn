@@ -1,5 +1,5 @@
 {:paths ["src"]
- :deps {}
+ :deps {org.clojure/data.json {:mvn/version "2.5.0"}}
 
  :aliases
  ;; Finalized FFM (Java 22+): the flag opens native access explicitly;

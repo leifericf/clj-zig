@@ -38,3 +38,41 @@
       (is (string? zig))
       (is (.canExecute (io/file zig)))
       (is (zero? (:exit (sh/sh zig "version")))))))
+
+(deftest a-release-url-follows-the-zig-naming-scheme
+  (testing "arch-first, os, version, with a tarball off Windows and a zip on it"
+    (is (= "https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz"
+           (#'toolchain/download-url "linux" "x86_64" "0.16.0")))
+    (is (= "https://ziglang.org/download/0.16.0/zig-aarch64-macos-0.16.0.tar.xz"
+           (#'toolchain/download-url "macos" "aarch64" "0.16.0")))
+    (is (= "https://ziglang.org/download/0.16.0/zig-x86_64-windows-0.16.0.zip"
+           (#'toolchain/download-url "windows" "x86_64" "0.16.0"))))
+  (testing "the release-index key is arch-os"
+    (is (= "x86_64-linux" (#'toolchain/archive-key "linux" "x86_64")))
+    (is (= "aarch64-macos" (#'toolchain/archive-key "macos" "aarch64")))))
+
+(defn- temp-dir []
+  (let [d (.toFile (java.nio.file.Files/createTempDirectory
+                    "clj-zig-toolchain" (make-array java.nio.file.attribute.FileAttribute 0)))]
+    (.deleteOnExit d)
+    d))
+
+(deftest the-pinned-toolchain-is-resolved-after-install
+  (testing "with no executable yet under the pinned dir, the resolver installs
+  the toolchain once and returns a runnable zig"
+    (let [system-zig (toolchain/zig-exe)
+          dir        (temp-dir)
+          installs   (atom 0)]
+      (with-redefs [toolchain/pinned-dir   (constantly dir)
+                    toolchain/install-pinned! (fn []
+                                                (swap! installs inc)
+                                                (let [src  (io/file system-zig)
+                                                      dest (io/file dir (.getName src))]
+                                                  (io/copy src dest)
+                                                  (.setExecutable dest true)))]
+        (let [installed (toolchain/ensure-pinned!)]
+          (is (= 1 @installs) "the fetch runs once")
+          (is (= (.getPath (io/file dir (.getName (io/file system-zig)))) installed))
+          (is (zero? (:exit (sh/sh installed "version"))) "the installed zig runs")
+          (is (= installed (toolchain/ensure-pinned!)) "a second call reuses the install")
+          (is (= 1 @installs) "and does not fetch again"))))))
