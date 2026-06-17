@@ -39,10 +39,11 @@ it for consumers.
 
 The compiler can never take the JVM down with it; the worst case of a bad
 body is a diagnostic, consistent with keep-last-good (ADR 11). The shell
-stays simple and testable against a real `zig`. A cold compile pays process
-startup, which the warm-process direction and the caches are there to
-amortize; the warm process is an optimization the out-of-process design
-admits without changing the boundary.
+stays a thin argv-and-streams interface, testable against a real `zig`. A
+cold compile pays process
+startup, which the warm-process direction and the caches amortize; the warm
+process is an optimization the out-of-process design admits without changing
+the boundary.
 
 Embedding is not foreclosed by accident but by reasoning: should Zig one day
 offer a stable embedding interface, the trade between spawn latency and

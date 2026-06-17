@@ -12,7 +12,7 @@ IR that Sema produces from ZIR. Emitting one of those directly would skip
 the parse and some of the front end, which is the part a content-addressed
 cache pays for on a miss.
 
-The temptation is throughput: generating a lower IR looks like a shortcut
+The temptation is throughput. Generating a lower IR looks like a shortcut
 past lexing and parsing. The question is whether that shortcut is worth
 coupling clj-zig to the compiler's internals.
 

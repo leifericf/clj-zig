@@ -4,9 +4,9 @@
   canonicalizes it with `zig fmt`, and builds a shared library.
 
   On success it returns the library and source paths. On failure it
-  throws the structured diagnostic doc 04 fixes: the Var and signature
-  first, then the `source.zig` path, then the compiler's stderr and exit
-  code. The core shell catches it to keep the last good binding."
+  throws a structured diagnostic: the Var and signature first, then the
+  `source.zig` path, then the compiler's stderr and exit code. The core
+  shell catches it to keep the last good binding."
   (:require [clojure.java.io :as io]
             [clojure.java.shell :as sh]
             [clojure.string :as str]

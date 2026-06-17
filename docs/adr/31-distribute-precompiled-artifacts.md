@@ -7,8 +7,8 @@ Date: 2026-06-17
 A `defnz` compiles its Zig to a content-addressed native library and caches
 it (ADR 12). On the author's machine that compile is part of the REPL loop.
 But a consumer who adds a library built with clj-zig should not need Zig at
-all: adding a dependency and calling a function must just work, with no
-toolchain, no download, and no build step.
+all: adding a dependency and calling a function must work without a
+toolchain, a download, or a build step.
 
 The cache already keys an artifact by the content hash of its spec, body,
 source, options, Zig version, and target, and stores the library under
