@@ -4,6 +4,11 @@ name: Release
 # Clojars. CI on push to main stays the test gate; releasing is deliberate.
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (blank uses today's date, YYYY.MM.DD)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -32,4 +37,5 @@ jobs:
         env:
           CLOJARS_USERNAME: ${{ secrets.CLOJARS_USERNAME }}
           CLOJARS_PASSWORD: ${{ secrets.CLOJARS_PASSWORD }}
+          CLJ_ZIG_VERSION: ${{ inputs.version }}
         run: clojure -T:build deploy

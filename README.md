@@ -220,7 +220,7 @@ coordinate (`io.github.leifericf/clj-zig`) and the Clojars coordinate
 (`com.leifericf/clj-zig`) differ; releases are dated:
 
 ```clojure
-{:deps {com.leifericf/clj-zig {:mvn/version "2026.06.17"}}
+{:deps {com.leifericf/clj-zig {:mvn/version "2026.06.17-alpha1"}}
  :aliases
  {:dev {:jvm-opts ["--enable-native-access=ALL-UNNAMED"]}}}
 ```

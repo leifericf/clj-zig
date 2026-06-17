@@ -19,7 +19,7 @@
   (let [d (java.time.LocalDate/now)]
     (format "%04d.%02d.%02d" (.getYear d) (.getMonthValue d) (.getDayOfMonth d))))
 
-(def version (or (System/getenv "CLJ_ZIG_VERSION") (date-version)))
+(def version (or (not-empty (System/getenv "CLJ_ZIG_VERSION")) (date-version)))
 (def class-dir "target/classes")
 (def basis (delay (b/create-basis {:project "deps.edn"})))
 (def jar-file (format "target/%s-%s.jar" (name lib) version))
