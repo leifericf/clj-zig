@@ -8,7 +8,7 @@ ADR 29 lets a file-mode body `@import` sibling `.zig` files by copying the
 relative-import closure into the build, and it explicitly deferred named-module
 dependencies as a separate capability: module flags address `@import("mylib")`,
 not the bare `@import("util.zig")` between siblings. That capability is now
-needed. A wrapper body wants to `@import("clojo")` and call into Clojo, a large
+needed. A wrapper body wants to `@import("mylib")` and call into a large
 external multi-file Zig package in its own repository, with clj-zig's rich
 typed boundary rather than a hand-rolled C ABI.
 
@@ -27,13 +27,13 @@ A namespace declares external Zig modules through `zig-deps` (ADR 27's
 namespace-level mechanism), under a `:zig/modules` map keyed by the name the
 body imports:
 
-    (zig-deps {:zig/modules {"clojo" {:path "../clojo/src/root.zig"}}})   ; dev
-    (zig-deps {:zig/modules {"clojo" {:git/sha "…" :root "src/root.zig"}}}) ; pinned
+    (zig-deps {:zig/modules {"mylib" {:path "../mylib/src/root.zig"}}})   ; dev
+    (zig-deps {:zig/modules {"mylib" {:git/sha "…" :root "src/root.zig"}}}) ; pinned
 
 The compile shell passes each module to `zig` as `-M name=<root>` (ADR 33's
-argv-and-streams boundary), so `@import("clojo")` resolves to the package root.
-The module must build under the pinned Zig (ADR 30; `0.16.0`, which matches
-Clojo); a mismatch is a declaration-time error.
+argv-and-streams boundary), so `@import("mylib")` resolves to the package root.
+The module must build under the pinned Zig (ADR 30); a mismatch is a
+declaration-time error.
 
 A module enters the content hash (ADR 12) as a single twelve-character
 *module fingerprint* — a content hash of the module's file closure — never the
