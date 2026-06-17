@@ -91,8 +91,11 @@ commit:
 ```
 
 The git-dep path stays available for contributors after a release. A
-published release is built and deployed with the project's `build.clj`
-under the coordinate `io.github.leifericf/clj-zig`.
+published release is built and deployed with the project's `build.clj` to
+Clojars under the coordinate `com.leifericf/clj-zig`. Releases are dated:
+the version is `YYYY.MM.DD` and the git tag is a plain `YYYY-MM-DD`. The git
+coordinate is `io.github.leifericf/clj-zig`; the Clojars coordinate is
+`com.leifericf/clj-zig`.
 
 ## Requirements summary
 

@@ -206,11 +206,21 @@ JAVA_CMD="$(/usr/libexec/java_home -v 26)/bin/java" clojure -M:test
 
 ## Installation
 
-clj-zig is not published to a package repository yet. Depend on it from git
-in your `deps.edn`, pinning a commit, and open native access at runtime:
+Add clj-zig to your `deps.edn` and open native access at runtime. Until a
+release is on Clojars, depend on it from git, pinning a commit:
 
 ```clojure
 {:deps {io.github.leifericf/clj-zig {:git/sha "<commit-sha>"}}
+ :aliases
+ {:dev {:jvm-opts ["--enable-native-access=ALL-UNNAMED"]}}}
+```
+
+Once published, depend on the released version from Clojars instead. The git
+coordinate (`io.github.leifericf/clj-zig`) and the Clojars coordinate
+(`com.leifericf/clj-zig`) differ; releases are dated:
+
+```clojure
+{:deps {com.leifericf/clj-zig {:mvn/version "2026.06.17"}}
  :aliases
  {:dev {:jvm-opts ["--enable-native-access=ALL-UNNAMED"]}}}
 ```
