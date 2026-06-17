@@ -7,6 +7,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.test.check.clojure-test :refer [defspec]]
             [clojure.test.check.properties :as prop]
+            [clj-zig.core :as core]
             [clj-zig.gen :as g]
             [clj-zig.layout :as layout]
             [clj-zig.spec :as spec]))
@@ -84,6 +85,24 @@
   (is (= :clj-zig/unsupported-field   (code-from #(layout/describe 'T '[a :u128]))))
   (is (= :clj-zig/malformed-members   (code-from #(layout/describe-enum 'E '[ok 0 bad]))))
   (is (= :clj-zig/non-integer-member  (code-from #(layout/describe-enum 'E '[ok :zero])))))
+
+;; --- Rejections from external-module declarations -----------------------
+
+(def module-rejections
+  "Each row is a `core/zig-modules` descriptor paired with the code its
+  malformed `:zig/modules` declaration must raise (ADR 34)."
+  [{:code :clj-zig/bad-modules                 :descriptor {:zig/modules ["clojo"]}}
+   {:code :clj-zig/bad-module-name             :descriptor {:zig/modules {:clojo {:path "r.zig"}}}}
+   {:code :clj-zig/reserved-module-name        :descriptor {:zig/modules {"std" {:path "r.zig"}}}}
+   {:code :clj-zig/bad-module-ref              :descriptor {:zig/modules {"clojo" "r.zig"}}}
+   {:code :clj-zig/module-missing-root         :descriptor {:zig/modules {"clojo" {}}}}
+   {:code :clj-zig/module-zig-version-mismatch :descriptor {:zig/modules {"clojo" {:path "r.zig"
+                                                                                  :zig/version "0.13.0"}}}}])
+
+(deftest module-rejection-matrix
+  (doseq [{:keys [code descriptor]} module-rejections]
+    (testing (pr-str descriptor)
+      (is (= code (code-from #(core/zig-modules descriptor)))))))
 
 ;; --- Generative breadth: junk in argument position is rejected ----------
 

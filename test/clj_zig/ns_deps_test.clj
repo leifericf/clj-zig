@@ -30,6 +30,16 @@
                         (zig/build-spec '{:ns ns.deps.bare :name g :signature [a :f64 :ret :f64]})
                         "return a;")))))))
 
+(deftest module-deps-register-without-touching-build-options
+  (let [spec (zig/build-spec '{:ns ns.deps.mods :name f :signature [a :f64 :ret :f64]})]
+    (core/register-deps! 'ns.deps.mods {:c/link ["m"]
+                                        :zig/modules {"clojo" {:path "root.zig"}}})
+    (testing "a namespace's declared modules are retrievable"
+      (is (= {"clojo" {:path "root.zig"}} (core/modules-in 'ns.deps.mods))))
+    (testing "modules do not leak into the content-hashed build options"
+      (is (= {:optimize "ReleaseSafe" :link ["m"]}
+             (:options (core/build-inputs spec "return a;")))))))
+
 (deftest namespace-link-resolves-a-c-call
   (testing "zig-deps links libm so a body calling c.sqrt round-trips"
     (define! `(core/zig-deps {:c/link ["m"]}))

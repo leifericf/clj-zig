@@ -54,6 +54,8 @@
 
 (defonce ^:private ns-deps (atom {}))
 
+(defonce ^:private ns-modules (atom {}))
+
 (defn c-options
   "The C-interop compile options a descriptor's `:c/*` keys carry, or nil
   when it carries none. These reach `zig build-lib` as flags and enter the
@@ -67,17 +69,88 @@
      (:c/link-path descriptor)           (assoc :link-path (vec (:c/link-path descriptor)))
      (:c/link descriptor)                (assoc :link (vec (:c/link descriptor))))))
 
+(def ^:private reserved-module-names
+  "Module names Zig supplies itself; a dependency may not shadow them."
+  #{"std" "builtin" "root"})
+
+(defn- normalize-module
+  "Validate and canonicalize one external-module reference, keyed by the
+  name a body imports: a dev `:path` to the module root, or a pinned
+  `:git/sha` with a `:root`. An optional `:zig/version` must match the
+  pinned toolchain. Throws a diagnostic with a specific `:error/code` for
+  each malformed shape."
+  [module-name descriptor]
+  (when-not (string? module-name)
+    (throw (ex-info (str "A Zig module name must be a string, got "
+                         (pr-str module-name) ".")
+                    {:level :error :error/code :clj-zig/bad-module-name
+                     :module module-name})))
+  (when (reserved-module-names module-name)
+    (throw (ex-info (str "The Zig module name " (pr-str module-name)
+                         " is reserved by the compiler.")
+                    {:level :error :error/code :clj-zig/reserved-module-name
+                     :module module-name})))
+  (when-not (map? descriptor)
+    (throw (ex-info (str "The Zig module " (pr-str module-name)
+                         " needs a descriptor map, got " (pr-str descriptor) ".")
+                    {:level :error :error/code :clj-zig/bad-module-ref
+                     :module module-name})))
+  (when-let [v (:zig/version descriptor)]
+    (when (not= v toolchain/pinned-version)
+      (throw (ex-info (str "The Zig module " (pr-str module-name) " pins Zig "
+                           v " but clj-zig pins " toolchain/pinned-version ".")
+                      {:level :error :error/code :clj-zig/module-zig-version-mismatch
+                       :module module-name
+                       :requested v
+                       :pinned toolchain/pinned-version}))))
+  (cond
+    (:path descriptor)
+    {:path (str (:path descriptor))}
+
+    (and (:git/sha descriptor) (:root descriptor))
+    {:git/sha (str (:git/sha descriptor)) :root (str (:root descriptor))}
+
+    :else
+    (throw (ex-info (str "The Zig module " (pr-str module-name)
+                         " needs a :path, or a :git/sha with a :root.")
+                    {:level :error :error/code :clj-zig/module-missing-root
+                     :module module-name}))))
+
+(defn zig-modules
+  "The external Zig modules a descriptor's `:zig/modules` declares,
+  normalized and keyed by import name, or nil when it declares none. Each
+  becomes a `-M name=<root>` module the bodies in the namespace may
+  `@import` (ADR 34). Shared by a namespace-level `zig-deps`."
+  [descriptor]
+  (when-let [modules (:zig/modules descriptor)]
+    (when-not (map? modules)
+      (throw (ex-info (str ":zig/modules must be a map of name to descriptor, got "
+                           (pr-str modules) ".")
+                      {:level :error :error/code :clj-zig/bad-modules
+                       :modules modules})))
+    (not-empty
+     (reduce-kv (fn [m module-name desc]
+                  (assoc m module-name (normalize-module module-name desc)))
+                {} modules))))
+
 (defn register-deps!
-  "Register the namespace-level C-interop options for `ns-sym`, replacing
-  any previous registration. Public because the `zig-deps` expansion calls
-  it from the user's namespace."
+  "Register the namespace-level C-interop options and external Zig modules
+  for `ns-sym`, replacing any previous registration. Public because the
+  `zig-deps` expansion calls it from the user's namespace."
   [ns-sym descriptor]
-  (swap! ns-deps assoc ns-sym (c-options descriptor)))
+  (swap! ns-deps assoc ns-sym (c-options descriptor))
+  (swap! ns-modules assoc ns-sym (zig-modules descriptor)))
 
 (defn deps-in
   "The namespace-level C-interop options registered for `ns-sym`, or nil."
   [ns-sym]
   (get @ns-deps ns-sym))
+
+(defn modules-in
+  "The namespace-level external Zig modules registered for `ns-sym`, keyed
+  by import name, or nil."
+  [ns-sym]
+  (get @ns-modules ns-sym))
 
 (defn- preamble
   "The Zig declarations registered in `ns-sym`: the named-type structs,
@@ -432,13 +505,15 @@
        (var ~decl-name))))
 
 (defmacro zig-deps
-  "Declare the C-interop options shared by every `defnz` in this namespace,
-  so a co-located `.zig` may `@cImport` a header and link its library
-  without repeating the flags on each function:
+  "Declare the dependencies shared by every `defnz` in this namespace. The
+  C-interop options let a co-located `.zig` `@cImport` a header and link its
+  library without repeating the flags on each function; `:zig/modules`
+  declares external Zig packages the bodies may `@import` by name (ADR 34):
 
-      (zig-deps {:c/link [\"m\"]})
+      (zig-deps {:c/link [\"m\"]
+                 :zig/modules {\"clojo\" {:path \"../clojo/src/root.zig\"}}})
 
-  A function descriptor still overrides these. The options enter each
+  A function descriptor still overrides the C options. The options enter each
   function's content hash, so changing them recompiles the namespace's
   functions."
   [descriptor]
