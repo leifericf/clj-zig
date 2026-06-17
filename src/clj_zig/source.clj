@@ -172,7 +172,7 @@
         slice      (:of ret)
         elem-t     (zig-type (:of slice))
         ret-t      (str "[]" (when (:const? slice) "const ") elem-t)
-        owned?     (= :owned (:kind ret))
+        owned?     (contains? #{:owned :bytes} (:kind ret))
         out-params (str (when (seq params-str) ", ") "__ptr: *usize, __len: *usize")]
     (str "fn " sym "__impl(" params-str ") " ret-t " {\n"
          (indent-body (impl-body params body)) "\n"
@@ -193,7 +193,7 @@
   return uses `std.heap.c_allocator` in its free shim, and a handle in any
   position is allocated or freed with `std`."
   [{:keys [params ret]}]
-  (or (= :owned (:kind ret))
+  (or (contains? #{:owned :bytes} (:kind ret))
       (= :handle (:kind ret))
       (some #(= :handle (:kind (:type %))) params)))
 
@@ -203,8 +203,8 @@
   `std` in scope."
   [{:keys [ret] :as spec} body]
   (let [core (cond
-               (= :error-union (:kind ret))                  (generate-error-union spec body)
-               (contains? #{:owned :borrowed} (:kind ret))   (generate-ownership spec body)
+               (= :error-union (:kind ret))                    (generate-error-union spec body)
+               (contains? #{:owned :borrowed :bytes} (:kind ret)) (generate-ownership spec body)
                (and (= :named (:kind ret)) (enum-type? ret)) (generate-plain spec body)
                (= :named (:kind ret))                        (generate-struct-return spec body)
                :else                                         (generate-plain spec body))]
@@ -288,7 +288,7 @@
   (let [params-str (str/join ", " (mapcat param-decls params))
         slice      (:of ret)
         elem-t     (zig-type (:of slice))
-        owned?     (= :owned (:kind ret))
+        owned?     (contains? #{:owned :bytes} (:kind ret))
         out-params (str (when (seq params-str) ", ") "__ptr: *usize, __len: *usize")]
     (str "export fn " sym "(" params-str out-params ") void {\n"
          (wrapper-prelude params)
@@ -308,8 +308,8 @@
   user's file owns its declarations and imports."
   [{:keys [ret] :as spec} entry]
   (cond
-    (= :error-union (:kind ret))                  (file-error-union spec entry)
-    (contains? #{:owned :borrowed} (:kind ret))   (file-ownership spec entry)
+    (= :error-union (:kind ret))                    (file-error-union spec entry)
+    (contains? #{:owned :borrowed :bytes} (:kind ret)) (file-ownership spec entry)
     (and (= :named (:kind ret)) (enum-type? ret)) (file-plain spec entry)
     (= :named (:kind ret))                        (file-struct-return spec entry)
     :else                                         (file-plain spec entry)))

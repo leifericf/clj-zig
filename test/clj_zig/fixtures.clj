@@ -87,6 +87,11 @@
   "if (s.len == 0) return s;
    return s[1..];")
 
+(defnz bytes-echo [xs [:slice :const :u8] :ret [:bytes [:slice :u8]]]
+  "const out = std.heap.c_allocator.alloc(u8, xs.len) catch @panic(\"oom\");
+   @memcpy(out, xs);
+   return out;")
+
 ;; --- Handles ------------------------------------------------------------
 
 (defz Box "const Box = struct { v: i64 };")

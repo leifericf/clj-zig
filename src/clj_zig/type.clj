@@ -98,7 +98,7 @@
     (case head
       (:ptr :manyptr :slice)                (normalize-indirection head v)
       :array                                (normalize-array v)
-      (:optional :owned :borrowed :handle)  (normalize-wrapper head v)
+      (:optional :owned :borrowed :handle :bytes)  (normalize-wrapper head v)
       :error-union                          (normalize-error-union v)
       (fail v :clj-zig/malformed-compound
             (str "Unknown compound type head " (pr-str head) ".") {}))
@@ -124,8 +124,8 @@
             "[:array n T] takes a non-negative integer length and an element type." {}))))
 
 (defn- normalize-wrapper
-  "Single-element wrappers (`:optional`, `:owned`, `:borrowed`,
-  `:handle`) wrap one type."
+  "Single-element wrappers (`:optional`, `:owned`, `:borrowed`, `:handle`,
+  `:bytes`) wrap one type."
   [kind v]
   (if (= 2 (count v))
     {:kind kind :of (normalize (nth v 1))}

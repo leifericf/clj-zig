@@ -46,6 +46,19 @@
     (is (= "export fn clj_zig_app_2e_core_noop() void {\n    return;\n}\n"
            (source/generate s "return;")))))
 
+(deftest generates-a-bytes-return-as-an-owned-u8-slice
+  (let [s   (spec/build-spec '{:ns app.core :name dup
+                               :signature [xs [:slice :const :u8] :ret [:bytes [:slice :u8]]]})
+        src (source/generate s "return xs;")]
+    (testing "the wrapper writes the slice pointer and length to out-params"
+      (is (str/includes? src "__ptr: *usize, __len: *usize"))
+      (is (str/includes? src "[]u8")))
+    (testing "it emits the c_allocator free shim, like an owned return"
+      (is (str/includes? src (str (:symbol s) "__free")))
+      (is (str/includes? src "std.heap.c_allocator.free")))
+    (testing "the generated source is canonical Zig"
+      (is (zig-fmt-clean? src)))))
+
 (deftest generated-source-passes-zig-fmt-check
   (testing "single statement"
     (is (zig-fmt-clean? (source/generate add-spec "return x + y;"))))

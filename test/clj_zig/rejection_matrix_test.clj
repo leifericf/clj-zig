@@ -58,7 +58,11 @@
    {:code :clj-zig/unsupported-handle      :signature '[:ret [:handle :i64]]}
    {:code :clj-zig/unsupported-carrier     :signature '[:ret :i128]}
    ;; named type the registry does not declare
-   {:code :clj-zig/unknown-type-name       :signature '[a Point :ret :i64]}])
+   {:code :clj-zig/unknown-type-name       :signature '[a Point :ret :i64]}
+   ;; :bytes is a return-only owned u8-slice wrapper
+   {:code :clj-zig/unsupported-bytes       :signature '[a [:bytes [:slice :u8]] :ret :i64]}
+   {:code :clj-zig/unsupported-bytes       :signature '[:ret [:bytes :u8]]}
+   {:code :clj-zig/unsupported-bytes       :signature '[:ret [:bytes [:slice :i64]]]}])
 
 (deftest spec-rejection-matrix
   (doseq [{:keys [code signature]} spec-rejections]
@@ -74,7 +78,7 @@
            :clj-zig/unsupported-optional :clj-zig/unsupported-error-union
            :clj-zig/unsupported-ownership :clj-zig/unsupported-handle
            :clj-zig/unsupported-carrier :clj-zig/unknown-field
-           :clj-zig/unknown-type-name}
+           :clj-zig/unknown-type-name :clj-zig/unsupported-bytes}
          (set (map :code spec-rejections)))))
 
 ;; --- Rejections from the layout describers ------------------------------

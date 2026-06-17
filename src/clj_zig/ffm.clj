@@ -71,7 +71,7 @@
         ;; out-pointer the result is written through. Both export `void`.
         eu?         (= :error-union (:kind ret))
         struct-ret? (and (= :named (:kind ret)) (not (enum-type? ret)))
-        own?        (contains? #{:owned :borrowed} (:kind ret))
+        own?        (contains? #{:owned :borrowed :bytes} (:kind ret))
         extra       (cond eu?         [ValueLayout/ADDRESS ValueLayout/ADDRESS]
                           own?        [ValueLayout/ADDRESS ValueLayout/ADDRESS]
                           struct-ret? [ValueLayout/ADDRESS]
@@ -252,6 +252,18 @@
       (mapv (fn [i] (coerce-scalar elem (read-scalar seg elem (* (long i) bytes))))
             (range len)))))
 
+(defn- read-bytes
+  "Copy `len` bytes from native address `addr` into a Java `byte[]` in one
+  bulk move, so a `:bytes` return crosses as a single array rather than a
+  boxed per-element vector. A zero length yields an empty array without
+  dereferencing the address."
+  [addr len]
+  (let [out (byte-array len)]
+    (when (pos? len)
+      (let [seg (.reinterpret (MemorySegment/ofAddress addr) (long len))]
+        (MemorySegment/copy seg ValueLayout/JAVA_BYTE (long 0) out (int 0) (int len))))
+    out))
+
 (defn- enum-member->value
   "The backing integer for an enum member keyword, or nil when no member
   of `descriptor` carries that name."
@@ -348,10 +360,11 @@
         ;; plain struct return has none and stays a map.
         record-factory (when (and (= :named (:kind ret)) (:record (:layout ret)))
                          (requiring-resolve (:record (:layout ret))))
-        own?    (contains? #{:owned :borrowed} (:kind ret))
-        ;; An owned slice return carries a free shim clj-zig calls once it
-        ;; has copied the elements out; a borrowed return frees nothing.
-        free-handle (when (= :owned (:kind ret))
+        own?    (contains? #{:owned :borrowed :bytes} (:kind ret))
+        ;; An owned slice (or :bytes buffer) return carries a free shim
+        ;; clj-zig calls once it has copied the elements out; a borrowed
+        ;; return frees nothing.
+        free-handle (when (contains? #{:owned :bytes} (:kind ret))
                       (.downcallHandle linker
                                        (.orElseThrow (.find lookup (str (:symbol spec) "__free")))
                                        (FunctionDescriptor/ofVoid
@@ -390,8 +403,9 @@
                 (read-error-name errbuf n)))
 
             ;; An owned or borrowed slice return writes its pointer and
-            ;; length to two out-params. clj-zig copies the elements into a
-            ;; vector, then frees owned memory through the shim.
+            ;; length to two out-params. clj-zig copies the elements out (a
+            ;; :bytes return as one byte[], any other slice as a vector),
+            ;; then frees owned memory through the shim.
             own?
             (let [pout ^MemorySegment (.allocate arena 8 8)
                   lout ^MemorySegment (.allocate arena 8 8)]
@@ -401,7 +415,9 @@
               (copy-back!)
               (let [addr   (.get pout ValueLayout/JAVA_LONG 0)
                     len    (.get lout ValueLayout/JAVA_LONG 0)
-                    result (read-slice-values addr len (-> ret :of :of))]
+                    result (if (= :bytes (:kind ret))
+                             (read-bytes addr len)
+                             (read-slice-values addr len (-> ret :of :of)))]
                 (when free-handle
                   (.invokeWithArguments free-handle (object-array [addr len])))
                 result))

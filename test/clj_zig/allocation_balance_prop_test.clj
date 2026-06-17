@@ -55,3 +55,9 @@
 (deftest owned-returns-drive-the-free-shim-in-volume
   (is (every? #(= [2.0 4.0 6.0] %)
               (repeatedly 500 #(f/owned-double (double-array [1.0 2.0 3.0]))))))
+
+(deftest bytes-returns-drive-the-free-shim-in-volume
+  ;; A :bytes return frees its native buffer each call, so 500 calls leak none.
+  (let [in (byte-array [10 20 30])]
+    (is (every? #(java.util.Arrays/equals ^bytes % in)
+                (repeatedly 500 #(f/bytes-echo in))))))

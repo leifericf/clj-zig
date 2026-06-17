@@ -122,6 +122,9 @@
     (when (contains? #{:owned :borrowed} (:kind type))
       (fail spec :clj-zig/unsupported-ownership
             "An :owned or :borrowed type is supported in return position only." {}))
+    (when (= :bytes (:kind type))
+      (fail spec :clj-zig/unsupported-bytes
+            "A :bytes type is supported in return position only." {}))
     (when (and (= :handle (:kind type)) (not= :named (:kind (:of type))))
       (fail spec :clj-zig/unsupported-handle "A :handle must wrap a named type." {})))
   (when (and (= :optional (:kind ret))
@@ -136,6 +139,11 @@
              (not= :slice (:kind (:of ret))))
     (fail spec :clj-zig/unsupported-ownership
           "An :owned or :borrowed return must wrap a slice." {}))
+  (when (and (= :bytes (:kind ret))
+             (not (and (= :slice (:kind (:of ret)))
+                       (= :u8 (:name (:of (:of ret)))))))
+    (fail spec :clj-zig/unsupported-bytes
+          "A :bytes return must wrap a [:slice :u8]." {}))
   (when (and (= :handle (:kind ret)) (not= :named (:kind (:of ret))))
     (fail spec :clj-zig/unsupported-handle "A :handle must wrap a named type." {}))
   (let [ret-value     (if (= :error-union (:kind ret)) (:of ret) ret)

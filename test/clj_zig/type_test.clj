@@ -107,3 +107,13 @@
     (is (false? (type/unsigned-int? :i32)))
     (is (false? (type/unsigned-int? :f64)))
     (is (nil? (type/scalar-info :not-a-scalar)))))
+
+(deftest normalizes-the-bytes-wrapper
+  (testing ":bytes wraps a slice, like the other single-element wrappers"
+    (is (= {:kind :bytes :of {:kind :slice :const? false :of {:kind :scalar :name :u8}}}
+           (type/normalize [:bytes [:slice :u8]])))
+    (is (= {:kind :bytes :of {:kind :slice :const? true :of {:kind :scalar :name :u8}}}
+           (type/normalize [:bytes [:slice :const :u8]]))))
+  (testing ":bytes takes exactly one wrapped type"
+    (is (= :clj-zig/malformed-compound (error-code #(type/normalize [:bytes]))))
+    (is (= :clj-zig/malformed-compound (error-code #(type/normalize [:bytes [:slice :u8] :x]))))))
