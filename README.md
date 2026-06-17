@@ -105,6 +105,30 @@ With no signature, the boundary contract is inferred from the `pub fn` prototype
 
 Each function still compiles to its own content-addressed library, so redefining one recompiles only that one and a failed compile keeps the last good binding. A kebab-case name maps to its snake_case `pub fn` (`circle-area` to `circle_area`); the optional `//! clj-zig: <ns>` header asserts the file belongs to the namespace. A body file may `@import` sibling and subdirectory `.zig` files, which are reproduced and compiled alongside it. See [ADR 28](docs/adr/28-namespace-as-zig-namespace.md) and [ADR 29](docs/adr/29-multi-file-zig-imports.md).
 
+## Distributing a library
+
+A library built with clj-zig ships its native code precompiled, so a
+consumer adds the dependency and calls functions with no Zig toolchain and
+no build step. At release, `clj-zig.bake/bake!` cross-compiles each `defnz`
+in a namespace for the target matrix into the resource tree the jar
+carries:
+
+```clojure
+(clj-zig.bake/bake! {:ns 'com.example.widgets/native :out "resources"})
+```
+
+At load, a consumer's `defnz` resolves its baked library from the classpath
+by target, namespace, name, and content hash, extracts it into the cache,
+and binds it without invoking Zig. The hash uses the pinned Zig version, so
+the consumer reproduces the hash the author baked under without a toolchain;
+a platform the author did not bake is a clean miss, compiled locally when a
+toolchain is present. The default matrix is seven targets across Linux,
+macOS, and Windows; a function linking a third-party C library is baked for
+the host only. `examples/build.clj` shows bake, jar, and deploy. See
+[ADR 31](docs/adr/31-distribute-precompiled-artifacts.md) and the
+[Installation and Distribution](docs/09-installation-and-distribution.md)
+guide.
+
 ## Inspect and redefine
 
 Every function is an ordinary Var carrying its spec, source, and build status:
@@ -157,13 +181,17 @@ And two show a namespace backed by a co-located `.zig`:
 6. [Proof-of-Concept Plan](docs/06-proof-of-concept-plan.md): scope, phases, acceptance tests.
 7. [Design Principles and Decisions](docs/07-design-principles-and-decisions.md): the principles; decisions are ADRs in [docs/adr/](docs/adr/README.md).
 8. [Test Strategy](docs/08-test-strategy.md): how generative and exhaustive testing prove the boundary, layered on the example suite.
+9. [Installation and Distribution](docs/09-installation-and-distribution.md): the consumer and author flows, baking, and the toolchain bootstrap.
 
 ## Requirements
 
 - **Java 22 or newer.** clj-zig uses the finalized Foreign Function & Memory
   API (JEP 454); `--enable-preview` is not required. The only flag the JVM
   needs is `--enable-native-access=ALL-UNNAMED`, which the `:test` alias sets.
-- **Zig 0.16.** clj-zig shells out to `zig` to compile generated source.
+- **Zig 0.16, for an author.** clj-zig shells out to `zig` to compile
+  generated source. It uses a `zig` on the path, or fetches a pinned one on
+  first use (see below). A consumer of a library whose native code is
+  already baked needs no Zig.
 - **Clojure CLI** (`deps.edn`, not Leiningen).
 
 Development runs on JDK 26. If your shell's default JDK is older (for example
@@ -176,22 +204,6 @@ JAVA_CMD="$(/usr/libexec/java_home -v 26)/bin/java" clojure -M:test
 
 ## Installation
 
-Install the toolchain, then depend on clj-zig. On macOS with Homebrew:
-
-```bash
-brew install zig clojure/tools/clojure
-brew install --cask temurin
-```
-
-Use your platform's usual installer elsewhere. clj-zig reads `zig` from the
-path, so confirm the versions:
-
-```bash
-zig version       # 0.16.x
-java -version     # 22 or newer
-clojure --version
-```
-
 clj-zig is not published to a package repository yet. Depend on it from git
 in your `deps.edn`, pinning a commit, and open native access at runtime:
 
@@ -201,7 +213,23 @@ in your `deps.edn`, pinning a commit, and open native access at runtime:
  {:dev {:jvm-opts ["--enable-native-access=ALL-UNNAMED"]}}}
 ```
 
-Or clone the repository and work from its REPL.
+That one JVM flag is the only step native access requires; a running JVM
+cannot grant it to itself, so clj-zig cannot remove it. Without it, clj-zig
+reports `:clj-zig/native-access-disabled` naming the flag.
+
+An author also needs a `zig` compiler. clj-zig uses one on the path, or
+fetches a pinned Zig into `.clj-zig/zig/<version>/` on first use and reuses
+it, so installing Zig by hand is optional. On macOS with Homebrew:
+
+```bash
+brew install zig clojure/tools/clojure
+brew install --cask temurin
+```
+
+A consumer of a library whose native code is baked needs no Zig at all. The
+[Installation and Distribution](docs/09-installation-and-distribution.md)
+guide covers the consumer flow, the author bake-and-publish flow, and the
+toolchain bootstrap.
 
 ## Running the tests
 

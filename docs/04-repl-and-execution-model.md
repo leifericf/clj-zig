@@ -39,7 +39,7 @@ From the user's perspective, this is normal Clojure function redefinition.
 4. Validate boundary contract
 5. Generate Zig source
 6. Hash source/spec/options
-7. Compile shared library if needed
+7. Resolve a cached or baked library, or compile one
 8. Load library
 9. Bind native symbol
 10. Rebind Clojure Var
@@ -68,8 +68,18 @@ The hash should include:
 - dependent `defz` declarations;
 - type definitions;
 - compile options;
-- Zig compiler version;
+- the pinned Zig version;
 - target platform.
+
+The Zig version in the hash is the pinned version, not a live `zig version`,
+so every machine that pins the same toolchain produces the same hash for the
+same form. Resolution at step 7 has three steps: a present library in the
+filesystem cache, then a baked library on the classpath (extracted into the
+cache and loaded, never compiling), then a fresh compile. A library shipped
+in a jar lays its baked artifacts out under `clj-zig/native/` mirroring this
+cache, so a consumer loads precompiled code without a toolchain. See
+[ADR 31](adr/31-distribute-precompiled-artifacts.md) and
+[ADR 30](adr/30-bootstrap-the-zig-toolchain.md).
 
 ## Failure behavior
 
