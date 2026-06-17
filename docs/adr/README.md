@@ -46,3 +46,4 @@ Later ADRs capture decisions made during development. Written via the
 | [32](32-generate-zig-source-not-a-lower-ir.md) | Generate Zig source, not a lower IR |
 | [33](33-compile-out-of-process-warm-not-embed.md) | Compile out of process, warm the compiler rather than embed it |
 | [34](34-external-zig-module-dependencies.md) | Depend on external Zig modules by name |
+| [35](35-persistent-zig-global-cache-dir.md) | Give Zig a persistent global cache directory |
