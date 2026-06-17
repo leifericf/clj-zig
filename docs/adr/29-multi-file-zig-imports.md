@@ -19,31 +19,37 @@ import. What it does not cover is a body split across several `.zig` files
 or a vendored multi-file Zig library that uses relative `@import` between
 its own files.
 
-This record fixes the approach; the capability is planned, not yet built.
-
 ## Decision
 
 A file-mode body may `@import` other `.zig` files by relative path.
 clj-zig resolves the transitive closure of relative `@import` targets
 starting from the body file, copies those files into the cache directory
-alongside the generated source preserving their relative layout, and
-includes each copied file's content in the content hash. An edited
-imported file therefore changes the hash and recompiles. Absolute imports
-and compiler-provided modules (`std`, `builtin`) are left untouched.
+at their paths relative to the body file, and includes each copied file's
+content in the content hash. An edited imported file therefore changes the
+hash and recompiles.
+
+The generated `source.zig` is the compiled root, so its directory is the
+module path. Sibling and subdirectory imports resolve there, and an
+imported file may itself use `..` as long as it stays within that
+directory. An import that escapes the body's directory hits Zig's own
+"import outside module path" rule, exactly as it would were the body
+compiled directly as a root file; that import and any compiler-provided
+module (`std`, `builtin`) or absolute path is left for the compiler, not
+copied.
 
 ## Consequences
 
-A body can be organized across several files, and a vendored Zig library
-whose files import each other by relative path compiles unchanged. The
-cache stays content-addressed: the artifact records the exact contents of
-every file that produced it, so keep-last-good and per-function
-recompilation hold across the import graph.
+A body can be organized across several files within its directory, and a
+vendored Zig library whose files import each other by relative path
+compiles unchanged. The cache stays content-addressed: the artifact
+records the exact contents of every file that produced it, so keep-last-
+good and per-function recompilation hold across the import graph.
 
 clj-zig gains a small Zig-import scanner and transitive resolution, which
 is new surface to keep correct. The scan reads `@import` string literals;
-an import computed at comptime is out of scope and will not be copied. A
-cycle in the relative-import graph is the file author's error, surfaced as
-a Zig compile error rather than detected up front.
+an import computed at comptime is out of scope and is left for the
+compiler. The body's directory bounds the module, matching Zig; sharing
+across sibling directories is a named-module concern, below.
 
 ## Alternatives
 

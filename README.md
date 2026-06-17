@@ -143,6 +143,7 @@ And two show a namespace backed by a co-located `.zig`:
 
 - [`cinterop.clj`](examples/cinterop.clj): imports a C header with `@cImport` and links a C library, its body in a sibling `.zig` file.
 - [`geometry.clj`](examples/geometry.clj): bodyless functions sourced from the co-located `geometry.zig`, with `zig-deps` linking libm for the whole namespace.
+- [`multifile.clj`](examples/multifile.clj): a body split across two `.zig` files, the first `@import`ing the second.
 
 ## Reading order
 
