@@ -19,7 +19,8 @@
             [clj-zig.layout :as layout]
             [clj-zig.signature :as signature]
             [clj-zig.source :as source]
-            [clj-zig.spec :as spec]))
+            [clj-zig.spec :as spec]
+            [clj-zig.toolchain :as toolchain]))
 
 ;; --- Namespace-scoped Zig declarations ----------------------------------
 
@@ -98,14 +99,18 @@
 (defn build-inputs
   "The cache/compile inputs for `spec` and `body`: the generated source,
   prefixed with this namespace's `defz` declarations, plus the toolchain
-  identity that the content hash includes. `gen` selects the source shape:
-  inline splices the body string into a wrapper; file concatenates the
-  user's file text and a wrapper that calls its `pub fn`; raw uses the file
-  text as-is. `gen` also carries any C-interop `:options-extra`. Options
-  layer by precedence: the optimize default, then the namespace `zig-deps`,
-  then the descriptor, so a function inherits its namespace's link flags
-  and may still override them. A file body that imports other Zig files
-  carries them as `:aux-files`, reproduced beside the source."
+  identity that the content hash includes. The Zig version in the hash is
+  the pinned version, not a live `zig version`: every machine pins the same
+  toolchain, so a baked library and a function built in place hash alike,
+  and a consumer with no toolchain reproduces the hash without running Zig.
+  `gen` selects the source shape: inline splices the body string into a
+  wrapper; file concatenates the user's file text and a wrapper that calls
+  its `pub fn`; raw uses the file text as-is. `gen` also carries any
+  C-interop `:options-extra`. Options layer by precedence: the optimize
+  default, then the namespace `zig-deps`, then the descriptor, so a function
+  inherits its namespace's link flags and may still override them. A file
+  body that imports other Zig files carries them as `:aux-files`, reproduced
+  beside the source."
   ([spec body] (build-inputs spec body {:mode :inline}))
   ([spec body {:keys [mode entry options-extra aux-files] :or {mode :inline}}]
    (let [decls (preamble (:ns spec))
@@ -118,7 +123,7 @@
               :source      src
               :deps        decls
               :options     (merge {:optimize "ReleaseSafe"} (deps-in (:ns spec)) options-extra)
-              :zig-version (cache/zig-version)
+              :zig-version toolchain/pinned-version
               :target      (cache/target-triple)}
        aux-files (assoc :aux-files aux-files)))))
 

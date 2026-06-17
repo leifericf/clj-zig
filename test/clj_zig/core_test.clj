@@ -1,6 +1,8 @@
 (ns clj-zig.core-test
   (:require [clojure.test :refer [deftest is testing]]
-            [clj-zig.core :refer [defnz defz]]))
+            [clj-zig.core :as core :refer [defnz defz]]
+            [clj-zig.spec :as spec]
+            [clj-zig.toolchain :as toolchain]))
 
 ;; Functions defined at namespace load, then exercised below.
 
@@ -24,6 +26,17 @@
 (defnz tripled
   [x :i64 :ret :i64]
   "return triple(x);")
+
+(deftest build-inputs-needs-no-toolchain
+  (testing "the hash takes the pinned Zig version, so deriving build inputs
+  never resolves or runs zig; a consumer with no toolchain reproduces the
+  same hash a bake produced"
+    (with-redefs [toolchain/zig-exe (fn [] (throw (ex-info "zig must not be resolved here" {})))]
+      (let [s  (spec/build-spec '{:ns app.core :name add
+                                  :signature [x :i64 y :i64 :ret :i64]})
+            in (core/build-inputs s "return x + y;")]
+        (is (= toolchain/pinned-version (:zig-version in)))
+        (is (string? (:source in)))))))
 
 (deftest defines-and-calls-a-scalar-function
   (is (= 3 (add-fn 1 2)))
