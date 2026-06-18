@@ -12,9 +12,11 @@ zig-out/
 # clj-zig artifact cache
 /.clj-zig/
 
-# Editor / tooling caches
+# Editor / tooling caches and per-user session state
 .clj-kondo/.cache/
 .lsp/.cache/
+.calva/
+.nrepl-port
 
 # Claude Code local, per-user settings
 .claude/settings.local.json
