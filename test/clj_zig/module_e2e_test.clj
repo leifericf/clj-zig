@@ -7,7 +7,6 @@
   global cache dir (ADR 35) is populated. Needs a real `zig` and JDK 22+."
   (:require [clojure.java.io :as io]
             [clojure.test :refer [deftest is testing]]
-            [clj-zig.cache :as cache]
             [clj-zig.compile :as compile]
             [clj-zig.core :as core]
             [clj-zig.ffm :as ffm]

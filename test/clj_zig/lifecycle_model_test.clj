@@ -6,8 +6,7 @@
   fails to compile keeps the last good binding and records the failed
   attempt, a body already built comes back cached, recompiling preserves
   behavior, and a wrong arity is a clear error."
-  (:require [clojure.java.io :as io]
-            [clojure.test :refer [deftest is]]
+  (:require [clojure.test :refer [deftest is]]
             [clojure.test.check.generators :as gen]
             [stateful-check.core :refer [specification-correct?]]
             [clj-zig :as zig]
