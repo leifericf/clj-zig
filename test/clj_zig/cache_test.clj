@@ -51,12 +51,12 @@
 (deftest cache-key-includes-module-fingerprints
   (let [base (cache/cache-key (inputs nil "return x + y;"))
         with (cache/cache-key (assoc (inputs nil "return x + y;")
-                                     :modules {"clojo" "0123456789ab"}))]
+                                     :modules {"phane" "0123456789ab"}))]
     (testing "a declared module shifts the key"
       (is (not= base with)))
     (testing "a changed module fingerprint shifts it again"
       (is (not= with (cache/cache-key (assoc (inputs nil "return x + y;")
-                                             :modules {"clojo" "ffffffffffff"})))))
+                                             :modules {"phane" "ffffffffffff"})))))
     (testing "no modules hashes exactly as before"
       (is (= base (cache/cache-key (assoc (inputs nil "return x + y;") :modules nil)))))))
 

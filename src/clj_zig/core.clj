@@ -531,7 +531,7 @@
   declares external Zig packages the bodies may `@import` by name (ADR 34):
 
       (zig-deps {:c/link [\"m\"]
-                 :zig/modules {\"clojo\" {:path \"../clojo/src/root.zig\"}}})
+                 :zig/modules {\"phane\" {:path \"../phane/src/root.zig\"}}})
 
   A function descriptor still overrides the C options. The options enter each
   function's content hash, so changing them recompiles the namespace's

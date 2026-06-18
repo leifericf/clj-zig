@@ -95,12 +95,12 @@
 (def module-rejections
   "Each row is a `core/zig-modules` descriptor paired with the code its
   malformed `:zig/modules` declaration must raise (ADR 34)."
-  [{:code :clj-zig/bad-modules                 :descriptor {:zig/modules ["clojo"]}}
-   {:code :clj-zig/bad-module-name             :descriptor {:zig/modules {:clojo {:path "r.zig"}}}}
+  [{:code :clj-zig/bad-modules                 :descriptor {:zig/modules ["phane"]}}
+   {:code :clj-zig/bad-module-name             :descriptor {:zig/modules {:phane {:path "r.zig"}}}}
    {:code :clj-zig/reserved-module-name        :descriptor {:zig/modules {"std" {:path "r.zig"}}}}
-   {:code :clj-zig/bad-module-ref              :descriptor {:zig/modules {"clojo" "r.zig"}}}
-   {:code :clj-zig/module-missing-root         :descriptor {:zig/modules {"clojo" {}}}}
-   {:code :clj-zig/module-zig-version-mismatch :descriptor {:zig/modules {"clojo" {:path "r.zig"
+   {:code :clj-zig/bad-module-ref              :descriptor {:zig/modules {"phane" "r.zig"}}}
+   {:code :clj-zig/module-missing-root         :descriptor {:zig/modules {"phane" {}}}}
+   {:code :clj-zig/module-zig-version-mismatch :descriptor {:zig/modules {"phane" {:path "r.zig"
                                                                                   :zig/version "0.13.0"}}}}])
 
 (deftest module-rejection-matrix
