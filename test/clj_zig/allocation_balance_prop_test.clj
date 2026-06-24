@@ -10,6 +10,8 @@
             [clojure.test.check.clojure-test :refer [defspec]]
             [clojure.test.check.generators :as gen]
             [clojure.test.check.properties :as prop]
+            [clj-zig :as zig]
+            [clj-zig.ffm :as ffm]
             [clj-zig.fixtures :as f]
             [clj-zig.gen :as g]))
 
@@ -61,3 +63,38 @@
   (let [in (byte-array [10 20 30])]
     (is (every? #(java.util.Arrays/equals ^bytes % in)
                 (repeatedly 500 #(f/bytes-echo in))))))
+
+;; --- the scalar hot path (ADR 39) ---------------------------------------
+;; A scalar-only signature skips the per-call confined arena and reuses a
+;; thread-local carrier array. The selection is exact, the reuse stays
+;; correct under volume, and the thread-local array makes concurrent
+;; callers safe.
+
+(deftest scalar-only-selects-the-hot-path
+  (let [scalar? (fn [v] (let [s (zig/spec v)] (#'ffm/scalar-only? (:params s) (:ret s))))]
+    (is (scalar? #'f/echo-i64) "scalar in, scalar out")
+    (is (scalar? #'f/swallow)  "scalar in, :void out")
+    (is (not (scalar? #'f/sum-f64))    "a slice arg needs the arena")
+    (is (not (scalar? #'f/echo-point)) "a struct return needs the out-pointer")
+    (is (not (scalar? #'f/echo-suit))  "an enum crosses through the named path")
+    (is (not (scalar? #'f/box))        "a handle return takes the general path")))
+
+(deftest scalar-hot-path-round-trips-in-volume
+  ;; No arena and a reused carrier array: a scalar call driven hard must
+  ;; stay correct call after call.
+  (is (every? true? (map #(= % (f/echo-i64 %)) (range 100000)))))
+
+(deftest scalar-hot-path-is-thread-safe
+  ;; The carrier array is thread-local, so concurrent callers never corrupt
+  ;; each other's arguments: each thread echoes a disjoint value range and
+  ;; must get its own values back, never another thread's.
+  (let [threads 8
+        per     20000
+        futs    (mapv (fn [t]
+                        (future
+                          (every? true?
+                                  (map (fn [i] (let [v (+ (* (long t) 1000000) i)]
+                                                 (= v (f/echo-i64 v))))
+                                       (range per)))))
+                      (range threads))]
+    (is (every? true? (map deref futs)))))

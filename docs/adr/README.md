@@ -50,3 +50,4 @@ Later ADRs capture decisions made during development. Written via the
 | [36](36-pinned-module-local-checkout.md) | A pinned module may carry a local checkout path |
 | [37](37-foreign-function-toolkit.md) | A foreign-function toolkit for prebuilt libraries |
 | [38](38-synchronous-upcall-stubs.md) | Synchronous upcall stubs are a supported primitive |
+| [39](39-scalar-hot-path-call-mode.md) | A scalar-only hot-path call mode for defnz |

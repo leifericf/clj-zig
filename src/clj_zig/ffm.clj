@@ -338,11 +338,43 @@
     (catch IllegalCallerException e
       (throw (native-access-disabled e)))))
 
+(defn- wrong-arity-ex
+  "The diagnostic for calling a bound fn with the wrong argument count."
+  [var-sym arity actual]
+  (ex-info (str "Wrong number of arguments to " var-sym
+                ": expected " arity ", got " actual)
+           {:level :error
+            :error/code :clj-zig/arity
+            :var var-sym
+            :expected arity
+            :actual actual}))
+
+(defn- scalar-only?
+  "True when every param and the return cross as a plain scalar carrier, so
+  the call needs no confined arena. A scalar param coerces straight to its
+  carrier with `to-carrier` (no native segment is allocated), and a scalar
+  or `:void` return reads back with no out-pointer. Anything that touches
+  the arena -- a slice, pointer, array, struct, enum, handle, optional, or
+  an error-union/owned/struct return -- is excluded and takes the general
+  path. (`:void` normalizes to `{:kind :scalar :name :void}`, so the return
+  test covers it.)"
+  [params ret]
+  (and (every? (fn [p] (= :scalar (-> p :type :kind))) params)
+       (= :scalar (:kind ret))))
+
 (defn bind
   "Load `library-path`, look up the spec's symbol, and return a Clojure
   fn that calls it with scalar coercion. The library is held by the
   global arena for the JVM lifetime; redefinition produces a fresh
-  content-addressed library rather than reloading."
+  content-addressed library rather than reloading.
+
+  A scalar-only signature (every param and the return a plain scalar) takes
+  a hot path that opens NO confined arena and does no per-arg marshalling
+  bookkeeping -- it coerces directly into a thread-local carrier array and
+  invokes -- because the arena is dead weight when nothing crosses as a
+  native segment. Every other signature keeps the general path, whose
+  confined arena holds the native copies of slice/pointer/struct args for
+  the call (ADR 37/39)."
   [spec library-path]
   (let [linker (Linker/nativeLinker)
         ;; Loading a native library is a restricted operation; a JVM that
@@ -371,20 +403,35 @@
                                         (into-array MemoryLayout [ValueLayout/JAVA_LONG
                                                                   ValueLayout/JAVA_LONG]))
                                        (into-array Linker$Option [])))
-        var-sym (symbol (str (:ns spec)) (str (:name spec)))]
-    (fn [& args]
-      (when (not= (count args) arity)
-        (throw (ex-info (str "Wrong number of arguments to " var-sym
-                             ": expected " arity ", got " (count args))
-                        {:level :error
-                         :error/code :clj-zig/arity
-                         :var var-sym
-                         :expected arity
-                         :actual (count args)})))
-      ;; A confined arena holds the native copies of any slice arguments
-      ;; for exactly the duration of the call. Mutable slices are copied
-      ;; back before it closes, keeping the lifetime to the call.
-      (with-open [arena (Arena/ofConfined)]
+        var-sym (symbol (str (:ns spec)) (str (:name spec)))
+        ;; The hot path for a scalar-only signature: no per-call arena, and
+        ;; a thread-local carrier array reused across calls on the same
+        ;; thread (each thread gets its own, so concurrent callers never
+        ;; share one). The native call does not retain the array, and
+        ;; one-directional interop (ADR 10) means a call cannot re-enter
+        ;; itself on the same thread, so reuse is safe.
+        scalar?     (scalar-only? params ret)
+        carriers-tl (when scalar?
+                      (ThreadLocal/withInitial
+                       (reify java.util.function.Supplier
+                         (get [_] (object-array arity)))))]
+    (if scalar?
+      (fn [& args]
+        (when (not= (count args) arity)
+          (throw (wrong-arity-ex var-sym arity (count args))))
+        (let [^objects carriers (.get ^ThreadLocal carriers-tl)]
+          (loop [i 0 as args]
+            (when (< i (long arity))
+              (aset carriers i (to-carrier (nth params i) (first as)))
+              (recur (inc i) (next as))))
+          (from-return ret (.invokeWithArguments ^MethodHandle handle carriers))))
+      (fn [& args]
+       (when (not= (count args) arity)
+         (throw (wrong-arity-ex var-sym arity (count args))))
+       ;; A confined arena holds the native copies of any slice arguments
+       ;; for exactly the duration of the call. Mutable slices are copied
+       ;; back before it closes, keeping the lifetime to the call.
+       (with-open [arena (Arena/ofConfined)]
         (let [marshalled    (mapv #(marshal-arg arena %1 %2) params args)
               base-carriers (mapcat :carriers marshalled)
               copy-back!    #(run! (fn [m] (when-let [back (:copy-back m)] (back)))
@@ -439,7 +486,7 @@
             :else
             (let [result (->> base-carriers (object-array) (.invokeWithArguments handle))]
               (copy-back!)
-              (from-return ret result))))))))
+              (from-return ret result)))))))))
 
 (comment
   ;; A whole small pipeline: build, compile, bind, call.
