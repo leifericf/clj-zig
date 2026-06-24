@@ -6,8 +6,7 @@
   strings, so every primitive round-trips through actual native code rather
   than a mock. The pure helpers (descriptor, resolve-library,
   read-utf8-bounded, join-then-close-arena) are asserted directly."
-  (:require [clojure.java.io :as io]
-            [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is testing]]
             [clj-zig.compile :as compile]
             [clj-zig.foreign :as ff])
   (:import (java.lang.foreign Arena MemorySegment ValueLayout)
