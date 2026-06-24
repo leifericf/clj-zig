@@ -80,6 +80,23 @@ pub fn hypotenuse(a: f64, b: f64) f64 {
 
 The file path resolves next to the source file, then on the classpath. See [ADR 26](docs/adr/26-external-zig-source-files.md) and [ADR 27](docs/adr/27-compile-options-c-interop.md).
 
+## Binding a prebuilt library
+
+A program also reaches libraries it did not compile and that have no Zig body to wrap: the platform's windowing or input library, a system framework, libc, the graphics loader. `clj-zig.foreign` is a small foreign-function toolkit for binding one directly: open it, describe a signature as data, bind a cached downcall, optionally hand native code a Clojure callback.
+
+```clojure
+(require '[clj-zig.foreign :as foreign])
+
+(let [lib (foreign/library-lookup
+           (foreign/resolve-library {:env       ["LIBFOO"]
+                                     :candidates ["/opt/homebrew/lib/libfoo.dylib"]
+                                     :default   "/opt/homebrew/lib/libfoo.dylib"}))
+      add (foreign/downcall lib "foo_add" foreign/c-int [foreign/c-int foreign/c-int])]
+  (foreign/call add (int 20) (int 22)))      ;; => 42
+```
+
+`downcall` caches its handle per distinct signature, so a per-frame caller invokes the cached handle directly and does no linker work; `upcall-stub` adapts a Clojure fn to a C function pointer for callback-driven APIs; `read-utf8-bounded` reads a NUL-terminated string out of untrusted foreign memory under a hard cap. See [ADR 37](docs/adr/37-foreign-function-toolkit.md) and [ADR 38](docs/adr/38-synchronous-upcall-stubs.md).
+
 ## A namespace of native functions
 
 A Clojure namespace is a Zig namespace. Name a function without a body and clj-zig takes the body from the `pub fn` of the same name in the `.zig` file beside the namespace's source: `app/geometry.clj` pairs with `app/geometry.zig`. Shared imports, helpers, and types live once in that file, and `zig-deps` declares the namespace's C link flags so each function inherits them:

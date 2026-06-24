@@ -47,3 +47,6 @@ Later ADRs capture decisions made during development. Written via the
 | [33](33-compile-out-of-process-warm-not-embed.md) | Compile out of process, warm the compiler rather than embed it |
 | [34](34-external-zig-module-dependencies.md) | Depend on external Zig modules by name |
 | [35](35-persistent-zig-global-cache-dir.md) | Give Zig a persistent global cache directory |
+| [36](36-pinned-module-local-checkout.md) | A pinned module may carry a local checkout path |
+| [37](37-foreign-function-toolkit.md) | A foreign-function toolkit for prebuilt libraries |
+| [38](38-synchronous-upcall-stubs.md) | Synchronous upcall stubs are a supported primitive |
