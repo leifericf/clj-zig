@@ -85,6 +85,17 @@
 (deftest a-returned-slice-or-pointer-needs-a-policy
   (testing "ownership of a []T and handle-vs-ptr of a *T are not in the type"
     (is (= :clj-zig.infer/policy-needed (infer/zig-type->boundary "[]u8" :return)))
+    (is (= :clj-zig.infer/policy-needed (infer/zig-type->boundary "[]const u8" :return)))
     (is (= :clj-zig.infer/policy-needed (infer/zig-type->boundary "[]const f64" :return)))
     (is (= :clj-zig.infer/policy-needed (infer/zig-type->boundary "*Point" :return)))
     (is (= :clj-zig.infer/policy-needed (infer/zig-type->boundary "[*]u8" :return)))))
+
+(deftest a-const-u8-slice-parameter-infers-to-string
+  (testing "a []const u8 parameter is a string argument (always const)"
+    (is (= :string (infer/zig-type->boundary "[]const u8")))
+    (is (= :string (infer/zig-type->boundary "[]const u8" :param))))
+  (testing "only const u8 is promoted; other u8 and slice shapes keep their form"
+    (is (= [:slice :u8] (infer/zig-type->boundary "[]u8")))                 ; mutable u8, not a string
+    (is (= [:slice :const :f64] (infer/zig-type->boundary "[]const f64")))) ; only u8 promoted
+  (testing "a []const u8 return still needs an ownership policy"
+    (is (= :clj-zig.infer/policy-needed (infer/zig-type->boundary "[]const u8" :return)))))
