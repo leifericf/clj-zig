@@ -230,8 +230,9 @@
   "The local source path a module reference compiles from, or nil when none
   is available here. A dev `:path` ref, or a pinned ref carrying a local
   `:path` checkout (ADR 36), uses that path. A pinned ref with no `:path` has
-  no source in this environment — a consumer resolving a baked library — so
-  it yields nil and compiles only if its baked artifact is missing."
+  no source in this environment (as for a consumer resolving only a baked
+  library), so it yields nil and compiles only if its baked artifact is
+  missing."
   [_name ref]
   (:path ref))
 
