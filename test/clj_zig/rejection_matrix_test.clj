@@ -111,10 +111,26 @@
 
 (deftest layout-rejection-matrix
   (is (= :clj-zig/malformed-fields    (code-from #(layout/describe 'T '[a :i64 b]))))
-  (is (= :clj-zig/unsupported-field   (code-from #(layout/describe 'T '[a [:slice :u8]]))))
-  (is (= :clj-zig/unsupported-field   (code-from #(layout/describe 'T '[a :u128]))))
+  ;; A slice is a valid buffer field now (it expands to a {ptr, len} pair),
+  ;; so the rejection rows name the field types the wire struct still cannot
+  ;; carry: a named type (a nested struct or enum), an unbounded pointer,
+  ;; and a carrierless scalar.
+  (is (= :clj-zig/unsupported-field   (code-from #(layout/describe 'T '[p Point]))))
+  (is (= :clj-zig/unsupported-field   (code-from #(layout/describe 'T '[p [:ptr :i64]]))))
+  (is (= :clj-zig/unsupported-field   (code-from #(layout/describe 'T '[p [:manyptr :i64]]))))
+  (is (= :clj-zig/unsupported-field   (code-from #(layout/describe 'T '[n :u128]))))
   (is (= :clj-zig/malformed-members   (code-from #(layout/describe-enum 'E '[ok 0 bad]))))
   (is (= :clj-zig/non-integer-member  (code-from #(layout/describe-enum 'E '[ok :zero])))))
+
+(deftest layout-buffer-fields-are-not-a-rejection
+  ;; The buffer field kinds doc 10 §3 introduces are accepted by the layout
+  ;; describer and yield no diagnostic: a :string, a [:bytes [:slice :u8]],
+  ;; and a bare, owned, or borrowed slice of a carrier scalar.
+  (is (nil? (code-from #(layout/describe 'T '[s :string]))))
+  (is (nil? (code-from #(layout/describe 'T '[b [:bytes [:slice :u8]]]))))
+  (is (nil? (code-from #(layout/describe 'T '[xs [:slice :i64]]))))
+  (is (nil? (code-from #(layout/describe 'T '[xs [:owned [:slice :i64]]]))))
+  (is (nil? (code-from #(layout/describe 'T '[xs [:borrowed [:slice :i64]]])))))
 
 ;; --- Rejections from external-module declarations -----------------------
 

@@ -12,9 +12,15 @@
                    {:name y :type {:kind :scalar :name :f64} :offset 8}]
           :size 16 :align 8}
 
-  The same descriptor renders the `extern struct` the generated Zig uses
-  and drives the field marshalling FFM performs. Fields are scalars with
-  an FFM carrier; the layout matches Zig's `extern struct` (C ABI)."
+  A field may be a carrier scalar, an enum's i32 backing, or a buffer
+  field (`:string`, `[:bytes [:slice :u8]]`, or a bare, owned, or
+  borrowed slice of a carrier scalar). A buffer field has no single C
+  type: it expands in the wire struct to two `usize` words, a pointer
+  and a length, so the descriptor records both offsets and the
+  marshalled Clojure target for each. The descriptor renders the
+  `extern struct` the generated Zig uses and drives the field
+  marshalling FFM performs; the layout matches Zig's `extern struct`
+  (C ABI)."
   (:require [clojure.string :as str]
             [clj-zig.type :as type]))
 
@@ -27,42 +33,123 @@
       :bool 1
       (quot bits 8))))
 
+(def ^:private pointer-word
+  "The scalar form of one wire word: a buffer field's pointer or length
+  crosses as a `usize`, which is target-width. Both halves of an
+  expanded buffer field take their size and alignment from this scalar,
+  so the layout recomputes if a future target changes usize's width; the
+  descriptor's content hash then recomputes with it. The development
+  target is 64-bit, so a word is eight bytes."
+  {:kind :scalar :name :usize})
+
+(defn- word-bytes
+  "The size and alignment in bytes of one wire word (a `usize` pointer or
+  length)."
+  []
+  (field-bytes pointer-word))
+
+(def ^:private byte-array-target
+  "The marshalled Clojure target for a `[:bytes [:slice :u8]]` field: a
+  Java `byte[]`. Spelled as `(keyword \"byte[]\")` because the literal
+  `:byte[]` splits at the bracket when read."
+  (keyword "byte[]"))
+
 (defn- round-up
   "Raise `n` to the next multiple of `a`."
   [n a]
   (* a (quot (+ n a -1) a)))
 
+(defn- slice-field-element
+  "The carrier scalar a slice-bearing buffer field carries, or nil when
+  the field does not carry a slice of a carrier scalar. A bare `:slice`
+  is its own slice; an `:owned`, `:borrowed`, or `:bytes` wrapper holds
+  its slice under `:of`."
+  [t]
+  (let [slice (case (:kind t)
+                :slice                    t
+                (:owned :borrowed :bytes) (:of t)
+                nil)]
+    (when (and (map? slice) (= :slice (:kind slice)))
+      (let [elem (:of slice)]
+        (when (and (map? elem)
+                   (= :scalar (:kind elem))
+                   (type/has-carrier? (:name elem)))
+          elem)))))
+
+(defn- classify-field
+  "The wire shape of a normalized field type: `:scalar` for a carrier
+  scalar, or `:buffer` for a field that expands to a `{ptr, len}` pair,
+  carrying its marshalled Clojure `:target` (`:string`, `:byte[]`, or
+  `:vector`). Throws a diagnostic for any field the wire struct cannot
+  carry: a named type (a nested struct or enum), an unbounded pointer, a
+  carrierless scalar, or a wrapper the layout does not lower."
+  [type-name fname ftype t]
+  (cond
+    (and (= :scalar (:kind t)) (type/has-carrier? (:name t)))
+    {:wire :scalar}
+
+    (= :string (:kind t))
+    {:wire :buffer :target :string}
+
+    (and (= :bytes (:kind t))
+         (= :slice (get-in t [:of :kind]))
+         (= :u8 (get-in t [:of :of :name])))
+    {:wire :buffer :target byte-array-target}
+
+    (and (contains? #{:slice :owned :borrowed} (:kind t))
+         (some? (slice-field-element t)))
+    {:wire :buffer :target :vector}
+
+    :else
+    (throw (ex-info (str "Field " fname " of " type-name
+                         " must be a carrier scalar or a buffer field "
+                         "([:bytes [:slice :u8]], a slice, or :string).")
+                    {:level         :error
+                     :error/code    :clj-zig/unsupported-field
+                     :type          type-name
+                     :field         fname
+                     :clj-zig/type-form ftype}))))
+
 (defn- normalize-field
-  "Normalize one `[name type]` field pair, rejecting anything but a
-  carrier-bearing scalar."
+  "Normalize one `[name type]` field pair. A carrier scalar returns as
+  `{:name :type}`; a buffer field returns with its marshalled Clojure
+  `:target`. Any other field type throws a diagnostic."
   [type-name [fname ftype]]
   (let [t (type/normalize ftype)]
-    (when-not (and (= :scalar (:kind t)) (type/has-carrier? (:name t)))
-      (throw (ex-info (str "Field " fname " of " type-name
-                           " must be a scalar with an FFM carrier.")
-                      {:level :error
-                       :error/code :clj-zig/unsupported-field
-                       :type type-name
-                       :field fname
-                       :clj-zig/type-form ftype})))
-    {:name fname :type t}))
+    (merge {:name fname :type t}
+           (select-keys (classify-field type-name fname ftype t) [:target]))))
 
 (defn describe
   "Build the layout descriptor for a named type from its `fields`, a
-  vector of `name type` pairs. Throws a diagnostic for an odd field list
-  or a field that has no FFM carrier."
+  vector of `name type` pairs. A carrier scalar keeps its carrier size
+  and alignment; a buffer field (`:string`, `[:bytes [:slice :u8]]`, or
+  a slice) expands to two `usize` words aligned to the word width, and
+  the field records the pointer offset as `:offset`, the length offset
+  as `:len-offset`, and the marshalled target. Throws a diagnostic for
+  an odd field list or a field the wire struct cannot carry."
   [type-name fields]
   (when (odd? (count fields))
     (throw (ex-info (str type-name " needs a type for every field.")
                     {:level :error :error/code :clj-zig/malformed-fields
                      :type type-name})))
-  (let [placed (reduce (fn [{:keys [fields offset align]} pair]
-                         (let [{:keys [type] :as f} (normalize-field type-name pair)
-                               size (field-bytes type)
-                               off  (round-up offset size)]
-                           {:fields (conj fields (assoc f :offset off))
-                            :offset (+ off size)
-                            :align  (max align size)}))
+  (let [word  (word-bytes)
+        placed (reduce (fn [{:keys [fields offset align]} pair]
+                         (let [{:keys [target type] :as f} (normalize-field type-name pair)]
+                           (if target
+                             ;; A buffer field: ptr then len, each a usize word.
+                             (let [ptr-off (round-up offset word)
+                                   len-off (+ ptr-off word)]
+                               {:fields (conj fields (assoc f
+                                                            :offset ptr-off
+                                                            :len-offset len-off))
+                                :offset (+ len-off word)
+                                :align  (max align word)})
+                             ;; A scalar field: its carrier size and alignment.
+                             (let [size (field-bytes type)
+                                   off  (round-up offset size)]
+                               {:fields (conj fields (assoc f :offset off))
+                                :offset (+ off size)
+                                :align  (max align size)}))))
                        {:fields [] :offset 0 :align 1}
                        (partition 2 fields))]
     {:name   type-name
@@ -106,13 +193,25 @@
   [descriptor]
   (boolean (:enum descriptor)))
 
+(defn- zig-field-decls
+  "The Zig declaration line(s) for one layout field. A scalar field is
+  one line of its carrier type; a buffer field expands to a `<name>_ptr`
+  and a `<name>_len`, both `usize` (the C-ABI `{ptr, len}` pair a slice
+  parameter already lowers to, applied to a struct field)."
+  [{fname :name t :type :keys [target]}]
+  (if target
+    [(str "    " fname "_ptr: usize,")
+     (str "    " fname "_len: usize,")]
+    [(str "    " fname ": " (name (:name t)) ",")]))
+
 (defn zig-struct
-  "The `extern struct` declaration the generated Zig uses for a layout."
+  "The `extern struct` declaration the generated Zig uses for a layout.
+  Each scalar field is declared by its carrier; each buffer field
+  expands to a `usize` pointer and length pair, the wire form a slice
+  parameter already takes."
   [{type-name :name :keys [fields]}]
   (str "const " type-name " = extern struct {\n"
-       (str/join "\n" (map (fn [{fname :name t :type}]
-                             (str "    " fname ": " (name (:name t)) ","))
-                           fields))
+       (str/join "\n" (mapcat zig-field-decls fields))
        "\n};\n"))
 
 (defn zig-enum

@@ -1,7 +1,8 @@
 (ns clj-zig.layout-test
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
-            [clj-zig.layout :as layout]))
+            [clj-zig.layout :as layout]
+            [clj-zig.type :as type]))
 
 (deftest describes-fields-in-order-with-offsets
   (let [d (layout/describe 'Point '[x :f64 y :f64])]
@@ -20,13 +21,99 @@
       (is (= 4 (:align d)))
       (is (= 8 (:size d))))))
 
-(deftest rejects-non-scalar-fields
-  (testing "a field without an FFM carrier is a clear diagnostic"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"carrier"
-                          (layout/describe 'Bad '[p [:slice :u8]])))))
+(defn- field-target [fields-form]
+  (:target (first (:fields (layout/describe 'T fields-form)))))
+
+(deftest lays-out-a-mixed-scalar-buffer-and-string-record
+  ;; A record carrying two scalars, a :string, and a [:bytes [:slice :u8]]
+  ;; field. Each buffer field expands to two usize words aligned to the word
+  ;; width, so the layout is the C-ABI layout of the wire struct doc 10
+  ;; section 4 specifies (ptr then len), not the nice record.
+  (let [d (layout/describe 'RenderResult
+                           '[status :i32
+                             w      :u32
+                             media  :string
+                             bytes  [:bytes [:slice :u8]]])]
+    (is (= [{:name       'status
+             :type       {:kind :scalar :name :i32}
+             :offset     0}
+            {:name       'w
+             :type       {:kind :scalar :name :u32}
+             :offset     4}
+            {:name       'media
+             :type       {:kind :string}
+             :offset     8
+             :len-offset 16
+             :target     :string}
+            {:name       'bytes
+             :type       {:kind :bytes
+                          :of   {:kind   :slice
+                                 :const? false
+                                 :of     {:kind :scalar :name :u8}}}
+             :offset     24
+             :len-offset 32
+             :target     (keyword "byte[]")}]
+           (:fields d)))
+    (is (= 40 (:size d)))
+    (is (= 8 (:align d)))))
+
+(deftest maps-each-buffer-kind-to-its-marshalled-target
+  (testing "each buffer field kind records its Clojure-side target"
+    (is (= :string            (field-target '[s :string])))
+    (is (= (keyword "byte[]") (field-target '[b [:bytes [:slice :u8]]])))
+    (is (= :vector            (field-target '[xs [:slice :i64]])))
+    (is (= :vector            (field-target '[xs [:owned [:slice :i64]]])))
+    (is (= :vector            (field-target '[xs [:borrowed [:slice :i64]]]))))
+  (testing "a scalar field carries no marshalled target"
+    (is (nil? (field-target '[n :i64])))))
+
+(deftest buffer-fields-expand-to-a-target-width-word-pair
+  ;; A buffer field's two words are usize, which is target-width. The word
+  ;; size is derived from the usize scalar, not a hardcoded constant, so a
+  ;; future 32-bit target that changed usize's width would recompute the
+  ;; offsets and the descriptor's content hash alongside it.
+  (let [word  (quot (:bits (type/scalar-info :usize)) 8)
+        d     (layout/describe 'S '[s :string])
+        field (first (:fields d))]
+    (is (= word (- (:len-offset field) (:offset field))))
+    (is (= (* 2 word) (:size d)))
+    (is (= word (:align d)))))
+
+(defn- rejection-code [fields]
+  (try (layout/describe 'Bad fields) nil
+       (catch clojure.lang.ExceptionInfo e
+         (:error/code (ex-data e)))))
+
+(deftest rejects-unsupported-field-types
+  (testing "a nested struct or enum named field is rejected"
+    (is (= :clj-zig/unsupported-field (rejection-code '[p Point]))))
+  (testing "an unbounded pointer field is rejected"
+    (is (= :clj-zig/unsupported-field (rejection-code '[p [:ptr :i64]])))
+    (is (= :clj-zig/unsupported-field (rejection-code '[p [:manyptr :i64]]))))
+  (testing "a carrierless scalar field is rejected"
+    (is (= :clj-zig/unsupported-field (rejection-code '[n :u128]))))
+  (testing "a slice of a carrierless scalar is rejected"
+    (is (= :clj-zig/unsupported-field (rejection-code '[xs [:slice :u128]])))))
 
 (deftest emits-an-extern-struct
   (let [src (layout/zig-struct (layout/describe 'Point '[x :f64 y :f64]))]
     (is (str/includes? src "const Point = extern struct {"))
     (is (str/includes? src "x: f64,"))
     (is (str/includes? src "y: f64,"))))
+
+(deftest emits-a-wire-extern-struct-expanding-buffer-fields
+  (let [src (layout/zig-struct
+              (layout/describe 'RenderResult
+                               '[status :i32
+                                 media  :string
+                                 bytes  [:bytes [:slice :u8]]]))]
+    (testing "scalar fields keep their carrier declarations"
+      (is (str/includes? src "status: i32,")))
+    (testing "each buffer field expands to a usize ptr and len"
+      (is (str/includes? src "media_ptr: usize,"))
+      (is (str/includes? src "media_len: usize,"))
+      (is (str/includes? src "bytes_ptr: usize,"))
+      (is (str/includes? src "bytes_len: usize,")))
+    (testing "no buffer field name leaks through undivided"
+      (is (not (str/includes? src "media:")))
+      (is (not (str/includes? src "bytes:"))))))
