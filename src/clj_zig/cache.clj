@@ -12,7 +12,8 @@
   `cache-key` and `artifact-paths` are pure; resolving the toolchain
   version and target, and reading and writing the filesystem, are the
   shell."
-  (:require [clojure.java.io :as io]
+  (:require [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [clojure.java.shell :as sh]
             [clojure.pprint :as pprint]
             [clojure.string :as str]
@@ -271,11 +272,14 @@
                           :library-path (:library-path paths)}))))
 
 (defn read-manifest
-  "Read the manifest for a built artifact, or nil when none exists."
+  "Read the manifest for a built artifact, or nil when none exists. The
+  manifest is written as data, so it round-trips through the EDN reader
+  rather than the Clojure reader: a tampered cache dir cannot then craft
+  a payload that leans on Clojure-reader quirks."
   [paths]
   (let [f (io/file (:manifest-path paths))]
     (when (.exists f)
-      (read-string (slurp f)))))
+      (edn/read-string (slurp f)))))
 
 (defn clean!
   "Remove the entire artifact cache under `root` (default `.clj-zig/cache`)."
