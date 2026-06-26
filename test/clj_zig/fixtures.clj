@@ -92,6 +92,21 @@
    @memcpy(out, xs);
    return out;")
 
+;; --- Strings (a :string crosses as UTF-8 in both directions) -----------
+
+;; A :string argument reconstructs to []const u8; a :string return is an
+;; owned []u8 the free shim releases after the Clojure side decodes it.
+
+(defnz string-upper [s :string :ret :string]
+  "const out = std.heap.c_allocator.alloc(u8, s.len) catch @panic(\"oom\");
+   for (s, 0..) |c, i| out[i] = std.ascii.toUpper(c);
+   return out;")
+
+(defnz string-identity [s :string :ret :string]
+  "const out = std.heap.c_allocator.alloc(u8, s.len) catch @panic(\"oom\");
+   @memcpy(out, s);
+   return out;")
+
 ;; --- Handles ------------------------------------------------------------
 
 (defz Box "const Box = struct { v: i64 };")

@@ -52,28 +52,32 @@
   "The Zig parameter declarations for one boundary param. A scalar,
   pointer, or optional pointer is one declaration; a fixed-size array
   crosses as a pointer to the array; a slice is two declarations, a
-  many-item pointer and a `usize` length."
+  many-item pointer and a `usize` length. A `:string` argument lowers to
+  the same wire shape as `[:slice :const :u8]` (a `[*]const u8` pointer
+  and a `usize` length), since a string argument is always const bytes."
   [{:keys [binding type]}]
   (case (:kind type)
-    :slice            [(str binding "_ptr: [*]" (pointee type))
-                       (str binding "_len: usize")]
-    (:ptr :manyptr)   [(str binding ": " (pointer-type type))]
-    :optional         [(str binding ": " (zig-type type))]
-    :array            [(str binding "_ptr: *const [" (:length type) "]" (zig-type (:of type)))]
-    :named            (if (enum-type? type)
-                        [(str binding ": " (zig-type type))]
-                        [(str binding "_ptr: *const " (zig-type type))])
+    :string          [(str binding "_ptr: [*]const u8")
+                      (str binding "_len: usize")]
+    :slice           [(str binding "_ptr: [*]" (pointee type))
+                      (str binding "_len: usize")]
+    (:ptr :manyptr)  [(str binding ": " (pointer-type type))]
+    :optional        [(str binding ": " (zig-type type))]
+    :array           [(str binding "_ptr: *const [" (:length type) "]" (zig-type (:of type)))]
+    :named           (if (enum-type? type)
+                       [(str binding ": " (zig-type type))]
+                       [(str binding "_ptr: *const " (zig-type type))])
     [(str binding ": " (zig-type type))]))
 
 (defn- reconstruction
-  "The statement that rebuilds a binding the body uses by name: a slice
-  from its pointer and length, or an array value from its pointer."
+  "The statement that rebuilds a binding the body uses by name: a slice or
+  string from its pointer and length, or an array value from its pointer."
   [{:keys [binding type]}]
   (case (:kind type)
-    :slice          (str "const " binding " = " binding "_ptr[0.." binding "_len];")
-    :array          (str "const " binding " = " binding "_ptr.*;")
-    :named          (when-not (enum-type? type)
-                      (str "const " binding " = " binding "_ptr.*;"))
+    (:slice :string) (str "const " binding " = " binding "_ptr[0.." binding "_len];")
+    :array           (str "const " binding " = " binding "_ptr.*;")
+    :named           (when-not (enum-type? type)
+                       (str "const " binding " = " binding "_ptr.*;"))
     nil))
 
 (defn- param-args
@@ -81,9 +85,9 @@
   `param-decls`."
   [{:keys [binding type]}]
   (case (:kind type)
-    :slice          [(str binding "_ptr") (str binding "_len")]
-    :array          [(str binding "_ptr")]
-    :named          (if (enum-type? type) [(str binding)] [(str binding "_ptr")])
+    (:slice :string) [(str binding "_ptr") (str binding "_len")]
+    :array           [(str binding "_ptr")]
+    :named           (if (enum-type? type) [(str binding)] [(str binding "_ptr")])
     [(str binding)]))
 
 (defn- indent-body
@@ -160,19 +164,32 @@
          "    __ret.* = " sym "__impl(" args-str ");\n"
          "}\n")))
 
+(defn- ownership-slice
+  "The conceptual element-slice an ownership return writes out as a pointer
+  and length. A `:string` return lowers to `[]u8` exactly like a `:bytes`
+  return over a `[:slice :u8]`, so its inner `__impl` returns `[]u8` and the
+  wrapper writes its pointer and length to two out-params and emits a free
+  shim; the only difference from `:bytes` is the Clojure-side read (UTF-8
+  decode with replacement instead of a raw byte[])."
+  [ret]
+  (case (:kind ret)
+    :string {:const? false :of {:kind :scalar :name :u8}}
+    (:of ret)))
+
 (defn- generate-ownership
   "An inner impl fn holding the user body returns a slice; the exported
   wrapper writes the slice's pointer and length to two out-params. An
   `:owned` return also emits a free shim and a `std` import: the body
   allocates with `std.heap.c_allocator` and the shim frees it after the
-  caller copies the elements out."
+  caller copies the elements out. A `:string` return lowers to the same
+  `[]u8` shape and always carries the free shim."
   [{:keys [params ret] sym :symbol} body]
   (let [params-str (str/join ", " (mapcat param-decls params))
         args-str   (str/join ", " (mapcat param-args params))
-        slice      (:of ret)
+        slice      (ownership-slice ret)
         elem-t     (zig-type (:of slice))
         ret-t      (str "[]" (when (:const? slice) "const ") elem-t)
-        owned?     (contains? #{:owned :bytes} (:kind ret))
+        owned?     (contains? #{:owned :bytes :string} (:kind ret))
         out-params (str (when (seq params-str) ", ") "__ptr: *usize, __len: *usize")]
     (str "fn " sym "__impl(" params-str ") " ret-t " {\n"
          (indent-body (impl-body params body)) "\n"
@@ -190,10 +207,10 @@
 
 (defn- needs-std?
   "True when a function's generated wrapper needs `std` in scope: an owned
-  return uses `std.heap.c_allocator` in its free shim, and a handle in any
-  position is allocated or freed with `std`."
+  or `:string` return uses `std.heap.c_allocator` in its free shim, and a
+  handle in any position is allocated or freed with `std`."
   [{:keys [params ret]}]
-  (or (contains? #{:owned :bytes} (:kind ret))
+  (or (contains? #{:owned :bytes :string} (:kind ret))
       (= :handle (:kind ret))
       (some #(= :handle (:kind (:type %))) params)))
 
@@ -203,11 +220,11 @@
   `std` in scope."
   [{:keys [ret] :as spec} body]
   (let [core (cond
-               (= :error-union (:kind ret))                    (generate-error-union spec body)
-               (contains? #{:owned :borrowed :bytes} (:kind ret)) (generate-ownership spec body)
-               (and (= :named (:kind ret)) (enum-type? ret)) (generate-plain spec body)
-               (= :named (:kind ret))                        (generate-struct-return spec body)
-               :else                                         (generate-plain spec body))]
+               (= :error-union (:kind ret))                       (generate-error-union spec body)
+               (contains? #{:owned :borrowed :bytes :string} (:kind ret)) (generate-ownership spec body)
+               (and (= :named (:kind ret)) (enum-type? ret))      (generate-plain spec body)
+               (= :named (:kind ret))                             (generate-struct-return spec body)
+               :else                                              (generate-plain spec body))]
     (if (needs-std? spec)
       (str "const std = @import(\"std\");\n\n" core)
       core)))
@@ -281,14 +298,14 @@
 
 (defn- file-ownership
   "A file-mode `export fn` that calls the user fn and writes the returned
-  slice's pointer and length to two out-params. An `:owned` return also
-  emits a free shim; it imports `std` inline so the user file's own
-  imports never collide."
+  slice's pointer and length to two out-params. An `:owned` or `:string`
+  return also emits a free shim; it imports `std` inline so the user
+  file's own imports never collide."
   [{:keys [params ret] sym :symbol} entry]
   (let [params-str (str/join ", " (mapcat param-decls params))
-        slice      (:of ret)
+        slice      (ownership-slice ret)
         elem-t     (zig-type (:of slice))
-        owned?     (contains? #{:owned :bytes} (:kind ret))
+        owned?     (contains? #{:owned :bytes :string} (:kind ret))
         out-params (str (when (seq params-str) ", ") "__ptr: *usize, __len: *usize")]
     (str "export fn " sym "(" params-str out-params ") void {\n"
          (wrapper-prelude params)
@@ -308,11 +325,11 @@
   user's file owns its declarations and imports."
   [{:keys [ret] :as spec} entry]
   (cond
-    (= :error-union (:kind ret))                    (file-error-union spec entry)
-    (contains? #{:owned :borrowed :bytes} (:kind ret)) (file-ownership spec entry)
-    (and (= :named (:kind ret)) (enum-type? ret)) (file-plain spec entry)
-    (= :named (:kind ret))                        (file-struct-return spec entry)
-    :else                                         (file-plain spec entry)))
+    (= :error-union (:kind ret))                       (file-error-union spec entry)
+    (contains? #{:owned :borrowed :bytes :string} (:kind ret)) (file-ownership spec entry)
+    (and (= :named (:kind ret)) (enum-type? ret))      (file-plain spec entry)
+    (= :named (:kind ret))                             (file-struct-return spec entry)
+    :else                                              (file-plain spec entry)))
 
 (defn generate
   "Emit the Zig wrapper for `spec`. In the default inline mode the user's

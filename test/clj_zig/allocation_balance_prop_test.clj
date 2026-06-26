@@ -64,6 +64,12 @@
     (is (every? #(java.util.Arrays/equals ^bytes % in)
                 (repeatedly 500 #(f/bytes-echo in))))))
 
+(deftest string-returns-drive-the-free-shim-in-volume
+  ;; A :string return owns its bytes and frees them each call, so 500 calls
+  ;; leak none. The free shim runs in a finally on every return path.
+  (let [in "utf8-\u00e9-\u4e2d-\u00e6"]
+    (is (every? #(= in %) (repeatedly 500 #(f/string-identity in))))))
+
 ;; --- the scalar hot path (ADR 39) ---------------------------------------
 ;; A scalar-only signature skips the per-call confined arena and reuses a
 ;; thread-local carrier array. The selection is exact, the reuse stays

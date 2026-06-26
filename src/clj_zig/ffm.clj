@@ -15,7 +15,8 @@
                               MemoryLayout MemorySegment SymbolLookup ValueLayout)
            (java.lang.invoke MethodHandle)
            (java.lang.reflect Array)
-           (java.math BigInteger)))
+           (java.math BigInteger)
+           (java.nio.charset StandardCharsets)))
 
 (def ^:private two-to-64 (.shiftLeft BigInteger/ONE 64))
 
@@ -46,13 +47,14 @@
 (defn- param-layouts
   "The native layouts one boundary param crosses as. A scalar is one
   layout; a pointer, array, or named struct is an address; an enum is its
-  backing scalar; a slice is an address and a `usize` length."
+  backing scalar; a slice or `:string` is an address and a `usize` length
+  (a `:string` argument lowers to the same const-u8 wire shape as a slice)."
   [{:keys [type]}]
   (case (:kind type)
-    :slice                            [ValueLayout/ADDRESS ValueLayout/JAVA_LONG]
+    (:slice :string)                          [ValueLayout/ADDRESS ValueLayout/JAVA_LONG]
     :named                                    (if (enum-type? type)
-                                                [(value-layout (-> type :layout :backing))]
-                                                [ValueLayout/ADDRESS])
+                                                 [(value-layout (-> type :layout :backing))]
+                                                 [ValueLayout/ADDRESS])
     (:ptr :manyptr :array :optional :handle)  [ValueLayout/ADDRESS]
     [(value-layout type)]))
 
@@ -71,7 +73,7 @@
         ;; out-pointer the result is written through. Both export `void`.
         eu?         (= :error-union (:kind ret))
         struct-ret? (and (= :named (:kind ret)) (not (enum-type? ret)))
-        own?        (contains? #{:owned :borrowed :bytes} (:kind ret))
+        own?        (contains? #{:owned :borrowed :bytes :string} (:kind ret))
         extra       (cond eu?         [ValueLayout/ADDRESS ValueLayout/ADDRESS]
                           own?        [ValueLayout/ADDRESS ValueLayout/ADDRESS]
                           struct-ret? [ValueLayout/ADDRESS]
@@ -125,6 +127,23 @@
   one-element array, guarding against a read past the end."
   [arena param arg]
   (case (-> param :type :kind)
+    :string  (let [bs (if (string? arg)
+                        (.getBytes ^String arg StandardCharsets/UTF_8)
+                        (do (when-not (bytes? arg)
+                              (throw (ex-info (str "A :string argument must be a String or a byte[]"
+                                                   " of UTF-8; got " (pr-str (type arg)) ".")
+                                              {:level :error
+                                               :error/code :clj-zig/string-argument
+                                               :actual (type arg)})))
+                            arg))
+                   len (alength ^bytes bs)
+                   seg ^MemorySegment (.allocate ^Arena arena (long len) 1)]
+               ;; A string argument is const UTF-8 bytes copied into the call
+               ;; arena; there is no copy-back. A zero-length string allocates
+               ;; a zero-size segment the Zig side reconstructs as [0..0].
+               (when (pos? len)
+                 (MemorySegment/copy bs (int 0) seg ValueLayout/JAVA_BYTE (long 0) (int len)))
+               {:carriers [seg (long len)]})
     :slice   (let [{:keys [address length copy-back]} (marshal-array arena param arg)]
                {:carriers [address (long length)] :copy-back copy-back})
     :manyptr (let [{:keys [address copy-back]} (marshal-array arena param arg)]
@@ -290,6 +309,16 @@
         (MemorySegment/copy seg ValueLayout/JAVA_BYTE (long 0) out (int 0) (int len))))
     out))
 
+(defn- read-utf8-string
+  "Copy `len` bytes from native address `addr` and decode them as UTF-8 into
+  a Java `String`, using the JVM's replacement action so a malformed
+  sequence becomes U+FFFD instead of throwing across the boundary. The
+  field is untrusted native memory; the decode never faults. A zero length
+  yields an empty String without dereferencing the address (the same
+  single-slice guard `read-bytes` uses)."
+  ^String [addr len]
+  (String. (read-bytes addr len) StandardCharsets/UTF_8))
+
 (defn- enum-member->value
   "The backing integer for an enum member keyword, or nil when no member
   of `descriptor` carries that name."
@@ -418,11 +447,12 @@
         ;; plain struct return has none and stays a map.
         record-factory (when (and (= :named (:kind ret)) (:record (:layout ret)))
                          (requiring-resolve (:record (:layout ret))))
-        own?    (contains? #{:owned :borrowed :bytes} (:kind ret))
-        ;; An owned slice (or :bytes buffer) return carries a free shim
-        ;; clj-zig calls once it has copied the elements out; a borrowed
-        ;; return frees nothing.
-        free-handle (when (contains? #{:owned :bytes} (:kind ret))
+        own?    (contains? #{:owned :borrowed :bytes :string} (:kind ret))
+        ;; An owned slice (or :bytes buffer, or :string) return carries a
+        ;; free shim clj-zig calls once it has copied the elements out; a
+        ;; borrowed return frees nothing. A :string return always owns its
+        ;; bytes (it is allocated by the body and decoded on read).
+        free-handle (when (contains? #{:owned :bytes :string} (:kind ret))
                       (.downcallHandle linker
                                        (.orElseThrow (.find lookup (str (:symbol spec) "__free")))
                                        (FunctionDescriptor/ofVoid
@@ -477,8 +507,9 @@
 
             ;; An owned or borrowed slice return writes its pointer and
             ;; length to two out-params. clj-zig copies the elements out (a
-            ;; :bytes return as one byte[], any other slice as a vector),
-            ;; then frees owned memory through the shim.
+            ;; :bytes return as one byte[], a :string return decoded as UTF-8
+            ;; with replacement, any other slice as a vector), then frees
+            ;; owned memory through the shim.
             own?
             (let [pout ^MemorySegment (.allocate arena 8 8)
                   lout ^MemorySegment (.allocate arena 8 8)]
@@ -490,10 +521,13 @@
                     len  (.get lout ValueLayout/JAVA_LONG 0)]
                 ;; Free owned memory in a finally so a read fault (a wild
                 ;; pointer, or an OOM on a huge length) cannot leak the slice
-                ;; the body allocated (ADR 21). A borrowed return has no shim.
+                ;; the body allocated (ADR 21, mirror of c8a822b). A borrowed
+                ;; return has no shim. A :string read decodes UTF-8 with the
+                ;; JVM replacement action, so invalid bytes never throw here.
                 (try
-                  (if (= :bytes (:kind ret))
-                    (read-bytes addr len)
+                  (case (:kind ret)
+                    :bytes  (read-bytes addr len)
+                    :string (read-utf8-string addr len)
                     (read-slice-values addr len (-> ret :of :of)))
                   (finally
                     (when free-handle
