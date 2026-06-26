@@ -1,7 +1,10 @@
 (ns clj-zig.source-test
-  (:require [clojure.java.shell :as sh]
+  (:require [clojure.java.io :as io]
+            [clojure.java.shell :as sh]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
+            [clj-zig.compile :as compile]
+            [clj-zig.layout :as layout]
             [clj-zig.source :as source]
             [clj-zig.spec :as spec]))
 
@@ -67,3 +70,97 @@
   (testing "void function"
     (let [s (spec/build-spec '{:ns app.core :name noop :signature [:ret :void]})]
       (is (zig-fmt-clean? (source/generate s "return;"))))))
+
+;; --- Owned/borrowed result records (doc 10 Phase 2) ---------------------
+
+(defn- scratch-dir []
+  (str (java.nio.file.Files/createTempDirectory
+        "clj-zig-record" (make-array java.nio.file.attribute.FileAttribute 0))))
+
+;; A minimal record carrying one scalar and one buffer field. Validation
+;; still rejects [:owned NamedRecord] until p2c relaxes it, so the spec map
+;; is assembled directly with the layout descriptor attached, the shape the
+;; codegen consumes once validation admits it.
+(def ^:private record-layout
+  (layout/describe 'RenderResult '[flag :u32 msg :string]))
+
+(defn- record-spec [ownership]
+  {:ns     'app.core
+   :name   'render
+   :symbol (spec/symbol-name 'app.core 'render)
+   :params []
+   :ret    {:kind ownership
+            :of   {:kind :named :name 'RenderResult :layout record-layout}}})
+
+(deftest owned-record-return-emits-wire-struct-write-wrapper-and-free-shim
+  (let [src (source/generate (record-spec :owned)
+                             "return .{ .flag = 1, .msg = \"hi\" };")]
+    (testing "an owned result pulls std into scope for the free shim"
+      (is (str/starts-with? src "const std = @import(\"std\");")))
+    (testing "the wire struct expands the buffer field to ptr/len usize words"
+      (is (str/includes? src "const RenderResult__wire = extern struct {"))
+      (is (str/includes? src "flag: u32,"))
+      (is (str/includes? src "msg_ptr: usize,"))
+      (is (str/includes? src "msg_len: usize,")))
+    (testing "the inner impl returns the nice record by value"
+      (is (str/includes? src "fn clj_zig_app_2e_core_render__impl() RenderResult {")))
+    (testing "the wrapper writes the scalar directly and the buffer as ptr/len"
+      (is (str/includes? src "export fn clj_zig_app_2e_core_render(__ret: *RenderResult__wire) void {"))
+      (is (str/includes? src "__ret.*.flag = __r.flag;"))
+      (is (str/includes? src "__ret.*.msg_ptr = @intFromPtr(__r.msg.ptr);"))
+      (is (str/includes? src "__ret.*.msg_len = __r.msg.len;")))
+    (testing "the free shim frees every buffer field reading ptr/len off the wire"
+      (is (str/includes? src
+                         (str "export fn clj_zig_app_2e_core_render__free"
+                              "(__ret: *const RenderResult__wire) void {")))
+      (is (str/includes? src
+                         "std.heap.c_allocator.free(@as([*]u8, @ptrFromInt(__ret.msg_ptr))[0..__ret.msg_len]);")))
+    (testing "the generated source is canonical Zig"
+      (is (zig-fmt-clean? src)))))
+
+(deftest borrowed-record-return-omits-the-free-shim-and-std-import
+  (let [src (source/generate (record-spec :borrowed)
+                             "return .{ .flag = 1, .msg = \"hi\" };")]
+    (testing "a borrowed result pulls no std into scope"
+      (is (not (str/includes? src "const std = @import"))))
+    (testing "the wrapper still writes every wire field"
+      (is (str/includes? src "__ret.*.flag = __r.flag;"))
+      (is (str/includes? src "__ret.*.msg_ptr = @intFromPtr(__r.msg.ptr);"))
+      (is (str/includes? src "__ret.*.msg_len = __r.msg.len;")))
+    (testing "no free shim is emitted"
+      (is (not (str/includes? src "__free"))))
+    (testing "the generated source is canonical Zig"
+      (is (zig-fmt-clean? src)))))
+
+(deftest owned-record-wrapper-compiles
+  ;; A richer record covering every buffer element kind the free shim casts
+  ;; (:string and :bytes free as u8; a slice field frees as its element).
+  ;; The emitted Zig must build, not merely look right: the wrapper writes
+  ;; every wire field and the shim reinterprets each pointer back to a slice.
+  (let [layout (layout/describe 'RenderResult
+                                '[flag :u32
+                                  msg  :string
+                                  raw  [:bytes [:slice :u8]]
+                                  xs   [:slice :i64]])
+        spec   {:ns     'app.core
+                :name   'render
+                :symbol (spec/symbol-name 'app.core 'render)
+                :params []
+                :ret    {:kind :owned
+                         :of   {:kind :named :name 'RenderResult :layout layout}}}
+        nice   (str "const RenderResult = struct {\n"
+                    "    flag: u32,\n"
+                    "    msg: []u8,\n"
+                    "    raw: []u8,\n"
+                    "    xs: []i64,\n"
+                    "};\n\n")
+        body   "return .{ .flag = 1, .msg = &[_]u8{}, .raw = &[_]u8{}, .xs = &[_]i64{} };"
+        dir    (scratch-dir)]
+    (is (.exists (io/file
+                  (:library
+                   (compile/compile!
+                    {:source       (str nice (source/generate spec body))
+                     :source-path  (str dir "/source.zig")
+                     :library-path (str dir "/librender." (compile/dynamic-library-extension))
+                     :ctx          {:var 'app.core/render}}))))
+        "the owned-record wrapper and per-field free shim build")))

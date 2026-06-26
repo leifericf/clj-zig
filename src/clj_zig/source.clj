@@ -13,7 +13,8 @@
   `zig fmt` owns final formatting; the generator emits already-canonical
   Zig for the structure it controls, and the compile shell runs `zig
   fmt` over the whole file to normalize the body."
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [clj-zig.layout :as layout]))
 
 (declare zig-type pointee pointer-type)
 
@@ -214,6 +215,98 @@
       (= :handle (:kind ret))
       (some #(= :handle (:kind (:type %))) params)))
 
+(defn- owned-record-return?
+  "True when a return is an `:owned` or `:borrowed` wrapper around a named
+  record, the doc 10 result-record shape. Distinguished from an owned or
+  borrowed slice return, which the existing `generate-ownership` path owns."
+  [ret]
+  (and (contains? #{:owned :borrowed} (:kind ret))
+       (= :named (get-in ret [:of :kind]))))
+
+(defn- wire-struct-name
+  "The C-ABI wire struct name for a result record: the nice record type with
+  a `__wire` suffix. The nice record (with real slice fields) and the wire
+  struct (with `usize` ptr/len words) are distinct types; the wrapper writes
+  the former into the latter field by field."
+  [type-name]
+  (symbol (str type-name "__wire")))
+
+(defn- wire-struct
+  "The wire `extern struct` declaration for a record layout, named with the
+  `__wire` suffix. Reuses `layout/zig-struct`, which expands each buffer
+  field to a `usize` pointer and length (doc 10 section 4)."
+  [record-layout]
+  (layout/zig-struct (assoc record-layout :name (wire-struct-name (:name record-layout)))))
+
+(defn- buffer-element
+  "The Zig element type name a buffer field carries, for the free shim's
+  pointer cast. A `:string` or `:bytes` field carries `u8` bytes; a slice
+  field carries its scalar element."
+  [t]
+  (case (:kind t)
+    :string "u8"
+    (:owned :borrowed :bytes) (name (get-in t [:of :of :name]))
+    :slice (name (get-in t [:of :name]))))
+
+(defn- wire-write-stmts
+  "The wrapper statement(s) writing one field of the nice record `__r` into
+  the wire out-struct `__ret`. A scalar or enum field is assigned directly;
+  a buffer field writes its pointer and length into the two wire slots."
+  [{fname :name :keys [target]}]
+  (if target
+    [(str "    __ret.*." fname "_ptr = @intFromPtr(__r." fname ".ptr);")
+     (str "    __ret.*." fname "_len = __r." fname ".len;")]
+    [(str "    __ret.*." fname " = __r." fname ";")]))
+
+(defn- free-field-stmt
+  "The free-shim statement freeing one owned buffer field, reading its
+  pointer and length back out of the wire struct and reinterpreting the
+  pointer to a slice of the field's element type."
+  [{fname :name t :type}]
+  (let [elem (buffer-element t)]
+    (str "    std.heap.c_allocator.free(@as([*]" elem
+         ", @ptrFromInt(__ret." fname "_ptr))[0..__ret." fname "_len]);")))
+
+(defn- file-free-field-stmt
+  "The file-mode free-shim statement: imports `std` inline so a user file's
+  own imports never collide, then frees one owned buffer field."
+  [{fname :name t :type}]
+  (let [elem (buffer-element t)]
+    (str "    @import(\"std\").heap.c_allocator.free(@as([*]" elem
+         ", @ptrFromInt(__ret." fname "_ptr))[0..__ret." fname "_len]);")))
+
+(defn- generate-owned-struct-return
+  "An inner impl fn holding the user body returns the nice record by value;
+  the exported wrapper writes each field into the wire extern struct through
+  an out-pointer (scalars and enums directly, each buffer field as its
+  pointer and length). An `:owned` result also emits a per-field `__free`
+  shim that frees every buffer field, reading each pointer and length back
+  out of the wire struct; a `:borrowed` result emits no shim. The wire
+  struct is emitted here under its `__wire` name; the nice record type is
+  declared alongside the body, not by the wrapper (doc 10 section 5)."
+  [{:keys [params ret] sym :symbol} body]
+  (let [layout     (get-in ret [:of :layout])
+        type-name  (:name layout)
+        wire-t     (wire-struct-name type-name)
+        params-str (str/join ", " (mapcat param-decls params))
+        args-str   (str/join ", " (mapcat param-args params))
+        out-params (str (when (seq params-str) ", ") "__ret: *" wire-t)
+        writes     (mapcat wire-write-stmts (:fields layout))
+        owned?     (= :owned (:kind ret))
+        buf-fields (filter :target (:fields layout))]
+    (str (wire-struct layout)
+         "\nfn " sym "__impl(" params-str ") " type-name " {\n"
+         (indent-body (impl-body params body)) "\n"
+         "}\n\n"
+         "export fn " sym "(" params-str out-params ") void {\n"
+         "    const __r = " sym "__impl(" args-str ");\n"
+         (str/join "\n" writes) "\n"
+         "}\n"
+         (when owned?
+           (str "\nexport fn " sym "__free(__ret: *const " wire-t ") void {\n"
+                (str/join "\n" (map free-field-stmt buf-fields)) "\n"
+                "}\n")))))
+
 (defn- generate-inline
   "The inline-mode wrapper: the user's body string is spliced into the
   exported function (or its inner impl fn). A wrapper that allocates gets
@@ -221,6 +314,7 @@
   [{:keys [ret] :as spec} body]
   (let [core (cond
                (= :error-union (:kind ret))                       (generate-error-union spec body)
+               (owned-record-return? ret)                         (generate-owned-struct-return spec body)
                (contains? #{:owned :borrowed :bytes :string} (:kind ret)) (generate-ownership spec body)
                (and (= :named (:kind ret)) (enum-type? ret))      (generate-plain spec body)
                (= :named (:kind ret))                             (generate-struct-return spec body)
@@ -319,6 +413,33 @@
                 "    @import(\"std\").heap.c_allocator.free(__p[0..__len]);\n"
                 "}\n")))))
 
+(defn- file-owned-struct-return
+  "A file-mode `export fn` that calls the user fn and writes the returned
+  nice record field by field into the wire extern struct through an
+  out-pointer. An `:owned` result also emits a per-field `__free` shim that
+  imports `std` inline (so a user file's own imports never collide) and
+  frees every buffer field; a `:borrowed` result emits no shim. The wire
+  struct is emitted here under its `__wire` name (doc 10 section 5)."
+  [{:keys [params ret] sym :symbol} entry]
+  (let [layout     (get-in ret [:of :layout])
+        type-name  (:name layout)
+        wire-t     (wire-struct-name type-name)
+        params-str (str/join ", " (mapcat param-decls params))
+        out-params (str (when (seq params-str) ", ") "__ret: *" wire-t)
+        writes     (mapcat wire-write-stmts (:fields layout))
+        owned?     (= :owned (:kind ret))
+        buf-fields (filter :target (:fields layout))]
+    (str (wire-struct layout)
+         "\nexport fn " sym "(" params-str out-params ") void {\n"
+         (wrapper-prelude params)
+         "    const __r = " (user-call entry params) ";\n"
+         (str/join "\n" writes) "\n"
+         "}\n"
+         (when owned?
+           (str "\nexport fn " sym "__free(__ret: *const " wire-t ") void {\n"
+                (str/join "\n" (map file-free-field-stmt buf-fields)) "\n"
+                "}\n")))))
+
 (defn- generate-file
   "The file-mode wrapper: an `export fn` that reconstructs args and calls
   the user's `entry` fn. No impl fn and no top-level `std` are emitted; the
@@ -326,6 +447,7 @@
   [{:keys [ret] :as spec} entry]
   (cond
     (= :error-union (:kind ret))                       (file-error-union spec entry)
+    (owned-record-return? ret)                         (file-owned-struct-return spec entry)
     (contains? #{:owned :borrowed :bytes :string} (:kind ret)) (file-ownership spec entry)
     (and (= :named (:kind ret)) (enum-type? ret))      (file-plain spec entry)
     (= :named (:kind ret))                             (file-struct-return spec entry)
