@@ -1,0 +1,23 @@
+{:vcs        :git
+ :languages  [:clojure :zig]
+ :ui?        false
+ :architecture
+ {:pattern      :functional-core-imperative-shell
+  :native-edge? true
+  :modules      {"clj-zig" "src"}}
+ :lanes
+ {:cheap    ["clojure -M:test"]
+  :wave     []
+  :pre-land ["clojure -M:test"]}
+ :dimensions-active #{:style :factoring :correctness :security
+                       :performance :memory :conformance}
+ :spine {:runtime :babashka :store :edn :working-dir ".agentic-sdk/state"}
+ :adr {:store "docs/adr/" :format :nygard}
+ :commit {:form "Category: Imperative subject"}
+ :hooks [:format-on-write :deny-secrets :require-tests-before-land]
+ :permissions
+ {:bash ["git status:*" "git diff:*" "git log:*"
+         "clojure -M:test:*" "clojure -X:test:*"
+         "clj-kondo:*" "cljfmt:*"
+         "zig build:*" "zig fmt:*" "zig version:*"]}
+ :runtimes [:claude-code :opencode]}
