@@ -62,7 +62,18 @@
    ;; :bytes is a return-only owned u8-slice wrapper
    {:code :clj-zig/unsupported-bytes       :signature '[a [:bytes [:slice :u8]] :ret :i64]}
    {:code :clj-zig/unsupported-bytes       :signature '[:ret [:bytes :u8]]}
-   {:code :clj-zig/unsupported-bytes       :signature '[:ret [:bytes [:slice :i64]]]}])
+   {:code :clj-zig/unsupported-bytes       :signature '[:ret [:bytes [:slice :i64]]]}
+   ;; a slice/array/ptr/manyptr whose element is not a scalar would validate
+   ;; but crash at marshal time (the marshaller handles scalar elements only),
+   ;; so it is rejected at spec time instead. No silent trap.
+   {:code :clj-zig/unsupported-element     :signature '[xs [:slice Point] :ret :i64]}
+   {:code :clj-zig/unsupported-element     :signature '[xs [:array 3 Point] :ret :i64]}
+   {:code :clj-zig/unsupported-element     :signature '[xs [:ptr Point] :ret :i64]}
+   {:code :clj-zig/unsupported-element     :signature '[xs [:manyptr Point] :ret :i64]}
+   {:code :clj-zig/unsupported-element     :signature '[xs [:manyptr :const Point] :ret :i64]}
+   {:code :clj-zig/unsupported-element     :signature '[:ret [:slice Point]]}
+   {:code :clj-zig/unsupported-element     :signature '[xs [:slice [:slice :u8]] :ret :i64]}
+   {:code :clj-zig/unsupported-element     :signature '[:ret [:slice [:slice :u8]]]}])
 
 (deftest spec-rejection-matrix
   (doseq [{:keys [code signature]} spec-rejections]
@@ -78,7 +89,8 @@
            :clj-zig/unsupported-optional :clj-zig/unsupported-error-union
            :clj-zig/unsupported-ownership :clj-zig/unsupported-handle
            :clj-zig/unsupported-carrier :clj-zig/unknown-field
-           :clj-zig/unknown-type-name :clj-zig/unsupported-bytes}
+           :clj-zig/unknown-type-name :clj-zig/unsupported-bytes
+           :clj-zig/unsupported-element}
          (set (map :code spec-rejections)))))
 
 ;; --- Rejections from the layout describers ------------------------------

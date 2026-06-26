@@ -23,7 +23,8 @@
             [clj-zig.signature :as signature]
             [clj-zig.type :as type]))
 
-(declare expand-arg scalar-names validate! fail)
+(declare expand-arg scalar-names find-non-scalar-element article
+         element-description check-element! validate! fail)
 
 (defn- munge-part
   "Escape a namespace or name to an ASCII C-identifier fragment. Letters
@@ -101,6 +102,62 @@
     :named  #{}
     (if-let [of (:of t)] (scalar-names of) #{})))
 
+(defn- find-non-scalar-element
+  "Return the first indirection node (`:slice`, `:array`, `:ptr`, or
+  `:manyptr`) in `t` whose immediate `:of` element is not a scalar, or
+  nil when every element is a scalar. The FFM marshaller carries scalar
+  elements only; a named, slice, pointer, optional, or wrapper element
+  would crash at the call, so `validate!` rejects such a spec here
+  instead of letting it reach the marshaller. The walk descends through
+  single-element wrappers (`:optional`, `:owned`, `:borrowed`,
+  `:bytes`, `:handle`, `:error-union`) so an indirection nested under
+  ownership is caught as well."
+  [t]
+  (when (map? t)
+    (let [k (:kind t)]
+      (cond
+        (contains? #{:slice :array :ptr :manyptr} k)
+        (let [elem (:of t)]
+          (if (and (map? elem) (= :scalar (:kind elem)))
+            nil
+            t))
+
+        (contains? #{:optional :owned :borrowed :bytes :handle :error-union} k)
+        (find-non-scalar-element (:of t))
+
+        :else nil))))
+
+(defn- article
+  "`A` or `An` for a kind keyword, by the first letter of its name. The
+  existing diagnostics read `An :optional` and `A :bytes`; this keeps a
+  generated message on the same idiom."
+  [kw]
+  (if (#{\a \e \i \o \u} (first (name kw)))
+    "An"
+    "A"))
+
+(defn- element-description
+  "A short human label for a non-scalar element, for the diagnostic
+  message. `elem` is the offending element of an indirection."
+  [elem]
+  (if (= :named (:kind elem))
+    (str "the named type " (:name elem))
+    (str "an element of kind " (name (:kind elem)))))
+
+(defn- check-element!
+  "Reject any indirection in `t` whose element is not a scalar. The
+  offending indirection kind and element are attached to the diagnostic
+  so the caller can point at the bad element."
+  [spec t]
+  (when-let [bad (find-non-scalar-element t)]
+    (let [elem (:of bad)]
+      (fail spec :clj-zig/unsupported-element
+            (str (article (:kind bad)) " :" (name (:kind bad))
+                 " must hold a scalar element; "
+                 (element-description elem) " is not supported as an element.")
+            {:indirection (:kind bad)
+             :element     (select-keys elem [:kind :name])}))))
+
 (defn- validate!
   "Reject contracts FFM cannot honor: `:void`/`:noreturn` in argument
   position, an `:optional` over anything but a pointer, an `:error-union`
@@ -126,7 +183,8 @@
       (fail spec :clj-zig/unsupported-bytes
             "A :bytes type is supported in return position only." {}))
     (when (and (= :handle (:kind type)) (not= :named (:kind (:of type))))
-      (fail spec :clj-zig/unsupported-handle "A :handle must wrap a named type." {})))
+      (fail spec :clj-zig/unsupported-handle "A :handle must wrap a named type." {}))
+    (check-element! spec type))
   (when (and (= :optional (:kind ret))
              (not= :ptr (:kind (:of ret))))
     (fail spec :clj-zig/unsupported-optional
@@ -146,6 +204,7 @@
           "A :bytes return must wrap a [:slice :u8]." {}))
   (when (and (= :handle (:kind ret)) (not= :named (:kind (:of ret))))
     (fail spec :clj-zig/unsupported-handle "A :handle must wrap a named type." {}))
+  (check-element! spec ret)
   (let [ret-value     (if (= :error-union (:kind ret)) (:of ret) ret)
         ret-scalars   (if (type/void-type? ret-value) #{} (scalar-names ret-value))
         value-scalars (apply set/union ret-scalars (map (comp scalar-names :type) params))

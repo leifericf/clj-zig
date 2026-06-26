@@ -1,5 +1,6 @@
 (ns clj-zig.spec-test
   (:require [clojure.test :refer [deftest is testing]]
+            [clj-zig.layout :as layout]
             [clj-zig.spec :as spec]))
 
 (defn- error-code [f]
@@ -108,3 +109,82 @@
     (catch clojure.lang.ExceptionInfo e
       (is (= 'app.core/f (:var (ex-data e))))
       (is (= '[x :u128 :ret :i64] (:signature (ex-data e)))))))
+
+(deftest rejects-non-scalar-slice-and-pointer-elements
+  (testing "a named element is rejected for every indirection kind"
+    (is (= :clj-zig/unsupported-element
+           (error-code #(spec/build-spec '{:ns app.core :name f
+                                           :signature [xs [:slice Point] :ret :i64]}))))
+    (is (= :clj-zig/unsupported-element
+           (error-code #(spec/build-spec '{:ns app.core :name f
+                                           :signature [xs [:array 3 Point] :ret :i64]}))))
+    (is (= :clj-zig/unsupported-element
+           (error-code #(spec/build-spec '{:ns app.core :name f
+                                           :signature [xs [:ptr Point] :ret :i64]}))))
+    (is (= :clj-zig/unsupported-element
+           (error-code #(spec/build-spec '{:ns app.core :name f
+                                           :signature [xs [:manyptr Point] :ret :i64]}))))
+    (is (= :clj-zig/unsupported-element
+           (error-code #(spec/build-spec '{:ns app.core :name f
+                                           :signature [xs [:manyptr :const Point] :ret :i64]})))))
+  (testing "the const variant of every indirection kind is covered"
+    (is (= :clj-zig/unsupported-element
+           (error-code #(spec/build-spec '{:ns app.core :name f
+                                           :signature [xs [:slice :const Point] :ret :i64]}))))
+    (is (= :clj-zig/unsupported-element
+           (error-code #(spec/build-spec '{:ns app.core :name f
+                                           :signature [xs [:ptr :const Point] :ret :i64]})))))
+  (testing "a nested indirection element is rejected (the element is not a scalar)"
+    (is (= :clj-zig/unsupported-element
+           (error-code #(spec/build-spec '{:ns app.core :name f
+                                           :signature [xs [:slice [:slice :u8]] :ret :i64]}))))
+    (is (= :clj-zig/unsupported-element
+           (error-code #(spec/build-spec '{:ns app.core :name f
+                                           :signature [xs [:array 2 [:ptr :i64]] :ret :i64]}))))
+    (is (= :clj-zig/unsupported-element
+           (error-code #(spec/build-spec '{:ns app.core :name f
+                                           :signature [:ret [:slice [:slice :u8]]]})))))
+  (testing "a non-scalar element wrapped in ownership is still rejected"
+    ;; [:owned [:slice Point]] would otherwise pass the ownership check
+    ;; (it wraps a slice) and reach the marshaller, where it crashes.
+    (is (= :clj-zig/unsupported-element
+           (error-code #(spec/build-spec '{:ns app.core :name f
+                                           :signature [:ret [:owned [:slice Point]]]})))))
+  (testing "a carrier-scalar element is still accepted (no over-rejection)"
+    (is (map? (spec/build-spec '{:ns app.core :name f
+                                 :signature [xs [:slice :u8] :ret :i64]})))
+    (is (map? (spec/build-spec '{:ns app.core :name f
+                                 :signature [xs [:manyptr :const :f64] :ret :f64]})))
+    (is (map? (spec/build-spec '{:ns app.core :name f
+                                 :signature [:ret [:owned [:slice :u8]]]}))))
+  (testing "the offending element is named in the diagnostic ex-data"
+    (try
+      (spec/build-spec '{:ns app.core :name f
+                         :signature [xs [:slice Point] :ret :i64]})
+      (is false "expected a diagnostic")
+      (catch clojure.lang.ExceptionInfo e
+        (let [d (ex-data e)]
+          (is (= :clj-zig/unsupported-element (:error/code d)))
+          (is (= :slice (:indirection d)))
+          (is (= {:kind :named :name 'Point} (:element d))))))
+    (testing "a nested-slice element names the slice in the diagnostic"
+      (try
+        (spec/build-spec '{:ns app.core :name f
+                           :signature [xs [:slice [:slice :u8]] :ret :i64]})
+        (is false "expected a diagnostic")
+        (catch clojure.lang.ExceptionInfo e
+          (let [d (ex-data e)]
+            (is (= :clj-zig/unsupported-element (:error/code d)))
+            (is (= :slice (:indirection d)))
+            (is (= {:kind :slice} (:element d))))))))
+  (testing "the rejection targets the element shape, not the named type itself"
+    ;; A declared Point is a valid bare argument; only as a slice element is
+    ;; it rejected, because the marshaller carries scalar elements only.
+    (let [types {'Point (layout/describe 'Point '[x :f64 y :f64])}]
+      (is (map? (spec/build-spec {:ns 'app.core :name 'f
+                                  :signature '[p Point :ret :f64]
+                                  :types types})))
+      (is (= :clj-zig/unsupported-element
+             (error-code #(spec/build-spec {:ns 'app.core :name 'f
+                                            :signature '[xs [:slice Point] :ret :f64]
+                                            :types types})))))))
