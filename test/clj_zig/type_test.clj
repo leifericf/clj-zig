@@ -117,3 +117,10 @@
   (testing ":bytes takes exactly one wrapped type"
     (is (= :clj-zig/malformed-compound (error-code #(type/normalize [:bytes]))))
     (is (= :clj-zig/malformed-compound (error-code #(type/normalize [:bytes [:slice :u8] :x]))))))
+
+(deftest normalizes-string-as-a-buffer-kind
+  (testing ":string is a first-class buffer type, not a scalar"
+    (is (= {:kind :string} (type/normalize :string))))
+  (testing "it never enters the scalar table, so it has no carrier"
+    (is (nil? (type/scalar-info :string)))
+    (is (false? (type/has-carrier? :string)))))

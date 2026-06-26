@@ -49,6 +49,22 @@
          (:ret (spec/build-spec '{:ns app.core :name noop
                                   :signature [:ret :void]})))))
 
+(deftest accepts-string-as-a-boundary-type
+  (testing "a :string argument is accepted and normalized"
+    (let [s (spec/build-spec '{:ns app.core :name f
+                               :signature [s :string :ret :i64]})]
+      (is (= {:kind :string} (-> s :params first :type)))
+      (is (= {:kind :scalar :name :i64} (:ret s)))))
+  (testing "a :string return is accepted and normalized"
+    (let [s (spec/build-spec '{:ns app.core :name f
+                               :signature [n :i64 :ret :string]})]
+      (is (= {:kind :string} (:ret s)))))
+  (testing ":string in both argument and return position"
+    (let [s (spec/build-spec '{:ns app.core :name f
+                               :signature [s :string :ret :string]})]
+      (is (= {:kind :string} (-> s :params first :type)))
+      (is (= {:kind :string} (:ret s))))))
+
 (deftest rejects-unsupported-128-bit-carriers
   (testing "as an argument"
     (is (= :clj-zig/unsupported-carrier

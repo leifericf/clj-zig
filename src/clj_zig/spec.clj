@@ -95,11 +95,14 @@
 (defn- scalar-names
   "The set of scalar names appearing anywhere in a normalized type.
   Named-type references resolve against the registry later, so their
-  carriers are checked once resolution lands, not here."
+  carriers are checked once resolution lands, not here. A `:string` is a
+  buffer type, not a scalar, so it contributes no carrier name (same as a
+  `:named` reference); the carrier check never fires on it."
   [t]
   (case (:kind t)
     :scalar #{(:name t)}
     :named  #{}
+    :string #{}
     (if-let [of (:of t)] (scalar-names of) #{})))
 
 (defn- find-non-scalar-element

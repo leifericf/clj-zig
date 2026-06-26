@@ -9,6 +9,7 @@
       :i64                  => {:kind :scalar :name :i64}
       [:slice :const :u8]   => {:kind :slice :const? true
                                 :of {:kind :scalar :name :u8}}
+      :string               => {:kind :string}
       Point                 => {:kind :named :name Point}
 
   The normalized form is the inspectable contract; it carries only
@@ -78,13 +79,19 @@
 
 (defn normalize
   "Normalize a boundary type form to its canonical data shape. Throws a
-  diagnostic (`ex-info`) for unknown or malformed types."
+  diagnostic (`ex-info`) for unknown or malformed types.
+
+  `:string` is a first-class buffer type, intercepted before
+  `normalize-scalar` so it never enters the scalar table or the
+  `has-carrier?` check: it crosses the boundary as a UTF-8 byte buffer,
+  not a primitive carrier."
   [form]
   (cond
-    (keyword? form) (normalize-scalar form)
-    (symbol? form)  {:kind :named :name form}
-    (vector? form)  (normalize-compound form)
-    :else           (fail form :clj-zig/unknown-type
+    (= :string form) {:kind :string}
+    (keyword? form)  (normalize-scalar form)
+    (symbol? form)   {:kind :named :name form}
+    (vector? form)   (normalize-compound form)
+    :else            (fail form :clj-zig/unknown-type
                           "A boundary type must be a scalar keyword, a compound vector, or a named-type symbol."
                           {:found (type form)})))
 

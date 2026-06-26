@@ -93,6 +93,20 @@
            :clj-zig/unsupported-element}
          (set (map :code spec-rejections)))))
 
+(deftest string-is-not-a-rejection
+  ;; :string is a first-class buffer type: build-spec accepts it in argument
+  ;; and return position and returns a spec, never a diagnostic. build-code
+  ;; returns nil when no diagnostic is thrown.
+  (testing ":string in argument, return, or both yields no diagnostic"
+    (is (nil? (build-code {:ns 'clj-zig.matrix :name 'f
+                           :signature '[s :string :ret :i64]})))
+    (is (nil? (build-code {:ns 'clj-zig.matrix :name 'f
+                           :signature '[n :i64 :ret :string]})))
+    (is (nil? (build-code {:ns 'clj-zig.matrix :name 'f
+                           :signature '[s :string :ret :string]})))
+    (is (nil? (build-code {:ns 'clj-zig.matrix :name 'f
+                           :signature '[:ret :string]})))))
+
 ;; --- Rejections from the layout describers ------------------------------
 
 (deftest layout-rejection-matrix
