@@ -460,14 +460,18 @@
                    (object-array)
                    (.invokeWithArguments handle))
               (copy-back!)
-              (let [addr   (.get pout ValueLayout/JAVA_LONG 0)
-                    len    (.get lout ValueLayout/JAVA_LONG 0)
-                    result (if (= :bytes (:kind ret))
-                             (read-bytes addr len)
-                             (read-slice-values addr len (-> ret :of :of)))]
-                (when free-handle
-                  (.invokeWithArguments free-handle (object-array [addr len])))
-                result))
+              (let [addr (.get pout ValueLayout/JAVA_LONG 0)
+                    len  (.get lout ValueLayout/JAVA_LONG 0)]
+                ;; Free owned memory in a finally so a read fault (a wild
+                ;; pointer, or an OOM on a huge length) cannot leak the slice
+                ;; the body allocated (ADR 21). A borrowed return has no shim.
+                (try
+                  (if (= :bytes (:kind ret))
+                    (read-bytes addr len)
+                    (read-slice-values addr len (-> ret :of :of)))
+                  (finally
+                    (when free-handle
+                      (.invokeWithArguments free-handle (object-array [addr len])))))))
 
             ;; A struct return is written through a caller-allocated
             ;; out-segment, then read back into a Clojure map. An enum
