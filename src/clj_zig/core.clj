@@ -1,7 +1,8 @@
 (ns clj-zig.core
   "The `defnz` and `defz` defining forms. These macros stay thin: they
-  parse the form into data, hand it to the pure pipeline (signature ->
-  spec -> source) and the shell (compile/cache -> load -> bind), then
+   parse the form into data, hand it to the pure pipeline (signature,
+   then spec, then source) and the shell (compile or cache, then load,
+   then bind), then
   rebind an ordinary Clojure Var. A user can reach every stage through
   the data functions without the macro.
 
@@ -311,7 +312,7 @@
 (defn- entry-name
   "The user fn name the file-mode wrapper calls: `:zig/fn` when given, else
   the Clojure fn name with hyphens as underscores, the way Clojure names
-  munge for the JVM (`dot-product` -> `dot_product`). A name still not a
+   munge for the JVM (`dot-product` becomes `dot_product`). A name still not a
   legal Zig identifier, such as `red?` or `saxpy!`, needs `:zig/fn`."
   [spec descriptor]
   (or (:zig/fn descriptor)

@@ -216,7 +216,7 @@
       fp)))
 
 (defn modules-fingerprint
-  "The fingerprint of each external module in a `name -> ref` map, keyed by
+  "The fingerprint of each external module in a map from name to ref, keyed by
   import name, for the content hash; nil when there are none. Two wrappers
   over the same module share a fingerprint, so the cache stays
   content-addressed."

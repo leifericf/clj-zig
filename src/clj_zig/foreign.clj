@@ -127,7 +127,7 @@
   [^SymbolLookup lookup ^String nm]
   (.isPresent (.find lookup nm)))
 
-;; --- downcalls (Clojure -> native) --------------------------------------
+;; --- downcalls (Clojure to native) --------------------------------------
 ;; Bound MethodHandles, keyed by the resolvable identity of the call:
 ;; [lookup nm ret arg-layouts]. A SymbolLookup is a process-lifetime
 ;; resource on the global Arena, so its identity is a stable key, and the
@@ -169,7 +169,7 @@
   [^MethodHandle h & args]
   (.invokeWithArguments h (object-array args)))
 
-;; --- upcalls (native -> Clojure callbacks) ------------------------------
+;; --- upcalls (native to Clojure callbacks) ------------------------------
 ;; The reverse direction: native code calling a Clojure fn through a
 ;; function pointer. This is a SYNCHRONOUS upcall stub -- the native side
 ;; fires it inside a downcall, on the calling thread -- which is the
