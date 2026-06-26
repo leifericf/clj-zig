@@ -240,17 +240,43 @@
                    (coerce-scalar type (read-scalar seg type offset))))
           {} (:fields descriptor)))
 
+(defn- fill-array
+  "Bulk-copy `n` carrier elements of `layout` from `seg` (at offset 0) into a
+  freshly allocated primitive `arr`, returning `arr`. The array's component
+  type must match the layout's carrier. One native move replaces a
+  per-element `.get` loop, mirroring `read-bytes`."
+  [^MemorySegment seg layout ^long n arr]
+  (MemorySegment/copy seg layout (long 0) arr (int 0) (int n))
+  arr)
+
 (defn- read-slice-values
-  "Copy `len` elements of scalar type `elem` from the native address
-  `addr` into an immutable Clojure vector. A zero length reads nothing,
-  so the address is never dereferenced for an empty slice."
+  "Copy `len` elements of scalar type `elem` from the native address `addr`
+  into an immutable Clojure vector. Numeric carriers bulk-copy into a typed
+  primitive array (one native move) and are then coerced with the
+  unsigned-return policy (ADR 18); `bool` has no bulk array copy in the FFM
+  API, so it reads element by element, the same special case `marshal-array`
+  makes on the write side. A zero length reads nothing, so the address is
+  never dereferenced for an empty slice."
   [addr len elem]
   (if (zero? len)
     []
-    (let [bytes (.byteSize (value-layout elem))
-          seg   (.reinterpret (MemorySegment/ofAddress addr) (* (long len) bytes))]
-      (mapv (fn [i] (coerce-scalar elem (read-scalar seg elem (* (long i) bytes))))
-            (range len)))))
+    (let [n      (long len)
+          layout (value-layout elem)
+          seg    (.reinterpret (MemorySegment/ofAddress addr) (* n (.byteSize layout)))
+          {:keys [category bits]} (type/scalar-info (:name elem))]
+      (if (= :bool category)
+        (mapv #(coerce-scalar elem (read-scalar seg elem (* (long %) (.byteSize layout))))
+              (range n))
+        (let [arr (case category
+                    :int   (case bits
+                             8  (fill-array seg layout n (byte-array n))
+                             16 (fill-array seg layout n (short-array n))
+                             32 (fill-array seg layout n (int-array n))
+                             64 (fill-array seg layout n (long-array n)))
+                    :float (case bits
+                             32 (fill-array seg layout n (float-array n))
+                             64 (fill-array seg layout n (double-array n))))]
+          (mapv #(coerce-scalar elem %) arr))))))
 
 (defn- read-bytes
   "Copy `len` bytes from native address `addr` into a Java `byte[]` in one
