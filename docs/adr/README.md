@@ -25,14 +25,14 @@ Later ADRs capture decisions made during development. Written via the
 | [11](11-keep-last-good.md) | Keep the last good implementation after a compile failure |
 | [12](12-content-addressed-artifacts.md) | Generated artifacts are content-addressed |
 | [13](13-destructuring-clojure-side.md) | Destructuring happens on the Clojure side |
-| [14](14-records-need-bridge.md) | Records require explicit bridge definitions |
+| [14](14-records-need-bridge.md) | Records require explicit bridge definitions (scalar, buffer, and string fields) |
 | [15](15-public-specs-are-data.md) | Public specs remain ordinary data |
 | [16](16-functional-core-imperative-shell.md) | Functional core, imperative shell |
 | [17](17-explicit-contracts-over-marshalling.md) | Explicit boundary contracts over data marshalling |
 | [18](18-carrier-and-unsigned-policy.md) | Boundary carriers and the unsigned-return policy |
 | [19](19-error-union-boundary-semantics.md) | Error-union boundary semantics |
 | [20](20-enum-boundary-semantics.md) | Enum boundary semantics |
-| [21](21-owned-and-borrowed-returns.md) | Owned and borrowed slice returns copy into Clojure |
+| [21](21-owned-and-borrowed-returns.md) | Owned and borrowed returns copy into Clojure (slices and records) |
 | [22](22-opaque-handles.md) | Handles are opaque tagged pointers the caller frees |
 | [23](23-generative-test-strategy.md) | Generative and exhaustive testing over the example suite |
 | [24](24-link-libc-in-every-library.md) | Every compiled library links libc |

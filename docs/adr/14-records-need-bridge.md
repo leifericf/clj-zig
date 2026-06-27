@@ -22,3 +22,14 @@ of these.
 
 Automatic record-to-struct conversion was considered; without a
 declared layout it cannot produce a sound Zig struct.
+
+## Amendment (2026-06-27)
+
+The record bridge now carries buffer and `:string` fields in addition to
+scalars and enums. A field may be `[:bytes [:slice :u8]]` (to a `byte[]`),
+`[:owned [:slice T]]` or `[:slice T]` (to a vector), or `:string` (an owned
+UTF-8 buffer marshalled to a `String`). Each buffer field lowers to a
+`usize` pointer and a `usize` length in the wire `extern struct`, since a
+Zig slice is not a C type, so a record can model a multi-value result. The
+ownership and free protocol for those fields is ADR 21; the bridge itself
+stays explicit through `defrecordz` and `deftypez`.

@@ -67,3 +67,24 @@ which reuse the protocol the error-union and struct returns already use
 and avoid the ABI fragility of returning an aggregate by value. Asking
 the caller to pass a pre-sized buffer, as struct returns do, was rejected
 because a slice length is not known before the call.
+
+## Amendment (2026-06-27)
+
+`[:owned T]` and `[:borrowed T]` now also cover a named record or struct
+declared through `defrecordz` or `deftypez`, not only a bare slice. The
+record's fields may be scalars, enums, or buffer-typed (`:string`,
+`[:bytes [:slice :u8]]`, or a slice). A Zig `extern struct` cannot hold a
+slice, so the wire form expands each buffer field to a `usize` pointer and
+a `usize` length, and the marshalled target per field is a `String`, a
+`byte[]`, or a vector.
+
+Ownership is uniform across the record: the whole result is `:owned` or
+`:borrowed`. For `:owned`, the generator emits one free shim that frees
+every buffer field, reading each field's pointer and length back out of the
+wire struct, and clj-zig calls it once in a `finally` after copying. Every
+owned buffer field must come from `std.heap.c_allocator`, the same contract
+a single owned slice carries.
+
+This extends, and does not reverse, the slice-only decision above. The cost
+is that a record with several buffer fields compiles one shim with one free
+call per field, and ownership cannot vary per field in this version.
