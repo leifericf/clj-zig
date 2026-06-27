@@ -293,7 +293,10 @@
         out-params (str (when (seq params-str) ", ") "__ret: *" wire-t)
         writes     (mapcat wire-write-stmts (:fields layout))
         owned?     (= :owned (:kind ret))
-        buf-fields (filter :target (:fields layout))]
+        buf-fields (filter :target (:fields layout))
+        free-body  (if (seq buf-fields)
+                     (str/join "\n" (map free-field-stmt buf-fields))
+                     "    _ = __ret;")]
     (str (wire-struct layout)
          "\nfn " sym "__impl(" params-str ") " type-name " {\n"
          (indent-body (impl-body params body)) "\n"
@@ -304,8 +307,7 @@
          "}\n"
          (when owned?
            (str "\nexport fn " sym "__free(__ret: *const " wire-t ") void {\n"
-                (str/join "\n" (map free-field-stmt buf-fields)) "\n"
-                "}\n")))))
+                free-body "\n}\n")))))
 
 (defn- generate-inline
   "The inline-mode wrapper: the user's body string is spliced into the
@@ -428,7 +430,10 @@
         out-params (str (when (seq params-str) ", ") "__ret: *" wire-t)
         writes     (mapcat wire-write-stmts (:fields layout))
         owned?     (= :owned (:kind ret))
-        buf-fields (filter :target (:fields layout))]
+        buf-fields (filter :target (:fields layout))
+        free-body  (if (seq buf-fields)
+                     (str/join "\n" (map file-free-field-stmt buf-fields))
+                     "    _ = __ret;")]
     (str (wire-struct layout)
          "\nexport fn " sym "(" params-str out-params ") void {\n"
          (wrapper-prelude params)
@@ -437,8 +442,7 @@
          "}\n"
          (when owned?
            (str "\nexport fn " sym "__free(__ret: *const " wire-t ") void {\n"
-                (str/join "\n" (map file-free-field-stmt buf-fields)) "\n"
-                "}\n")))))
+                free-body "\n}\n")))))
 
 (defn- generate-file
   "The file-mode wrapper: an `export fn` that reconstructs args and calls

@@ -70,6 +70,20 @@
   (let [in "utf8-\u00e9-\u4e2d-\u00e6"]
     (is (every? #(= in %) (repeatedly 500 #(f/string-identity in))))))
 
+(deftest owned-result-records-drive-the-per-field-free-shim-in-volume
+  ;; An owned result record allocates a c_allocator buffer per buffer field
+  ;; and the generated per-field __free shim frees every one after the
+  ;; Clojure side copies the bytes out. Driving it in volume exercises every
+  ;; field's free (a :string and a :bytes field here) and the finally that
+  ;; guards the read; a field left unfreed would accumulate across the run.
+  (let [expected-media "image/png"
+        expected-bytes (byte-array [65 66 67])]
+    (doseq [r (repeatedly 500 #(f/render-fixed))]
+      (assert (= :ok (:status r)))
+      (assert (= expected-media (:media r)))
+      (assert (java.util.Arrays/equals ^bytes (:bytes r) expected-bytes)))
+    (is true "500 owned result records freed every buffer field without fault")))
+
 ;; --- the scalar hot path (ADR 39) ---------------------------------------
 ;; A scalar-only signature skips the per-call confined arena and reuses a
 ;; thread-local carrier array. The selection is exact, the reuse stays

@@ -107,6 +107,77 @@
    @memcpy(out, s);
    return out;")
 
+;; --- Result records (doc 10 Phase 3): owned/borrowed record returns -----
+
+;; A result record carries scalars, an enum, and owned buffer fields. The
+;; nice record is a regular Zig struct the body constructs; the wrapper
+;; decomposes it field by field into the wire extern struct and a per-field
+;; __free shim releases every owned buffer after the Clojure side copies
+;; the bytes out.
+
+(defenumz RenderStatus [ok 0 invalid 1 no_output 2 oom 3])
+
+(deftypez RenderResult
+  [status RenderStatus
+   width   :u32
+   height  :u32
+   media   :string
+   bytes   [:bytes [:slice :u8]]])
+
+;; An owned result the body builds from c_allocator buffers; the per-field
+;; free shim releases each one once the bytes are copied out.
+(defnz render-fixed
+  [:ret [:owned RenderResult]]
+  "const m = std.heap.c_allocator.alloc(u8, 9) catch @panic(\"oom\");
+   @memcpy(m, \"image/png\");
+   const b = std.heap.c_allocator.alloc(u8, 3) catch @panic(\"oom\");
+   @memcpy(b, \"ABC\");
+   return .{ .status = .ok, .width = 800, .height = 600, .media = m, .bytes = b };")
+
+;; An owned result echoing the caller's media length and bytes, so the e2e
+;; property test can round-trip arbitrary inputs through every field kind.
+(defnz render-echo
+  [media   :string
+   payload [:slice :const :u8]
+   :ret    [:owned RenderResult]]
+  "const m = std.heap.c_allocator.alloc(u8, media.len) catch @panic(\"oom\");
+   @memcpy(m, media);
+   const b = std.heap.c_allocator.alloc(u8, payload.len) catch @panic(\"oom\");
+   @memcpy(b, payload);
+   return .{ .status = .no_output, .width = @intCast(media.len), .height = @intCast(payload.len), .media = m, .bytes = b };")
+
+;; A borrowed result: the wrapper writes the fields but emits no free shim,
+;; so the bytes come from memory the body must keep alive past the call.
+;; Static storage lives for the program, so it is safe to borrow.
+(defnz render-borrowed-static
+  [:ret [:borrowed RenderResult]]
+  "const S = struct { var media_buf: [5]u8 = .{ 'h', 'e', 'l', 'l', 'o' }; };
+   return .{ .status = .ok, .width = 1, .height = 2, .media = S.media_buf[0..], .bytes = S.media_buf[0..0] };")
+
+;; An empty owned result: every buffer field is zero-length, so the read
+;; copies nothing and never dereferences the (zeroed) pointer. This is the
+;; single-slice guard generalized to a record.
+(defnz render-empty
+  [:ret [:owned RenderResult]]
+  "return .{ .status = .invalid, .width = 0, .height = 0, .media = &[_]u8{}, .bytes = &[_]u8{} };")
+
+;; A scalar-only record returned as [:owned ...], proving the ownership
+;; relaxation is uniform: any record, not only buffer-carrying ones.
+(deftypez Pixel [r :u8 g :u8 b :u8])
+
+(defnz render-pixel [:ret [:owned Pixel]] "return .{ .r = 10, .g = 20, .b = 30 };")
+
+;; A defrecordz result: the return rebuilds via the map-> factory, so the
+;; Clojure value is a record, not a plain map.
+(defrecordz TaggedCount [tag :string n :i64])
+
+(defnz render-tagged-count
+  [label :string
+   :ret  [:owned TaggedCount]]
+  "const t = std.heap.c_allocator.alloc(u8, label.len) catch @panic(\"oom\");
+   @memcpy(t, label);
+   return .{ .tag = t, .n = @intCast(label.len) };")
+
 ;; --- Handles ------------------------------------------------------------
 
 (defz Box "const Box = struct { v: i64 };")

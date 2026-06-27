@@ -65,6 +65,46 @@
       (is (= {:kind :string} (-> s :params first :type)))
       (is (= {:kind :string} (:ret s))))))
 
+(deftest accepts-owned-and-borrowed-records-in-return-position
+  (let [scalar-rec (layout/describe 'ScalarRec '[a :i32 b :i64])
+        buf-rec    (layout/describe 'BufRec
+                                   '[flag :u32 msg :string bytes [:bytes [:slice :u8]]])
+        types      {'ScalarRec scalar-rec 'BufRec buf-rec}]
+    (testing "[:owned NamedRecord] is accepted for a scalar-only record"
+      (is (map? (spec/build-spec {:ns 'app.core :name 'f
+                                  :signature '[:ret [:owned ScalarRec]]
+                                  :types types}))))
+    (testing "[:owned NamedRecord] is accepted for a buffer-carrying record"
+      (is (map? (spec/build-spec {:ns 'app.core :name 'f
+                                  :signature '[:ret [:owned BufRec]]
+                                  :types types}))))
+    (testing "[:borrowed NamedRecord] is accepted for either record kind"
+      (is (map? (spec/build-spec {:ns 'app.core :name 'f
+                                  :signature '[:ret [:borrowed ScalarRec]]
+                                  :types types})))
+      (is (map? (spec/build-spec {:ns 'app.core :name 'f
+                                  :signature '[:ret [:borrowed BufRec]]
+                                  :types types}))))
+    (testing "the relaxation is uniform: ownership works for any struct"
+      (is (map? (spec/build-spec {:ns 'app.core :name 'f
+                                  :signature '[:ret [:owned ScalarRec]]
+                                  :types types}))))))
+
+(deftest rejects-owned-and-borrowed-over-an-enum
+  ;; An enum crosses as a scalar; ownership over it has no meaning and no
+  ;; free shim is emitted, so it is rejected at spec time rather than
+  ;; crashing at marshal time (the no-silent-trap guardrail).
+  (let [enum-rec (layout/describe-enum 'Status '[ok 0 bad 1])
+        types     {'Status enum-rec}]
+    (is (= :clj-zig/unsupported-ownership
+           (error-code #(spec/build-spec {:ns 'app.core :name 'f
+                                          :signature '[:ret [:owned Status]]
+                                          :types types}))))
+    (is (= :clj-zig/unsupported-ownership
+           (error-code #(spec/build-spec {:ns 'app.core :name 'f
+                                          :signature '[:ret [:borrowed Status]]
+                                          :types types}))))))
+
 (deftest rejects-unsupported-128-bit-carriers
   (testing "as an argument"
     (is (= :clj-zig/unsupported-carrier

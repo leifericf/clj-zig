@@ -20,7 +20,8 @@
 
 (def ^:private two-to-64 (.shiftLeft BigInteger/ONE 64))
 
-(declare marshal-struct enum-member->value enum-value->member)
+(declare marshal-struct read-struct-field read-bytes read-slice-values
+         read-utf8-string enum-member->value enum-value->member)
 
 ;; An opaque native resource handle: the symbol naming its Zig type and
 ;; the native pointer. The caller threads it back across calls and frees
@@ -70,18 +71,24 @@
   (let [ret         (:ret spec)
         ;; An error-union wrapper carries two trailing out-params, the
         ;; error-name buffer and its length; a struct return carries one
-        ;; out-pointer the result is written through. Both export `void`.
-        eu?         (= :error-union (:kind ret))
-        struct-ret? (and (= :named (:kind ret)) (not (enum-type? ret)))
-        own?        (contains? #{:owned :borrowed :bytes :string} (:kind ret))
-        extra       (cond eu?         [ValueLayout/ADDRESS ValueLayout/ADDRESS]
-                          own?        [ValueLayout/ADDRESS ValueLayout/ADDRESS]
-                          struct-ret? [ValueLayout/ADDRESS]
-                          :else       [])
-        arg-layouts (into-array MemoryLayout (concat (mapcat param-layouts (:params spec))
-                                                     extra))
-        ret-value   (if eu? (:of ret) ret)]
-    (if (or struct-ret? own? (type/void-type? ret-value))
+        ;; out-pointer the result is written through; an owned-slice,
+        ;; :bytes, or :string return carries two out-params for the slice's
+        ;; pointer and length; an owned or borrowed record carries one
+        ;; out-pointer to its wire struct. All four export `void`.
+        eu?          (= :error-union (:kind ret))
+        owned-rec?   (and (contains? #{:owned :borrowed} (:kind ret))
+                          (= :named (get-in ret [:of :kind])))
+        owned-slice? (and (contains? #{:owned :borrowed :bytes :string} (:kind ret))
+                          (not owned-rec?))
+        struct-ret?  (and (= :named (:kind ret)) (not (enum-type? ret)))
+        extra        (cond eu?                       [ValueLayout/ADDRESS ValueLayout/ADDRESS]
+                           owned-slice?              [ValueLayout/ADDRESS ValueLayout/ADDRESS]
+                           (or struct-ret? owned-rec?) [ValueLayout/ADDRESS]
+                           :else                     [])
+        arg-layouts  (into-array MemoryLayout (concat (mapcat param-layouts (:params spec))
+                                                      extra))
+        ret-value    (if eu? (:of ret) ret)]
+    (if (or struct-ret? owned-rec? owned-slice? (type/void-type? ret-value))
       (FunctionDescriptor/ofVoid arg-layouts)
       (FunctionDescriptor/of (return-layout ret-value) arg-layouts))))
 
@@ -251,13 +258,55 @@
         (write-scalar seg type offset (to-carrier {:type type} v))))
     seg))
 
+(defn- buffer-field-element
+  "The scalar element a `:vector` buffer field carries, for the bulk copy.
+  A bare slice holds its element under `:of`; an owned, borrowed, or bytes
+  wrapper holds its slice under `:of`. (A `:string` or `:bytes` field never
+  reaches here: its `:target` selects the byte[]/String reader, not the
+  vector reader.)"
+  [t]
+  (let [slice (case (:kind t)
+                :slice                    t
+                (:owned :borrowed :bytes) (:of t))]
+    (:of slice)))
+
 (defn- read-struct
-  "Read a native struct segment into a Clojure map keyed by field name."
+  "Read a native struct segment into a Clojure map keyed by field name. A
+  scalar field reads its carrier directly at its offset; an enum field
+  reads its `i32` backing and maps it to the member keyword; a buffer
+  field reads its `{ptr, len}` at the field's two wire offsets and copies
+  out as a `byte[]`, a vector, or a `String` per its `:target`. Each
+  buffer read copies exactly `len` bytes (the bound), so a corrupt length
+  never drives an unbounded dereference; a zero-length buffer copies
+  nothing and never dereferences the pointer."
   [^MemorySegment seg descriptor]
-  (reduce (fn [acc {:keys [name type offset]}]
-            (assoc acc (keyword name)
-                   (coerce-scalar type (read-scalar seg type offset))))
+  (reduce (fn [acc field]
+            (assoc acc (keyword (:name field)) (read-struct-field seg field)))
           {} (:fields descriptor)))
+
+(defn- read-struct-field
+  "Read one field of a wire struct segment. Dispatches on the field's
+  shape: a buffer field (it carries a `:target`) reads `{ptr, len}` and
+  copies out; an enum field reads its `i32` backing and maps to keyword;
+  a scalar field reads its carrier."
+  [^MemorySegment seg {:keys [type offset target len-offset] :as field}]
+  (cond
+    target
+    (let [ptr (.get seg ValueLayout/JAVA_LONG (long offset))
+          len (.get seg ValueLayout/JAVA_LONG (long len-offset))]
+      ;; The byte[] target is `(keyword "byte[]")`; the literal `:byte[]`
+      ;; splits at the bracket when read, so it is compared explicitly.
+      (condp = target
+        :string             (read-utf8-string ptr len)
+        (keyword "byte[]")  (read-bytes ptr len)
+        :vector             (read-slice-values ptr len (buffer-field-element type))))
+
+    (get-in type [:layout :enum])
+    (enum-value->member (:layout type)
+                        (long (read-scalar seg (:backing (:layout type)) offset)))
+
+    :else
+    (coerce-scalar type (read-scalar seg type offset))))
 
 (defn- fill-array
   "Bulk-copy `n` carrier elements of `layout` from `seg` (at offset 0) into a
@@ -443,22 +492,38 @@
         params (:params spec)
         ret    (:ret spec)
         arity  (count params)
-        ;; A record return names the map-factory that rebuilds it; a
-        ;; plain struct return has none and stays a map.
-        record-factory (when (and (= :named (:kind ret)) (:record (:layout ret)))
-                         (requiring-resolve (:record (:layout ret))))
-        own?    (contains? #{:owned :borrowed :bytes :string} (:kind ret))
+        ;; An owned/borrowed record wraps a named type under :of; everything
+        ;; else (a plain struct return, an enum, a scalar) names the value
+        ;; type directly on ret.
+        ret-value    (if (contains? #{:owned :borrowed} (:kind ret)) (:of ret) ret)
+        ;; A record return names the map-factory that rebuilds it; a plain
+        ;; struct return has none and stays a map.
+        record-factory (when (and (= :named (:kind ret-value)) (:record (:layout ret-value)))
+                         (requiring-resolve (:record (:layout ret-value))))
+        owned-rec?   (and (contains? #{:owned :borrowed} (:kind ret))
+                          (= :named (get-in ret [:of :kind])))
+        owned-slice? (and (contains? #{:owned :borrowed :bytes :string} (:kind ret))
+                          (not owned-rec?))
         ;; An owned slice (or :bytes buffer, or :string) return carries a
-        ;; free shim clj-zig calls once it has copied the elements out; a
-        ;; borrowed return frees nothing. A :string return always owns its
+        ;; free shim taking the slice's pointer and length; an owned record
+        ;; carries a per-field free shim taking a pointer to its wire struct;
+        ;; a borrowed return frees nothing. A :string return always owns its
         ;; bytes (it is allocated by the body and decoded on read).
-        free-handle (when (contains? #{:owned :bytes :string} (:kind ret))
+        free-handle (cond
+                      (and owned-rec? (= :owned (:kind ret)))
+                      (.downcallHandle linker
+                                       (.orElseThrow (.find lookup (str (:symbol spec) "__free")))
+                                       (FunctionDescriptor/ofVoid
+                                        (into-array MemoryLayout [ValueLayout/ADDRESS]))
+                                       (into-array Linker$Option []))
+                      (contains? #{:owned :bytes :string} (:kind ret))
                       (.downcallHandle linker
                                        (.orElseThrow (.find lookup (str (:symbol spec) "__free")))
                                        (FunctionDescriptor/ofVoid
                                         (into-array MemoryLayout [ValueLayout/JAVA_LONG
                                                                   ValueLayout/JAVA_LONG]))
-                                       (into-array Linker$Option [])))
+                                       (into-array Linker$Option []))
+                      :else nil)
         var-sym (symbol (str (:ns spec)) (str (:name spec)))
         ;; The hot path for a scalar-only signature: no per-call arena, and
         ;; a thread-local carrier array reused across calls on the same
@@ -505,12 +570,36 @@
                   (when-not (type/void-type? value-t) (coerce-scalar value-t result)))
                 (read-error-name errbuf n)))
 
+            ;; An owned or borrowed result record writes its fields through a
+            ;; caller-allocated wire-struct out-segment. clj-zig reads each
+            ;; field (scalars/enums directly, each buffer field as its
+            ;; {ptr, len}), then frees owned memory through the per-field shim.
+            ;; The free runs in a finally so a read fault (a wild pointer, or
+            ;; an OOM on a huge length) cannot leak any buffer the body
+            ;; allocated (mirror of c8a822b for slices). A borrowed record has
+            ;; no shim. The result rebuilds as a record via its map-> factory
+            ;; when the named type is a defrecordz, else a plain map.
+            owned-rec?
+            (let [desc (:layout (:of ret))
+                  out  ^MemorySegment (.allocate arena (long (:size desc))
+                                                 (long (:align desc)))]
+              (->> (concat base-carriers [out])
+                   (object-array)
+                   (.invokeWithArguments handle))
+              (copy-back!)
+              (try
+                (let [m (read-struct out desc)]
+                  (if record-factory (record-factory m) m))
+                (finally
+                  (when free-handle
+                    (.invokeWithArguments free-handle (object-array [out]))))))
+
             ;; An owned or borrowed slice return writes its pointer and
             ;; length to two out-params. clj-zig copies the elements out (a
             ;; :bytes return as one byte[], a :string return decoded as UTF-8
             ;; with replacement, any other slice as a vector), then frees
             ;; owned memory through the shim.
-            own?
+            owned-slice?
             (let [pout ^MemorySegment (.allocate arena 8 8)
                   lout ^MemorySegment (.allocate arena 8 8)]
               (->> (concat base-carriers [pout lout])

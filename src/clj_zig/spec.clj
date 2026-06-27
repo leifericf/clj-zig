@@ -45,16 +45,27 @@
 
 (defn- resolve-named
   "Attach a named type's layout descriptor from `types`, or fail when the
-  signature names a type that is not declared."
+  signature names a type that is not declared. A named type nested under
+  an ownership wrapper (`:owned` or `:borrowed`) is resolved too, so
+  `[:owned RecordType]` and `[:owned EnumType]` carry the layout the
+  validator and the marshaller both read off `(:of ret)`. (`:handle`
+  wraps an opaque `defz` resource not in the named-type registry, so it
+  is left unresolved; `:optional` and `:bytes` wrap pointers and slices,
+  never a named type.)"
   [ident types t]
-  (if (= :named (:kind t))
+  (cond
+    (= :named (:kind t))
     (if-let [layout (get types (:name t))]
       (assoc t :layout layout)
       (fail ident :clj-zig/unknown-type-name
             (str "Signature names type " (:name t)
                  " which no deftypez/defrecordz/defenumz declares.")
             {:type-name (:name t)}))
-    t))
+
+    (contains? #{:owned :borrowed} (:kind t))
+    (update t :of (partial resolve-named ident types))
+
+    :else t))
 
 (defn build-spec
   "Build the boundary spec from `{:ns :name :signature}`, resolving any
@@ -197,9 +208,11 @@
     (fail spec :clj-zig/unsupported-error-union
           "An :error-union return must wrap a scalar or :void value." {}))
   (when (and (contains? #{:owned :borrowed} (:kind ret))
-             (not= :slice (:kind (:of ret))))
+             (not (or (= :slice (:kind (:of ret)))
+                      (and (= :named (:kind (:of ret)))
+                           (not (get-in (:of ret) [:layout :enum]))))))
     (fail spec :clj-zig/unsupported-ownership
-          "An :owned or :borrowed return must wrap a slice." {}))
+          "An :owned or :borrowed return must wrap a slice or a named record." {}))
   (when (and (= :bytes (:kind ret))
              (not (and (= :slice (:kind (:of ret)))
                        (= :u8 (:name (:of (:of ret)))))))

@@ -556,7 +556,7 @@
                              [(first tail) (second tail)]
                              [nil (first tail)])
         the-ns     (ns-name *ns*)
-        descriptor (layout/describe type-name fields)]
+        descriptor (layout/describe type-name fields (types-in the-ns))]
     `(do
        (register-type! '~the-ns '~descriptor)
        (def ~type-name '~descriptor)
@@ -578,7 +578,7 @@
                              [(first tail) (second tail)]
                              [nil (first tail)])
         the-ns     (ns-name *ns*)
-        descriptor (layout/describe-record type-name fields the-ns)
+        descriptor (layout/describe-record type-name fields the-ns (types-in the-ns))
         field-syms (mapv :name (:fields descriptor))
         factory    (symbol (str "map->" type-name))]
     `(do
