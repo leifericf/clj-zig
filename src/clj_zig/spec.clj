@@ -150,6 +150,18 @@
     "An"
     "A"))
 
+(defn- optional-inner-ok?
+  "True when `t` is a shape an `:optional` argument may wrap: a single or
+  many-item pointer, or a carrier scalar (which lowers to a nullable
+  pointer-to-const-scalar, `?*const T`, reusing the optional-pointer wire
+  shape). A slice, array, named type, or a carrierless scalar (`:u128`) is
+  rejected -- a slice has no length semantics under optional, and a
+  carrierless scalar has no FFM cell to point at."
+  [t]
+  (or (contains? #{:ptr :manyptr} (:kind t))
+      (and (= :scalar (:kind t))
+           (type/has-carrier? (:name t)))))
+
 (defn- element-description
   "A short human label for a non-scalar element, for the diagnostic
   message. `elem` is the offending element of an indirection."
@@ -174,9 +186,9 @@
 
 (defn- validate!
   "Reject contracts FFM cannot honor: `:void`/`:noreturn` in argument
-  position, an `:optional` over anything but a pointer, an `:error-union`
-  outside a scalar-or-void return, and any value-position scalar without
-  an FFM carrier."
+  position, an `:optional` over anything but a pointer or a carrier scalar,
+  an `:error-union` outside a scalar-or-void return, and any value-position
+  scalar without an FFM carrier."
   [{:keys [params ret] :as spec}]
   (doseq [{:keys [type]} params]
     (when (type/void-type? type)
@@ -184,9 +196,9 @@
             (str (:name type) " is not a valid argument type.")
             {}))
     (when (and (= :optional (:kind type))
-               (not (contains? #{:ptr :manyptr} (:kind (:of type)))))
+               (not (optional-inner-ok? (:of type))))
       (fail spec :clj-zig/unsupported-optional
-            "An :optional argument must wrap a :ptr or :manyptr." {}))
+            "An :optional argument must wrap a :ptr, :manyptr, or a carrier scalar." {}))
     (when (= :error-union (:kind type))
       (fail spec :clj-zig/unsupported-error-union
             "An :error-union is supported in return position only." {}))
@@ -200,9 +212,11 @@
       (fail spec :clj-zig/unsupported-handle "A :handle must wrap a named type." {}))
     (check-element! spec type))
   (when (and (= :optional (:kind ret))
-             (not= :ptr (:kind (:of ret))))
+             (not (or (= :ptr (:kind (:of ret)))
+                      (and (= :scalar (:kind (:of ret)))
+                           (type/has-carrier? (:name (:of ret)))))))
     (fail spec :clj-zig/unsupported-optional
-          "An :optional return must wrap a single-item :ptr." {}))
+          "An :optional return must wrap a single-item :ptr or a carrier scalar." {}))
   (when (and (= :error-union (:kind ret))
              (not (or (type/void-type? (:of ret)) (= :scalar (:kind (:of ret))))))
     (fail spec :clj-zig/unsupported-error-union

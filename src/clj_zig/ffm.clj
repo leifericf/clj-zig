@@ -21,7 +21,7 @@
 (def ^:private two-to-64 (.shiftLeft BigInteger/ONE 64))
 
 (declare marshal-struct read-struct-field read-bytes read-slice-values
-         read-utf8-string enum-member->value enum-value->member)
+         read-utf8-string write-scalar enum-member->value enum-value->member)
 
 ;; An opaque native resource handle: the symbol naming its Zig type and
 ;; the native pointer. The caller threads it back across calls and frees
@@ -171,9 +171,22 @@
                                   :expected n
                                   :actual (Array/getLength arg)})))
                {:carriers [(:address (marshal-array arena param arg))]})
-    :optional (if (nil? arg)
-                {:carriers [MemorySegment/NULL]}
-                (marshal-arg arena (update param :type :of) arg))
+    :optional (let [pointed (-> param :type :of)]
+                 (cond
+                   (nil? arg) {:carriers [MemorySegment/NULL]}
+                   ;; A carrier scalar lowers to a nullable pointer-to-const
+                   ;; one-element cell: nil is NULL, a present value is copied
+                   ;; into a fresh cell in the call arena and its address is
+                   ;; passed. The cell is const (`?*const T`), so there is no
+                   ;; copy-back; the arena owns it for the duration of the call.
+                   (= :scalar (:kind pointed))
+                   (let [layout (value-layout pointed)
+                         seg    ^MemorySegment (.allocate ^Arena arena
+                                                          (.byteSize layout)
+                                                          (.byteSize layout))]
+                     (write-scalar seg pointed 0 (to-carrier {:type pointed} arg))
+                     {:carriers [seg]})
+                   :else (marshal-arg arena (update param :type :of) arg)))
     :named    (let [layout (-> param :type :layout)]
                 (if (:enum layout)
                   (let [value (enum-member->value layout arg)]
@@ -384,12 +397,16 @@
       v))
 
 (defn- deref-optional
-  "Read the pointee of an `:optional` single-item pointer return: nil when
-  the address is null, else the coerced scalar the pointer addresses."
+  "Read the pointee of an `:optional` return: nil when the address is null,
+  else the coerced scalar the pointer addresses. A scalar return (`[:optional
+  :i64]`) points at its own one-element cell, so the scalar is `(:of ret)`;
+  a pointer return (`[:optional [:ptr :const :i64]]`) points through the
+  pointer, so the scalar is the pointer's `:of`."
   [ret ^MemorySegment seg]
   (when-not (zero? (.address seg))
-    (let [scalar (-> ret :of :of)
-          sized  (.reinterpret seg (.byteSize (value-layout scalar)))]
+    (let [pointed (:of ret)
+          scalar  (if (= :scalar (:kind pointed)) pointed (:of pointed))
+          sized   (.reinterpret seg (.byteSize (value-layout scalar)))]
       (coerce-scalar scalar (read-scalar sized scalar 0)))))
 
 (defn- from-return

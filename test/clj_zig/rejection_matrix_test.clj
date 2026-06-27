@@ -45,7 +45,8 @@
    {:code :clj-zig/malformed-compound :signature '[a [:array -1 :u8] :ret :i64]}
    ;; contract validation, argument position
    {:code :clj-zig/void-argument          :signature '[a :void :ret :i64]}
-   {:code :clj-zig/unsupported-optional   :signature '[a [:optional :i64] :ret :i64]}
+   {:code :clj-zig/unsupported-optional   :signature '[a [:optional :u128] :ret :i64]}
+   {:code :clj-zig/unsupported-optional   :signature '[a [:optional [:slice :u8]] :ret :i64]}
    {:code :clj-zig/unsupported-error-union :signature '[a [:error-union E :i64] :ret :i64]}
    {:code :clj-zig/unsupported-ownership  :signature '[a [:owned [:slice :u8]] :ret :i64]}
    {:code :clj-zig/unsupported-handle     :signature '[a [:handle :i64] :ret :i64]}
@@ -53,6 +54,7 @@
    {:code :clj-zig/unknown-field          :signature '[{x :x} {:y :i64} :ret :i64]}
    ;; contract validation, return position
    {:code :clj-zig/unsupported-optional    :signature '[:ret [:optional [:manyptr :i64]]]}
+   {:code :clj-zig/unsupported-optional    :signature '[:ret [:optional [:slice :u8]]]}
    {:code :clj-zig/unsupported-error-union :signature '[:ret [:error-union E [:slice :i64]]]}
    {:code :clj-zig/unsupported-ownership   :signature '[:ret [:owned :i64]]}
    {:code :clj-zig/unsupported-handle      :signature '[:ret [:handle :i64]]}
@@ -106,6 +108,21 @@
                            :signature '[s :string :ret :string]})))
     (is (nil? (build-code {:ns 'clj-zig.matrix :name 'f
                            :signature '[:ret :string]})))))
+
+(deftest optional-carrier-scalar-is-not-a-rejection
+  ;; A carrier scalar under :optional lowers to a nullable pointer-to-const
+  ;; cell, so build-spec accepts it in argument and return position and
+  ;; returns no diagnostic. (A carrierless scalar and a slice under
+  ;; :optional are rejected -- see the matrix above.)
+  (testing "[:optional :i64] in argument, return, or both yields no diagnostic"
+    (is (nil? (build-code {:ns 'clj-zig.matrix :name 'f
+                           :signature '[x [:optional :i64] :ret :i64]})))
+    (is (nil? (build-code {:ns 'clj-zig.matrix :name 'f
+                           :signature '[b :bool :ret [:optional :i64]]})))
+    (is (nil? (build-code {:ns 'clj-zig.matrix :name 'f
+                           :signature '[x [:optional :i64] :ret [:optional :i64]]})))
+    (is (nil? (build-code {:ns 'clj-zig.matrix :name 'f
+                           :signature '[x [:optional :f64] :ret [:optional :bool]]})))))
 
 ;; --- Rejections from the layout describers ------------------------------
 

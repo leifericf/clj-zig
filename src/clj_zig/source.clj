@@ -20,12 +20,20 @@
 
 (defn- zig-type
   "The Zig type name for a normalized boundary type. Handles scalars,
-  named types, and optional pointers; `param-decls` lowers slices."
+  named types, and optional pointers; `param-decls` lowers slices.
+
+  An `:optional` over a carrier scalar lowers to a nullable pointer to a
+  const one-element cell (`?*const T`), the same wire shape as
+  `[:optional [:ptr :const T]]`: nil crosses as NULL, a present value as a
+  one-element native cell the callee dereferences."
   [t]
   (case (:kind t)
     :scalar   (name (:name t))
     :named    (str (:name t))
-    :optional (str "?" (pointer-type (:of t)))
+    :optional (let [pointed (:of t)]
+                (if (= :scalar (:kind pointed))
+                  (str "?*const " (zig-type pointed))
+                  (str "?" (pointer-type pointed))))
     :handle   (str "*" (zig-type (:of t)))
     (throw (ex-info "Source generation does not yet support this boundary type."
                     {:level :error

@@ -33,7 +33,12 @@
       (:slice :manyptr) (g/primitive-array (last af) [1 2 3])
       :ptr              (g/primitive-array (last af) [1])
       :array            (g/primitive-array (last af) (vec (repeat (second af) 1)))
-      :optional         (g/primitive-array (last (second af)) [1]))))
+      :optional         (let [inner (second af)]
+                          (if (vector? inner)
+                            ;; an optional pointer/manyptr: a one-element array cell
+                            (g/primitive-array (last inner) [1])
+                            ;; an optional carrier scalar: a present scalar value
+                            (if (= :bool inner) true 1))))))
 
 (defn- callable [name signature body]
   (zig/fn (spec/build-spec {:ns matrix-ns :name name :signature signature}) body))

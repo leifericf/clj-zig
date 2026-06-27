@@ -310,20 +310,24 @@
 
 (defn arg-forms
   "The supported argument type forms over one element scalar `e`, spanning
-  the indirection, constness, and wrapper axes."
+  the indirection, constness, and wrapper axes. An `:optional` over a
+  carrier scalar (`[:optional e]`) lowers to a nullable pointer-to-const
+  cell alongside the optional pointer and many-item pointer forms."
   [e]
   [e
    [:slice e] [:slice :const e]
    [:ptr e] [:ptr :const e]
    [:manyptr e] [:manyptr :const e]
    [:array 3 e]
-   [:optional [:ptr e]] [:optional [:manyptr e]]])
+   [:optional e] [:optional [:ptr e]] [:optional [:manyptr e]]])
 
 (defn ret-forms
-  "The supported return type forms over one element scalar `e`."
+  "The supported return type forms over one element scalar `e`. An
+  `:optional` over a carrier scalar (`[:optional e]`) is a nil-or-scalar
+  return lowering to the same wire shape as `[:optional [:ptr e]]`."
   [e]
   [e :void
-   [:optional [:ptr e]]
+   [:optional e] [:optional [:ptr e]]
    [:error-union 'Error e] [:error-union 'Error :void]
    [:owned [:slice e]] [:borrowed [:slice e]]])
 

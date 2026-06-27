@@ -48,13 +48,45 @@
     (is (nil? (lookup-i64 false)))
     (is (nil? (lookup-f64 false)))))
 
+;; --- Optional scalar arguments and returns (nil-or-int) ------------------
+;; A carrier scalar under :optional lowers to the same wire shape as
+;; [:optional [:ptr :const T]]: nil crosses as NULL, a present value as a
+;; one-element native cell. The Clojure caller passes nil or the scalar
+;; itself (nil-or-int), not a one-element array.
+
+(defnz opt-int-or
+  [x [:optional :i64]
+   :ret :i64]
+  "return if (x) |p| p.* else -1;")
+
+(defnz lookup-opt-i64
+  [found :bool
+   :ret [:optional :i64]]
+  "return if (found) &answer else null;")
+
+(deftest an-optional-scalar-argument-is-nil-or-int
+  (testing "a present int crosses as a one-element cell and is dereferenced"
+    (is (= 7 (opt-int-or 7))))
+  (testing "nil crosses as NULL"
+    (is (= -1 (opt-int-or nil)))))
+
+(deftest an-optional-scalar-return-is-nil-or-int
+  (testing "a non-null return is dereferenced to the int"
+    (is (= 42 (lookup-opt-i64 true))))
+  (testing "a null return is nil"
+    (is (nil? (lookup-opt-i64 false)))))
+
 ;; --- Contract validation ------------------------------------------------
 
-(deftest optional-must-wrap-a-pointer
-  (testing "an optional scalar has no C-ABI carrier"
+(deftest optional-must-wrap-a-pointer-or-carrier-scalar
+  (testing "an optional carrierless scalar is rejected: no FFM cell to point at"
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"optional"
                           (zig/build-spec '{:ns t :name f
-                                            :signature [x [:optional :i64] :ret :i64]}))))
+                                            :signature [x [:optional :u128] :ret :i64]}))))
+  (testing "an optional slice is rejected: no length semantics under optional"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"optional"
+                          (zig/build-spec '{:ns t :name f
+                                            :signature [x [:optional [:slice :u8]] :ret :i64]}))))
   (testing "a many-item optional cannot be returned: it has no length to read"
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"optional"
                           (zig/build-spec '{:ns t :name f
@@ -67,3 +99,8 @@
   (is (str/includes? (zig/generated-source #'deref-or) "p: ?*const i64"))
   (is (str/includes? (zig/generated-source #'first-or) "p: ?[*]const i32"))
   (is (str/includes? (zig/generated-source #'lookup-i64) ") ?*const i64 {")))
+
+(deftest generates-optional-scalar-pointer-types
+  (testing "an optional scalar lowers to a nullable pointer-to-const cell"
+    (is (str/includes? (zig/generated-source #'opt-int-or) "x: ?*const i64"))
+    (is (str/includes? (zig/generated-source #'lookup-opt-i64) ") ?*const i64 {"))))
