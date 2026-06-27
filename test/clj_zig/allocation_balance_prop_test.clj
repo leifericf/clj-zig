@@ -84,6 +84,36 @@
       (assert (java.util.Arrays/equals ^bytes (:bytes r) expected-bytes)))
     (is true "500 owned result records freed every buffer field without fault")))
 
+(deftest error-union-over-owned-struct-success-frees-every-buffer
+  ;; A [:error-union E OwnedRecord] success path allocates a c_allocator
+  ;; buffer per buffer field and the wrapper's per-field __free shim frees
+  ;; every one in a finally after the Clojure side copies the bytes out
+  ;; (mirror of c8a822b and the owned-record path). Driving the success
+  ;; branch in volume exercises every field's free; a field left unfreed
+  ;; would accumulate across the run.
+  (let [expected-media "image/png"
+        expected-bytes (byte-array [65 66 67])]
+    (doseq [r (repeatedly 500 #(f/render-may-fail false))]
+      (assert (map? r))
+      (assert (= :ok (:status r)))
+      (assert (= expected-media (:media r)))
+      (assert (java.util.Arrays/equals ^bytes (:bytes r) expected-bytes)))
+    (is true "500 error-union-over-owned-struct successes freed every buffer")))
+
+(deftest error-union-over-owned-struct-error-leaks-nothing
+  ;; The error path of a [:error-union E OwnedRecord] writes NO struct: the
+  ;; wrapper translates the error and returns before the body's struct
+  ;; reaches the wire. Nothing was allocated-for-the-result on this branch
+  ;; (the fixture checks the fail flag BEFORE allocating), so the __free
+  ;; shim does not run and there is nothing to free. Driving the error
+  ;; branch in volume is the leak lane: a wrapper bug that freed an
+  ;; uninitialized wire struct on the error path would fault (reading
+  ;; garbage ptr/len words) or double-free within the run; a body that
+  ;; allocated before erroring would leak across the 500 calls and trip
+  ;; an address-sanitizer build. The keyword result must also stay stable.
+  (is (every? #(= :RenderFailed %) (repeatedly 500 #(f/render-may-fail true)))
+      "500 error-union-over-owned-struct errors returned the keyword without fault"))
+
 ;; --- the scalar hot path (ADR 39) ---------------------------------------
 ;; A scalar-only signature skips the per-call confined arena and reuses a
 ;; thread-local carrier array. The selection is exact, the reuse stays

@@ -74,21 +74,27 @@
         ;; out-pointer the result is written through; an owned-slice,
         ;; :bytes, or :string return carries two out-params for the slice's
         ;; pointer and length; an owned or borrowed record carries one
-        ;; out-pointer to its wire struct. All four export `void`.
+        ;; out-pointer to its wire struct. An error-union over a struct
+        ;; combines all three: the error-name buffer, its length, AND the
+        ;; struct out-pointer. All four export `void`.
         eu?          (= :error-union (:kind ret))
+        eu-struct?   (and eu?
+                          (= :named (get-in ret [:of :kind]))
+                          (not (enum-type? (:of ret))))
         owned-rec?   (and (contains? #{:owned :borrowed} (:kind ret))
                           (= :named (get-in ret [:of :kind])))
         owned-slice? (and (contains? #{:owned :borrowed :bytes :string} (:kind ret))
                           (not owned-rec?))
         struct-ret?  (and (= :named (:kind ret)) (not (enum-type? ret)))
-        extra        (cond eu?                       [ValueLayout/ADDRESS ValueLayout/ADDRESS]
-                           owned-slice?              [ValueLayout/ADDRESS ValueLayout/ADDRESS]
-                           (or struct-ret? owned-rec?) [ValueLayout/ADDRESS]
-                           :else                     [])
+        extra        (cond eu-struct?                     [ValueLayout/ADDRESS ValueLayout/ADDRESS ValueLayout/ADDRESS]
+                           eu?                            [ValueLayout/ADDRESS ValueLayout/ADDRESS]
+                           owned-slice?                   [ValueLayout/ADDRESS ValueLayout/ADDRESS]
+                           (or struct-ret? owned-rec?)    [ValueLayout/ADDRESS]
+                           :else                          [])
         arg-layouts  (into-array MemoryLayout (concat (mapcat param-layouts (:params spec))
                                                       extra))
         ret-value    (if eu? (:of ret) ret)]
-    (if (or struct-ret? owned-rec? owned-slice? (type/void-type? ret-value))
+    (if (or eu-struct? struct-ret? owned-rec? owned-slice? (type/void-type? ret-value))
       (FunctionDescriptor/ofVoid arg-layouts)
       (FunctionDescriptor/of (return-layout ret-value) arg-layouts))))
 
@@ -509,25 +515,36 @@
         params (:params spec)
         ret    (:ret spec)
         arity  (count params)
-        ;; An owned/borrowed record wraps a named type under :of; everything
-        ;; else (a plain struct return, an enum, a scalar) names the value
-        ;; type directly on ret.
-        ret-value    (if (contains? #{:owned :borrowed} (:kind ret)) (:of ret) ret)
+        ;; An owned/borrowed record and an error-union over a struct both
+        ;; wrap the value's named type under :of; everything else (a plain
+        ;; struct return, an enum, a scalar, a scalar/void/enum error-union)
+        ;; names the value type directly on ret. Unwrapping consistently is
+        ;; safe: the record-factory lookup below returns nil for any
+        ;; non-named or enum-named value.
+        ret-value    (if (contains? #{:owned :borrowed :error-union} (:kind ret))
+                       (:of ret)
+                       ret)
         ;; A record return names the map-factory that rebuilds it; a plain
         ;; struct return has none and stays a map.
         record-factory (when (and (= :named (:kind ret-value)) (:record (:layout ret-value)))
                          (requiring-resolve (:record (:layout ret-value))))
+        eu-struct?   (and (= :error-union (:kind ret))
+                          (= :named (get-in ret [:of :kind]))
+                          (not (enum-type? (:of ret))))
         owned-rec?   (and (contains? #{:owned :borrowed} (:kind ret))
                           (= :named (get-in ret [:of :kind])))
         owned-slice? (and (contains? #{:owned :borrowed :bytes :string} (:kind ret))
                           (not owned-rec?))
         ;; An owned slice (or :bytes buffer, or :string) return carries a
         ;; free shim taking the slice's pointer and length; an owned record
-        ;; carries a per-field free shim taking a pointer to its wire struct;
-        ;; a borrowed return frees nothing. A :string return always owns its
-        ;; bytes (it is allocated by the body and decoded on read).
+        ;; and an error-union over a struct both carry a per-field free shim
+        ;; taking a pointer to the wire struct (the eu-struct shim runs on
+        ;; the success path only); a borrowed return frees nothing. A
+        ;; :string return always owns its bytes (allocated by the body,
+        ;; decoded on read).
+        struct-free? (or eu-struct? (and owned-rec? (= :owned (:kind ret))))
         free-handle (cond
-                      (and owned-rec? (= :owned (:kind ret)))
+                      struct-free?
                       (.downcallHandle linker
                                        (.orElseThrow (.find lookup (str (:symbol spec) "__free")))
                                        (FunctionDescriptor/ofVoid
@@ -574,28 +591,58 @@
               base-carriers (mapcat :carriers marshalled)
               copy-back!    #(run! (fn [m] (when-let [back (:copy-back m)] (back)))
                                    marshalled)]
-          (cond
-            (= :error-union (:kind ret))
-            (let [errbuf ^MemorySegment (.allocate arena error-buffer-bytes 1)
-                  errlen ^MemorySegment (.allocate arena 8 8)
-                  result (->> (concat base-carriers [errbuf errlen])
-                              (object-array)
-                              (.invokeWithArguments handle))
-                  n      (do (copy-back!) (.get errlen ValueLayout/JAVA_LONG 0))]
-              (if (zero? n)
-                ;; The value type may be a scalar (coerced with the unsigned
-                ;; policy), :void (nil), or a named enum whose backing int
-                ;; maps to its member keyword (an unknown int returns the raw
-                ;; int, total per ADR 20). An enum crosses as its i32 backing
-                ;; in both arg and return position, so the wire shape is the
-                ;; same as a scalar error-union.
-                (let [value-t (:of ret)]
-                  (cond
-                    (type/void-type? value-t)               nil
-                    (enum-type? value-t)                    (enum-value->member (:layout value-t)
-                                                                                (long result))
-                    :else                                   (coerce-scalar value-t result)))
-                (read-error-name errbuf n)))
+           (cond
+             ;; An error-union over a struct combines the error-union
+             ;; out-params (errbuf, errlen) with the struct-return
+             ;; out-pointer (__ret). On success (errlen 0) read the struct
+             ;; and free owned buffers in a finally so a read fault cannot
+             ;; leak (mirror of c8a822b and the owned-record path); on
+             ;; failure read the error keyword. The error path wrote no
+             ;; struct, so the free shim does not run and there is nothing
+             ;; to free (no leak). The result rebuilds as a record via its
+             ;; map-> factory when the named type is a defrecordz, else a
+             ;; plain map.
+             eu-struct?
+             (let [desc   (:layout (:of ret))
+                   out    ^MemorySegment (.allocate arena (long (:size desc))
+                                                    (long (:align desc)))
+                   errbuf ^MemorySegment (.allocate arena error-buffer-bytes 1)
+                   errlen ^MemorySegment (.allocate arena 8 8)]
+               (->> (concat base-carriers [errbuf errlen out])
+                    (object-array)
+                    (.invokeWithArguments handle))
+               (copy-back!)
+               (let [n (.get errlen ValueLayout/JAVA_LONG 0)]
+                 (if (zero? n)
+                   (try
+                     (let [m (read-struct out desc)]
+                       (if record-factory (record-factory m) m))
+                     (finally
+                       (when free-handle
+                         (.invokeWithArguments free-handle (object-array [out])))))
+                   (read-error-name errbuf n))))
+
+             (= :error-union (:kind ret))
+             (let [errbuf ^MemorySegment (.allocate arena error-buffer-bytes 1)
+                   errlen ^MemorySegment (.allocate arena 8 8)
+                   result (->> (concat base-carriers [errbuf errlen])
+                               (object-array)
+                               (.invokeWithArguments handle))
+                   n      (do (copy-back!) (.get errlen ValueLayout/JAVA_LONG 0))]
+               (if (zero? n)
+                 ;; The value type may be a scalar (coerced with the unsigned
+                 ;; policy), :void (nil), or a named enum whose backing int
+                 ;; maps to its member keyword (an unknown int returns the raw
+                 ;; int, total per ADR 20). An enum crosses as its i32 backing
+                 ;; in both arg and return position, so the wire shape is the
+                 ;; same as a scalar error-union.
+                 (let [value-t (:of ret)]
+                   (cond
+                     (type/void-type? value-t)               nil
+                     (enum-type? value-t)                    (enum-value->member (:layout value-t)
+                                                                                 (long result))
+                     :else                                   (coerce-scalar value-t result)))
+                 (read-error-name errbuf n)))
 
             ;; An owned or borrowed result record writes its fields through a
             ;; caller-allocated wire-struct out-segment. clj-zig reads each

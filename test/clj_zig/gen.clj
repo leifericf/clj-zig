@@ -353,6 +353,7 @@
        (mk ['c 'Pixel :ret 'Pixel] fixture-types)
        (mk ['s 'Status :ret 'Status] fixture-types)
        (mk [:ret [:error-union 'Error 'Status]] fixture-types)
+       (mk [:ret [:error-union 'Error 'Point]] fixture-types)
        (mk ['h [:handle 'Point] :ret [:handle 'Point]] fixture-types)
        (mk [:ret [:handle 'Point]] fixture-types)])))
 

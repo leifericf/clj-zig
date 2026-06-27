@@ -2,7 +2,9 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [clj-zig :as zig]
-            [clj-zig.core :refer [defnz defz defenumz]]))
+            [clj-zig.core :refer [defnz defz defenumz deftypez]]
+            [clj-zig.fixtures :as f])
+  (:import (java.util Arrays)))
 
 ;; --- Scalar value or error ----------------------------------------------
 
@@ -74,6 +76,47 @@
                           (zig/build-spec '{:ns t :name f
                                             :signature [x :i64
                                                         :ret [:error-union anyerror [:slice :u8]]]})))))
+
+;; --- A named struct value or error ---------------------------------------
+
+;; A [:error-union E NamedStruct] combines the error-union out-params
+;; (errbuf, errlen) with the struct-return out-pointer (__ret). On failure
+;; the wrapper writes the error name and returns WITHOUT writing the struct;
+;; on success it writes the struct field by field through __ret. For a
+;; buffer-carrying struct the per-field __free shim runs on the SUCCESS path
+;; only (nothing was written on the error path, so nothing to free, no leak).
+
+(deftypez Coord [x :f64 y :f64])
+
+(defnz locate
+  [target :i64
+   :ret [:error-union anyerror Coord]]
+  "if (target < 0) return error.NotFound;
+   return .{ .x = @as(f64, @floatFromInt(target)), .y = @as(f64, @floatFromInt(target + 1)) };")
+
+(deftest a-struct-or-an-error-keyword
+  (testing "success returns the struct as a map"
+    (is (= {:x 5.0 :y 6.0} (locate 5))))
+  (testing "failure returns the error keyword, not a map"
+    (is (= :NotFound (locate -1))))
+  (testing "the scalar-only struct path emits a no-op free shim"
+    (let [src (zig/generated-source #'locate)]
+      (is (str/includes? src "__free"))
+      (is (str/includes? src "_ = __ret;")))))
+
+(deftest a-buffer-carrying-struct-or-an-error-keyword
+  (testing "success returns the struct with every field decoded"
+    (let [r (f/render-may-fail false)]
+      (is (map? r))
+      (is (= :ok (:status r)))
+      (is (= 800 (:width r)))
+      (is (= "image/png" (:media r)))
+      (is (Arrays/equals ^bytes (:bytes r) (byte-array [65 66 67])))))
+  (testing "failure returns the error keyword and writes no struct"
+    (is (= :RenderFailed (f/render-may-fail true))))
+  (testing "a scalar-only record under an error union round-trips"
+    (is (= {:r 10 :g 20 :b 30} (f/pixel-may-fail false)))
+    (is (= :PixelFailed (f/pixel-may-fail true)))))
 
 ;; --- Contract validation ------------------------------------------------
 

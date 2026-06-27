@@ -175,8 +175,39 @@
   [label :string
    :ret  [:owned TaggedCount]]
   "const t = std.heap.c_allocator.alloc(u8, label.len) catch @panic(\"oom\");
-   @memcpy(t, label);
-   return .{ .tag = t, .n = @intCast(label.len) };")
+    @memcpy(t, label);
+    return .{ .tag = t, .n = @intCast(label.len) };")
+
+;; --- Error-union over a struct (P3b): success returns the struct, failure
+;; returns the error keyword. The combined wire shape carries the existing
+;; error-union out-params (errbuf, errlen) PLUS the struct out-pointer
+;; (__ret). On failure the wrapper writes the error name and returns WITHOUT
+;; writing the struct, so nothing was allocated-for-the-result and the free
+;; shim runs on the success path only (no leak on either branch).
+
+;; A buffer-carrying record under an error union: the body allocates the
+;; buffers BEFORE checking the fail flag would leak on the error path, so
+;; the fail flag is checked FIRST and the body returns the error before any
+;; allocation. The success path allocates and the wrapper's per-field free
+;; shim releases every buffer once the bytes are copied out.
+(defnz render-may-fail
+  [fail :bool
+   :ret  [:error-union anyerror RenderResult]]
+  "if (fail) return error.RenderFailed;
+   const m = std.heap.c_allocator.alloc(u8, 9) catch @panic(\"oom\");
+   @memcpy(m, \"image/png\");
+   const b = std.heap.c_allocator.alloc(u8, 3) catch @panic(\"oom\");
+   @memcpy(b, \"ABC\");
+   return .{ .status = .ok, .width = 800, .height = 600, .media = m, .bytes = b };")
+
+;; A scalar-only record under an error union: no buffers to free, but the
+;; wrapper still emits a no-op free shim (uniform with the buffer-carrying
+;; case) and the FFM calls it on the success path.
+(defnz pixel-may-fail
+  [fail :bool
+   :ret  [:error-union anyerror Pixel]]
+  "if (fail) return error.PixelFailed;
+   return .{ .r = 10, .g = 20, .b = 30 };")
 
 ;; --- Handles ------------------------------------------------------------
 

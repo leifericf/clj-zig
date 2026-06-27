@@ -188,7 +188,7 @@
 (defn- validate!
   "Reject contracts FFM cannot honor: `:void`/`:noreturn` in argument
   position, an `:optional` over anything but a pointer or a carrier scalar,
-  an `:error-union` outside a scalar, `:void`, or named-enum return, and
+  an `:error-union` outside a scalar, `:void`, or named-type return, and
   any value-position scalar without an FFM carrier."
   [{:keys [params ret] :as spec}]
   (doseq [{:keys [type]} params]
@@ -221,10 +221,9 @@
   (when (and (= :error-union (:kind ret))
              (not (or (type/void-type? (:of ret))
                       (= :scalar (:kind (:of ret)))
-                      (and (= :named (:kind (:of ret)))
-                           (get-in (:of ret) [:layout :enum])))))
+                      (= :named (:kind (:of ret))))))
     (fail spec :clj-zig/unsupported-error-union
-          "An :error-union return must wrap a scalar, :void, or a named enum." {}))
+          "An :error-union return must wrap a scalar, :void, or a named type." {}))
   (when (and (contains? #{:owned :borrowed} (:kind ret))
              (not (or (= :slice (:kind (:of ret)))
                       (and (= :named (:kind (:of ret)))

@@ -23,6 +23,11 @@
 
 (defn- enum-named? [t] (boolean (get-in t [:layout :enum])))
 
+(defn- eu-struct? [ret]
+  (and (= :error-union (:kind ret))
+       (= :named (get-in ret [:of :kind]))
+       (not (enum-named? (:of ret)))))
+
 (defn- param-required
   "The substrings the wrapper must contain for one boundary param."
   [{:keys [binding type]}]
@@ -42,17 +47,31 @@
 (defn- ret-required
   "The substrings the wrapper must contain for the return position."
   [{:keys [ret] sym :symbol}]
-  (case (:kind ret)
-    :optional    [") ?*"]
-    :error-union ["__err: [*]u8" "__errlen: *usize"]
-    :owned       ["__ptr: *usize, __len: *usize" (str sym "__free(")
-                  "std.heap.c_allocator.free"]
-    :borrowed    ["__ptr: *usize, __len: *usize"]
-    :named       (if (enum-named? ret)
-                   [(str ") " (:name ret) " {")]
-                   [(str "__ret: *" (:name ret))])
-    :handle      [(str ") *" (:name (:of ret)) " {")]
-    (if (type/void-type? ret) [") void {"] [(str ") " (name (:name ret)) " {")])))
+  (cond
+    (eu-struct? ret)
+    ;; An error-union over a struct combines the error-union out-params with
+    ;; the struct out-pointer; the per-field free shim always appears. The
+    ;; allocator call appears only when the record carries buffer fields; a
+    ;; scalar-only record emits a no-op shim body.
+    (let [layout (:layout (:of ret))
+          has-buffers? (some :target (:fields layout))]
+      (cond-> ["__err: [*]u8" "__errlen: *usize"
+               (str "__ret: *" (:name (:of ret)) "__wire")
+               (str sym "__free(")]
+        has-buffers? (conj "std.heap.c_allocator.free")))
+
+    :else
+    (case (:kind ret)
+      :optional    [") ?*"]
+      :error-union ["__err: [*]u8" "__errlen: *usize"]
+      :owned       ["__ptr: *usize, __len: *usize" (str sym "__free(")
+                    "std.heap.c_allocator.free"]
+      :borrowed    ["__ptr: *usize, __len: *usize"]
+      :named       (if (enum-named? ret)
+                     [(str ") " (:name ret) " {")]
+                     [(str "__ret: *" (:name ret))])
+      :handle      [(str ") *" (:name (:of ret)) " {")]
+      (if (type/void-type? ret) [") void {"] [(str ") " (name (:name ret)) " {")]))))
 
 (deftest source-matrix-is-fmt-clean-and-well-shaped
   (let [cases (g/structural-cases)]

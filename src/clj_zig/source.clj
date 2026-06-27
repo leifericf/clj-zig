@@ -16,7 +16,7 @@
   (:require [clojure.string :as str]
             [clj-zig.layout :as layout]))
 
-(declare zig-type pointee pointer-type)
+(declare zig-type pointee pointer-type error-union-struct-return?)
 
 (defn- zig-type
   "The Zig type name for a normalized boundary type. Handles scalars,
@@ -216,10 +216,14 @@
 
 (defn- needs-std?
   "True when a function's generated wrapper needs `std` in scope: an owned
-  or `:string` return uses `std.heap.c_allocator` in its free shim, and a
-  handle in any position is allocated or freed with `std`."
+  or `:string` return uses `std.heap.c_allocator` in its free shim, a handle
+  in any position is allocated or freed with `std`, and an error-union over
+  a struct emits a per-field free shim with the same allocator. (A
+  scalar-only record under either path emits a no-op shim body but still
+  pulls std in, uniform with the `:owned ScalarRecord` path.)"
   [{:keys [params ret]}]
   (or (contains? #{:owned :bytes :string} (:kind ret))
+      (error-union-struct-return? ret)
       (= :handle (:kind ret))
       (some #(= :handle (:kind (:type %))) params)))
 
@@ -317,12 +321,67 @@
            (str "\nexport fn " sym "__free(__ret: *const " wire-t ") void {\n"
                 free-body "\n}\n")))))
 
+(defn- generate-error-union-struct-return
+  "An inner impl fn holding the user body returns `E!NiceRecord`; the export
+  wrapper `catch`-es the error, writes the error name to the caller's buffer
+  and returns WITHOUT writing the struct on failure, and on success writes
+  each field of the nice record into the wire extern struct through `__ret`
+  and sets `__errlen` to 0. The combined wire shape carries the existing
+  error-union out-params (`__err`, `__errlen`) PLUS the struct out-pointer
+  (`__ret`). A per-field `__free` shim is emitted unconditionally and runs
+  on the SUCCESS path only: the error path wrote no struct, so there is
+  nothing to free and no leak (a scalar-only record yields a no-op shim,
+  uniform with the `:owned ScalarRecord` path)."
+  [{:keys [params ret] sym :symbol} body]
+  (let [layout     (get-in ret [:of :layout])
+        type-name  (:name layout)
+        wire-t     (wire-struct-name type-name)
+        params-str (str/join ", " (mapcat param-decls params))
+        args-str   (str/join ", " (mapcat param-args params))
+        err-set    (str (:error ret))
+        out-params (str (when (seq params-str) ", ")
+                        "__err: [*]u8, __errlen: *usize, __ret: *" wire-t)
+        writes     (mapcat wire-write-stmts (:fields layout))
+        buf-fields (filter :target (:fields layout))
+        free-body  (if (seq buf-fields)
+                     (str/join "\n" (map free-field-stmt buf-fields))
+                     "    _ = __ret;")
+        on-error   (str "catch |__err_value| {\n"
+                        "        const __name = @errorName(__err_value);\n"
+                        "        const __n = @min(__name.len, " error-name-cap ");\n"
+                        "        @memcpy(__err[0..__n], __name[0..__n]);\n"
+                        "        __errlen.* = __n;\n"
+                        "        return;\n"
+                        "    };")]
+    (str (wire-struct layout)
+         "\nfn " sym "__impl(" params-str ") " err-set "!" type-name " {\n"
+         (indent-body (impl-body params body)) "\n"
+         "}\n\n"
+         "export fn " sym "(" params-str out-params ") void {\n"
+         "    const __r = " sym "__impl(" args-str ") " on-error "\n"
+         "    __errlen.* = 0;\n"
+         (str/join "\n" writes) "\n"
+         "}\n"
+         "\nexport fn " sym "__free(__ret: *const " wire-t ") void {\n"
+         free-body "\n}\n")))
+
+(defn- error-union-struct-return?
+  "True when a return is an `:error-union` over a named non-enum (a struct
+  record). The enum arm crosses as its i32 backing and reuses the plain
+  error-union path; only a struct combines the error-union out-params with
+  the struct out-pointer."
+  [ret]
+  (and (= :error-union (:kind ret))
+       (= :named (get-in ret [:of :kind]))
+       (not (enum-type? (:of ret)))))
+
 (defn- generate-inline
   "The inline-mode wrapper: the user's body string is spliced into the
   exported function (or its inner impl fn). A wrapper that allocates gets
   `std` in scope."
   [{:keys [ret] :as spec} body]
   (let [core (cond
+               (error-union-struct-return? ret)                 (generate-error-union-struct-return spec body)
                (= :error-union (:kind ret))                       (generate-error-union spec body)
                (owned-record-return? ret)                         (generate-owned-struct-return spec body)
                (contains? #{:owned :borrowed :bytes :string} (:kind ret)) (generate-ownership spec body)
@@ -452,12 +511,50 @@
            (str "\nexport fn " sym "__free(__ret: *const " wire-t ") void {\n"
                 free-body "\n}\n")))))
 
+(defn- file-error-union-struct-return
+  "A file-mode `export fn` that calls the user fn and translates a returned
+  `E!NiceRecord` error union into the caller's error-name buffer and a wire
+  struct out-pointer. On error the wrapper writes the error name and returns
+  WITHOUT writing the struct; on success it writes each field through
+  `__ret` and sets `__errlen` to 0. A per-field `__free` shim imports `std`
+  inline (so a user file's imports never collide) and runs on the success
+  path only; the error path wrote no struct, so nothing to free, no leak."
+  [{:keys [params ret] sym :symbol} entry]
+  (let [layout     (get-in ret [:of :layout])
+        type-name  (:name layout)
+        wire-t     (wire-struct-name type-name)
+        params-str (str/join ", " (mapcat param-decls params))
+        out-params (str (when (seq params-str) ", ")
+                        "__err: [*]u8, __errlen: *usize, __ret: *" wire-t)
+        writes     (mapcat wire-write-stmts (:fields layout))
+        buf-fields (filter :target (:fields layout))
+        free-body  (if (seq buf-fields)
+                     (str/join "\n" (map file-free-field-stmt buf-fields))
+                     "    _ = __ret;")
+        on-error   (str "catch |__err_value| {\n"
+                        "        const __name = @errorName(__err_value);\n"
+                        "        const __n = @min(__name.len, " error-name-cap ");\n"
+                        "        @memcpy(__err[0..__n], __name[0..__n]);\n"
+                        "        __errlen.* = __n;\n"
+                        "        return;\n"
+                        "    };")]
+    (str (wire-struct layout)
+         "\nexport fn " sym "(" params-str out-params ") void {\n"
+         (wrapper-prelude params)
+         "    const __r = " (user-call entry params) " " on-error "\n"
+         "    __errlen.* = 0;\n"
+         (str/join "\n" writes) "\n"
+         "}\n"
+         "\nexport fn " sym "__free(__ret: *const " wire-t ") void {\n"
+         free-body "\n}\n")))
+
 (defn- generate-file
   "The file-mode wrapper: an `export fn` that reconstructs args and calls
-  the user's `entry` fn. No impl fn and no top-level `std` are emitted; the
+  the user's `pub fn`. No impl fn and no top-level `std` are emitted; the
   user's file owns its declarations and imports."
   [{:keys [ret] :as spec} entry]
   (cond
+    (error-union-struct-return? ret)                   (file-error-union-struct-return spec entry)
     (= :error-union (:kind ret))                       (file-error-union spec entry)
     (owned-record-return? ret)                         (file-owned-struct-return spec entry)
     (contains? #{:owned :borrowed :bytes :string} (:kind ret)) (file-ownership spec entry)
