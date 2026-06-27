@@ -30,7 +30,7 @@ Later ADRs capture decisions made during development. Written via the
 | [16](16-functional-core-imperative-shell.md) | Functional core, imperative shell |
 | [17](17-explicit-contracts-over-marshalling.md) | Explicit boundary contracts over data marshalling |
 | [18](18-carrier-and-unsigned-policy.md) | Boundary carriers and the unsigned-return policy |
-| [19](19-error-union-boundary-semantics.md) | Error-union boundary semantics |
+| [19](19-error-union-boundary-semantics.md) | Error-union boundary semantics (scalar, void, enum, or struct value) |
 | [20](20-enum-boundary-semantics.md) | Enum boundary semantics |
 | [21](21-owned-and-borrowed-returns.md) | Owned and borrowed returns copy into Clojure (slices and records) |
 | [22](22-opaque-handles.md) | Handles are opaque tagged pointers the caller frees |

@@ -52,3 +52,31 @@ integer was rejected because Clojure cannot map a code back to a name
 without the compiled error table, whereas `@errorName` is portable.
 Supporting error unions as arguments was rejected; the proof of concept
 has no use for them, and the contract frames them as a return shape.
+
+## Amendment (2026-06-27)
+
+The value type `T` may now be a named enum or a named struct (scalar-only
+or buffer-carrying), in addition to a scalar or `:void`. A named enum
+crosses as its `i32` backing per ADR 20, so its wire shape is unchanged:
+the wrapper returns the backing int directly and the Clojure side maps it
+back to the member keyword (an unknown int returns the raw int, total).
+A named struct combines the existing error-name buffer and length
+out-params with a struct out-pointer `__ret`: the inner `__impl` returns
+`E!NiceRecord`, the export wrapper writes the error name and returns
+WITHOUT writing the struct on failure, and on success writes the struct
+field by field through `__ret` (reusing the wire `extern struct` a
+result record already produces) and sets the length to zero.
+
+The error path writes no struct and frees nothing; a body that allocates
+before erroring would leak, so the supported discipline is to check the
+error condition before any allocation. The success path of a
+buffer-carrying struct emits a per-field `__free` shim (mirroring
+`:owned` result records per ADR 21) that runs in a `finally` after the
+Clojure side copies the bytes out, so a read fault cannot leak; a
+scalar-only struct emits a no-op shim, uniform with the `:owned` path.
+
+This extends, and does not reverse, the scalar-or-void decision above.
+The cost is a third out-parameter on the wire for the struct arm and a
+second exported symbol for its free shim; the caller still discriminates
+the result the same way (a keyword is the error, anything else is the
+value).
