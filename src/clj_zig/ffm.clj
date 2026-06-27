@@ -155,7 +155,7 @@
                ;; arena; there is no copy-back. A zero-length string allocates
                ;; a zero-size segment the Zig side reconstructs as [0..0].
                (when (pos? len)
-                 (MemorySegment/copy bs (int 0) seg ValueLayout/JAVA_BYTE (long 0) (int len)))
+                  (MemorySegment/copy bs (long 0) seg ValueLayout/JAVA_BYTE (long 0) (long len)))
                {:carriers [seg (long len)]})
     :slice   (let [{:keys [address length copy-back]} (marshal-array arena param arg)]
                {:carriers [address (long length)] :copy-back copy-back})
@@ -308,7 +308,7 @@
   shape: a buffer field (it carries a `:target`) reads `{ptr, len}` and
   copies out; an enum field reads its `i32` backing and maps to keyword;
   a scalar field reads its carrier."
-  [^MemorySegment seg {:keys [type offset target len-offset] :as field}]
+  [^MemorySegment seg {:keys [type offset target len-offset]}]
   (cond
     target
     (let [ptr (.get seg ValueLayout/JAVA_LONG (long offset))
