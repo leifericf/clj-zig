@@ -46,11 +46,12 @@
 (defn- resolve-named
   "Attach a named type's layout descriptor from `types`, or fail when the
   signature names a type that is not declared. A named type nested under
-  an ownership wrapper (`:owned` or `:borrowed`) is resolved too, so
-  `[:owned RecordType]` and `[:owned EnumType]` carry the layout the
-  validator and the marshaller both read off `(:of ret)`. (`:handle`
-  wraps an opaque `defz` resource not in the named-type registry, so it
-  is left unresolved; `:optional` and `:bytes` wrap pointers and slices,
+  an ownership wrapper (`:owned` or `:borrowed`) or an `:error-union`
+  value is resolved too, so `[:owned RecordType]`, `[:owned EnumType]`,
+  and `[:error-union E EnumType]` carry the layout the validator and the
+  marshaller both read off `(:of ret)`. (`:handle` wraps an opaque
+  `defz` resource not in the named-type registry, so it is left
+  unresolved; `:optional` and `:bytes` wrap pointers and slices,
   never a named type.)"
   [ident types t]
   (cond
@@ -62,7 +63,7 @@
                  " which no deftypez/defrecordz/defenumz declares.")
             {:type-name (:name t)}))
 
-    (contains? #{:owned :borrowed} (:kind t))
+    (contains? #{:owned :borrowed :error-union} (:kind t))
     (update t :of (partial resolve-named ident types))
 
     :else t))
@@ -187,8 +188,8 @@
 (defn- validate!
   "Reject contracts FFM cannot honor: `:void`/`:noreturn` in argument
   position, an `:optional` over anything but a pointer or a carrier scalar,
-  an `:error-union` outside a scalar-or-void return, and any value-position
-  scalar without an FFM carrier."
+  an `:error-union` outside a scalar, `:void`, or named-enum return, and
+  any value-position scalar without an FFM carrier."
   [{:keys [params ret] :as spec}]
   (doseq [{:keys [type]} params]
     (when (type/void-type? type)
@@ -218,9 +219,12 @@
     (fail spec :clj-zig/unsupported-optional
           "An :optional return must wrap a single-item :ptr or a carrier scalar." {}))
   (when (and (= :error-union (:kind ret))
-             (not (or (type/void-type? (:of ret)) (= :scalar (:kind (:of ret))))))
+             (not (or (type/void-type? (:of ret))
+                      (= :scalar (:kind (:of ret)))
+                      (and (= :named (:kind (:of ret)))
+                           (get-in (:of ret) [:layout :enum])))))
     (fail spec :clj-zig/unsupported-error-union
-          "An :error-union return must wrap a scalar or :void value." {}))
+          "An :error-union return must wrap a scalar, :void, or a named enum." {}))
   (when (and (contains? #{:owned :borrowed} (:kind ret))
              (not (or (= :slice (:kind (:of ret)))
                       (and (= :named (:kind (:of ret)))

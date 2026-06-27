@@ -583,8 +583,18 @@
                               (.invokeWithArguments handle))
                   n      (do (copy-back!) (.get errlen ValueLayout/JAVA_LONG 0))]
               (if (zero? n)
+                ;; The value type may be a scalar (coerced with the unsigned
+                ;; policy), :void (nil), or a named enum whose backing int
+                ;; maps to its member keyword (an unknown int returns the raw
+                ;; int, total per ADR 20). An enum crosses as its i32 backing
+                ;; in both arg and return position, so the wire shape is the
+                ;; same as a scalar error-union.
                 (let [value-t (:of ret)]
-                  (when-not (type/void-type? value-t) (coerce-scalar value-t result)))
+                  (cond
+                    (type/void-type? value-t)               nil
+                    (enum-type? value-t)                    (enum-value->member (:layout value-t)
+                                                                                (long result))
+                    :else                                   (coerce-scalar value-t result)))
                 (read-error-name errbuf n)))
 
             ;; An owned or borrowed result record writes its fields through a

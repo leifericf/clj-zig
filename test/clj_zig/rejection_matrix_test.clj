@@ -56,6 +56,7 @@
    {:code :clj-zig/unsupported-optional    :signature '[:ret [:optional [:manyptr :i64]]]}
    {:code :clj-zig/unsupported-optional    :signature '[:ret [:optional [:slice :u8]]]}
    {:code :clj-zig/unsupported-error-union :signature '[:ret [:error-union E [:slice :i64]]]}
+   {:code :clj-zig/unsupported-error-union :signature '[:ret [:error-union E [:slice :u8]]]}
    {:code :clj-zig/unsupported-ownership   :signature '[:ret [:owned :i64]]}
    {:code :clj-zig/unsupported-handle      :signature '[:ret [:handle :i64]]}
    {:code :clj-zig/unsupported-carrier     :signature '[:ret :i128]}

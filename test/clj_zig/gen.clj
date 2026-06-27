@@ -348,12 +348,13 @@
     (concat
      (for [e matrix-scalars af (arg-forms e)] (mk [(symbol "a") af :ret e] {}))
      (for [e matrix-scalars rf (ret-forms e)] (mk [:ret rf] {}))
-     [(mk ['p 'Point :ret 'Point] fixture-types)
-      (mk ['p 'Point :ret :f64] fixture-types)
-      (mk ['c 'Pixel :ret 'Pixel] fixture-types)
-      (mk ['s 'Status :ret 'Status] fixture-types)
-      (mk ['h [:handle 'Point] :ret [:handle 'Point]] fixture-types)
-      (mk [:ret [:handle 'Point]] fixture-types)])))
+      [(mk ['p 'Point :ret 'Point] fixture-types)
+       (mk ['p 'Point :ret :f64] fixture-types)
+       (mk ['c 'Pixel :ret 'Pixel] fixture-types)
+       (mk ['s 'Status :ret 'Status] fixture-types)
+       (mk [:ret [:error-union 'Error 'Status]] fixture-types)
+       (mk ['h [:handle 'Point] :ret [:handle 'Point]] fixture-types)
+       (mk [:ret [:handle 'Point]] fixture-types)])))
 
 (comment
   (require '[clj-zig.spec :as spec])
