@@ -76,15 +76,18 @@
 ;; --- opening and resolving a library ------------------------------------
 
 (defn library-lookup
-  "Open a native library by absolute path or by name (resolved the way
-  `dlopen`/`LoadLibrary` resolve it), bound to the global Arena so the
-  lookup lives for the process -- a library is a process-lifetime resource
-  (ADR 16). Returns the `SymbolLookup`, or throws an ex-info tagged
-  `:foreign/error :library-open-failed` (so the caller can catch and
-  degrade as data, ADR 19) when the library cannot be opened."
+  "Open the native library at `path` (a file path string), bound to the
+  global Arena so the lookup lives for the process -- a library is a
+  process-lifetime resource (ADR 16). The path loads as an exact file (the
+  FFM `Path` overload), not a platform search name, so a content-addressed
+  cache loads precisely its artifact and a relative name never resolves
+  through `dlopen`/`LoadLibrary` search paths. Returns the `SymbolLookup`,
+  or throws an ex-info tagged `:foreign/error :library-open-failed` (so the
+  caller can catch and degrade as data, ADR 19) when the library cannot be
+  opened."
   ^SymbolLookup [^String path]
   (try
-    (SymbolLookup/libraryLookup path (Arena/global))
+    (SymbolLookup/libraryLookup (.toPath (io/file path)) (Arena/global))
     (catch IllegalArgumentException e
       (throw (ex-info (str "Cannot open native library: " path)
                       {:foreign/error :library-open-failed :path path}

@@ -8,11 +8,11 @@
   the signed JVM range comes back as a `Long`; a `:u64`/`:usize` value
   beyond it is promoted to `BigInteger`, never truncated to a negative. A
   `:void` return is `nil`."
-  (:require [clojure.java.io :as io]
+  (:require [clj-zig.foreign :as foreign]
             [clj-zig.type :as type])
   (:import (java.lang IllegalCallerException)
            (java.lang.foreign Arena FunctionDescriptor Linker Linker$Option
-                              MemoryLayout MemorySegment SymbolLookup ValueLayout)
+                              MemoryLayout MemorySegment ValueLayout)
            (java.lang.invoke MethodHandle)
            (java.lang.reflect Array)
            (java.math BigInteger)
@@ -507,9 +507,11 @@
         ;; Loading a native library is a restricted operation; a JVM that
         ;; denies native access fails here, so translate it into a
         ;; diagnostic that names the flag rather than the raw FFM error.
-        lookup (with-native-access
-                 #(SymbolLookup/libraryLookup (.toPath (io/file library-path)) (Arena/global)))
-        sym    ^MemorySegment (.orElseThrow (.find lookup (:symbol spec)))
+        ;; `foreign/library-lookup` opens the file and degrades a bad path
+        ;; as data; `with-native-access` layers the native-access
+        ;; diagnostic on top, so both failure modes read clearly.
+        lookup (with-native-access #(foreign/library-lookup library-path))
+        sym    (foreign/find-symbol lookup (:symbol spec))
         handle ^MethodHandle (.downcallHandle linker sym (descriptor spec)
                                               (into-array Linker$Option []))
         params (:params spec)
@@ -546,13 +548,13 @@
         free-handle (cond
                       struct-free?
                       (.downcallHandle linker
-                                       (.orElseThrow (.find lookup (str (:symbol spec) "__free")))
+                                       (foreign/find-symbol lookup (str (:symbol spec) "__free"))
                                        (FunctionDescriptor/ofVoid
                                         (into-array MemoryLayout [ValueLayout/ADDRESS]))
                                        (into-array Linker$Option []))
                       (contains? #{:owned :bytes :string} (:kind ret))
                       (.downcallHandle linker
-                                       (.orElseThrow (.find lookup (str (:symbol spec) "__free")))
+                                       (foreign/find-symbol lookup (str (:symbol spec) "__free"))
                                        (FunctionDescriptor/ofVoid
                                         (into-array MemoryLayout [ValueLayout/JAVA_LONG
                                                                   ValueLayout/JAVA_LONG]))
