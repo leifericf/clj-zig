@@ -13,7 +13,8 @@
             [clj-zig.compiler :as compiler]))
 
 (def ^:private optimize-mode
-  "Safety checks stay on; this is part of the cache key."
+  "The default optimize mode when a descriptor or `zig-deps` declares none.
+    Safety checks stay on; the mode is part of the cache key."
   "ReleaseSafe")
 
 (defn dynamic-library-extension
@@ -65,8 +66,9 @@
   intermediate artifacts across compiles (ADR 35). A `:target` triple
   cross-compiles for another platform."
   [zig {:keys [source-abs library-abs options target module-roots global-cache-dir]}]
-  (let [link-flags (into ["-lc"] (options->flags options))]
-    (vec (concat [zig "build-lib" "-dynamic" "-O" optimize-mode]
+  (let [link-flags (into ["-lc"] (options->flags options))
+        mode       (get options :optimize optimize-mode)]
+    (vec (concat [zig "build-lib" "-dynamic" "-O" mode]
                  (when target ["-target" target])
                  ["--global-cache-dir" global-cache-dir
                   (str "-femit-bin=" library-abs)]

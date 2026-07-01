@@ -69,6 +69,34 @@
      (:c/link-path descriptor)           (assoc :link-path (vec (:c/link-path descriptor)))
      (:c/link descriptor)                (assoc :link (vec (:c/link descriptor))))))
 
+(def optimize-modes
+  "The Zig optimize modes a descriptor or `zig-deps` may name. The keyword
+  form is canonical; it lowers to the string `zig build-lib -O` takes."
+  #{:Debug :ReleaseSafe :ReleaseFast :ReleaseSmall})
+
+(defn- optimize-option
+  "The `{:optimize <mode-string>}` entry for a descriptor's
+  `:zig/optimize`, or nil when it declares none. The keyword must be one
+  of `optimize-modes`; anything else throws `:clj-zig/bad-optimize-mode`
+  so a typo fails before the compile, not as a confusing Zig error."
+  [descriptor]
+  (when-let [mode (:zig/optimize descriptor)]
+    (when-not (optimize-modes mode)
+      (throw (ex-info (str ":zig/optimize must be one of "
+                           (->> optimize-modes sort (map name) (str/join ", "))
+                           "; got " (pr-str mode) ".")
+                      {:level :error :error/code :clj-zig/bad-optimize-mode
+                       :mode mode})))
+    {:optimize (name mode)}))
+
+(defn descriptor-options
+  "The compile options a descriptor carries: its C-interop flags plus its
+  optimize mode. Returns nil when it carries neither. Shared by a
+  per-function descriptor and a namespace-level `zig-deps`, so both paths
+  layer `:zig/optimize` and `:c/*` the same way."
+  [descriptor]
+  (not-empty (merge (c-options descriptor) (optimize-option descriptor))))
+
 (def ^:private reserved-module-names
   "Module names Zig supplies itself; a dependency may not shadow them."
   #{"std" "builtin" "root"})
@@ -137,11 +165,12 @@
                 {} modules))))
 
 (defn register-deps!
-  "Register the namespace-level C-interop options and external Zig modules
-  for `ns-sym`, replacing any previous registration. Public because the
-  `zig-deps` expansion calls it from the user's namespace."
+  "Register the namespace-level C-interop options, optimize mode, and
+  external Zig modules for `ns-sym`, replacing any previous registration.
+  Public because the `zig-deps` expansion calls it from the user's
+  namespace."
   [ns-sym descriptor]
-  (swap! ns-deps assoc ns-sym (c-options descriptor))
+  (swap! ns-deps assoc ns-sym (descriptor-options descriptor))
   (swap! ns-modules assoc ns-sym (zig-modules descriptor)))
 
 (defn deps-in
@@ -347,7 +376,7 @@
   (let [{:keys [text path]} (source/resolve-and-read defining-file (:zig/file descriptor))
         _        (check-namespace! (:ns spec) text path)
         raw?     (boolean (:zig/raw descriptor))
-        opts     (c-options descriptor)
+        opts     (descriptor-options descriptor)
         {:keys [files]} (imports/closure path text)
         the-spec (cond-> spec
                    (:zig/symbol descriptor) (assoc :symbol (:zig/symbol descriptor)))

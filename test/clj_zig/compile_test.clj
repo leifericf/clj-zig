@@ -64,6 +64,24 @@
     (testing "the link flags attach to the main module, before -Mroot"
       (is (< (.indexOf args "-lc") (.indexOf args "-Mroot=/b/source.zig"))))))
 
+(deftest build-arguments-carries-the-optimize-mode
+  (let [base (fn [opts]
+               (compile/build-arguments
+                "zig" {:source-abs "/s.zig" :library-abs "/l.dylib"
+                       :options opts :global-cache-dir "/g"}))]
+    (let [args (base nil)]
+      (is (= ["-O" "ReleaseSafe"]
+             (subvec args (.indexOf args "-O") (+ 2 (.indexOf args "-O"))))
+          "options without :optimize default to ReleaseSafe"))
+    (let [args (base {:optimize "ReleaseFast"})]
+      (is (= ["-O" "ReleaseFast"]
+             (subvec args (.indexOf args "-O") (+ 2 (.indexOf args "-O"))))
+          "options :optimize reaches the -O flag"))
+    (let [args (base {:optimize "ReleaseSmall" :link ["m"]})]
+      (is (= ["-O" "ReleaseSmall"]
+             (subvec args (.indexOf args "-O") (+ 2 (.indexOf args "-O"))))
+          "the optimize mode composes with link flags"))))
+
 (deftest attribute-failure-points-at-the-module-or-the-wrapper
   (let [roots {"mymod" "/pkg/src/root.zig"}]
     (testing "stderr under a module's source dir is attributed to that module"
@@ -137,3 +155,14 @@
                               :ctx {:var 'app.core/add :signature '[x :i64 y :i64 :ret :i64]}})
            (catch clojure.lang.ExceptionInfo _ nil))
       (is (not (.exists (io/file lib)))))))
+
+(deftest compiles-with-an-explicit-optimize-mode
+  (testing "an explicit ReleaseFast mode compiles a working library"
+    (let [dir    (scratch-dir)
+          result (compile/compile!
+                  {:source (source/generate add-spec "return x + y;")
+                   :source-path (str dir "/source.zig")
+                   :library-path (str dir "/libadd." (compile/dynamic-library-extension))
+                   :options {:optimize "ReleaseFast"}
+                   :ctx {:var 'app.core/add :signature '[x :i64 y :i64 :ret :i64]}})]
+      (is (.exists (io/file (:library result)))))))

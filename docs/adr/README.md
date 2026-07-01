@@ -51,3 +51,5 @@ Later ADRs capture decisions made during development. Written via the
 | [37](37-foreign-function-toolkit.md) | A foreign-function toolkit for prebuilt libraries |
 | [38](38-synchronous-upcall-stubs.md) | Synchronous upcall stubs are a supported primitive |
 | [39](39-scalar-hot-path-call-mode.md) | A scalar-only hot-path call mode for defnz |
+| [40](40-namespaces-divide-by-domain.md) | Namespaces divide by domain |
+| [41](41-per-function-optimize-mode.md) | A per-function optimize mode for defnz |

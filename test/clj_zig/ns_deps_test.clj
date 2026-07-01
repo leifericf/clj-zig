@@ -70,3 +70,29 @@
     (define! `(core/defnz ~'hyp [~'a :f64 ~'b :f64 :ret :f64]
                 "const c = @cImport({ @cInclude(\"math.h\"); }); return c.sqrt(a * a + b * b);"))
     (is (= 5.0 ((the-fn 'hyp) 3.0 4.0)))))
+
+(deftest namespace-optimize-mode-layers-into-build-options
+  (let [spec (zig/build-spec '{:ns ns.deps.opt :name f :signature [a :f64 :ret :f64]})]
+    (core/register-deps! 'ns.deps.opt {:zig/optimize :ReleaseFast})
+    (testing "a function inherits its namespace's optimize mode as the Zig string"
+      (is (= {:optimize "ReleaseFast"}
+             (:options (core/build-inputs spec "return a;")))))
+    (testing "a per-function option overrides the namespace mode"
+      (is (= {:optimize "ReleaseSmall"}
+             (:options (core/build-inputs spec "return a;"
+                                          {:mode :inline :options-extra {:optimize "ReleaseSmall"}})))))
+    (testing "optimize combines with link flags"
+      (core/register-deps! 'ns.deps.opt2 {:zig/optimize :ReleaseFast :c/link ["m"]})
+      (is (= {:optimize "ReleaseFast" :link ["m"]}
+             (:options (core/build-inputs
+                        (zig/build-spec '{:ns ns.deps.opt2 :name g :signature [a :f64 :ret :f64]})
+                        "return a;")))))))
+
+(deftest bad-optimize-mode-is-rejected
+  (doseq [mode [:Fast :Release :release-fast "ReleaseFast" 42]]
+    (testing (str "mode " (pr-str mode) " is rejected as a Zig optimize mode")
+      (let [code (try (core/register-deps! 'ns.deps.bad {:zig/optimize mode})
+                      ::no-throw
+                      (catch clojure.lang.ExceptionInfo e
+                        (:error/code (ex-data e))))]
+        (is (= :clj-zig/bad-optimize-mode code))))))
