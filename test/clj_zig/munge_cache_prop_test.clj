@@ -74,5 +74,7 @@
                  k  (gen/elements [:spec :body :source :deps :options
                                    :zig-version :target])]
     ;; The sentinel is a value the generators never produce, so the input
-    ;; genuinely changes and the key must change with it.
-    (not= (cache/cache-key in) (cache/cache-key (assoc in k ::changed)))))
+    ;; genuinely changes and the key must change with it. It is a non-empty
+    ;; seqable, so it stays present through the seq-gate that omits an empty
+    ;; :deps (the same gate :aux and :modules pass through).
+    (not= (cache/cache-key in) (cache/cache-key (assoc in k [::changed])))))
