@@ -48,6 +48,14 @@
       (is (not= base (cache/cache-key (assoc (inputs nil "return x + y;")
                                              :options {:optimize "Debug"})))))))
 
+(deftest cache-key-normalizes-empty-deps
+  (let [base (cache/cache-key (inputs nil "return x + y;"))]
+    (testing "nil and empty deps hash alike"
+      (is (= base (cache/cache-key (assoc (inputs nil "return x + y;") :deps "")))))
+    (testing "a non-empty preamble shifts the key"
+      (is (not= base (cache/cache-key (assoc (inputs nil "return x + y;")
+                                             :deps "const T = struct { x: i32 };")))))))
+
 (deftest cache-key-includes-module-fingerprints
   (let [base (cache/cache-key (inputs nil "return x + y;"))
         with (cache/cache-key (assoc (inputs nil "return x + y;")

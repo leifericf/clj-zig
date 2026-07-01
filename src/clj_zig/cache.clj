@@ -65,9 +65,10 @@
   Zig modules enter as `:modules`, a name-to-fingerprint map, so a changed
   module relinks its dependents while leaving every other key untouched."
   [{:keys [spec body source deps options zig-version target aux-files modules]}]
-  (fingerprint (cond-> {:spec spec :body body :source source :deps deps
+  (fingerprint (cond-> {:spec spec :body body :source source
                         :options options :zig-version zig-version
                         :target target}
+                 (seq deps)      (assoc :deps deps)
                  (seq aux-files) (assoc :aux aux-files)
                  (seq modules)   (assoc :modules modules))))
 
