@@ -20,6 +20,7 @@
   core macro can lower a map argument to scalars before the call."
   (:require [clojure.set :as set]
             [clojure.string :as str]
+            [clj-zig.layout :as layout]
             [clj-zig.signature :as signature]
             [clj-zig.type :as type]))
 
@@ -63,8 +64,14 @@
                  " which no deftypez/defrecordz/defenumz declares.")
             {:type-name (:name t)}))
 
-    (contains? #{:owned :borrowed :error-union} (:kind t))
-    (update t :of (partial resolve-named ident types))
+    (:of t)
+    ;; :handle wraps an opaque defz resource that is NOT in the named-type
+    ;; registry, so it is left unresolved; every other :of-bearing wrapper
+    ;; recurses so a named element (a slice of a struct, an owned record)
+    ;; carries its layout.
+    (if (= :handle (:kind t))
+      t
+      (update t :of (partial resolve-named ident types)))
 
     :else t))
 
@@ -119,23 +126,31 @@
 
 (defn- find-non-scalar-element
   "Return the first indirection node (`:slice`, `:array`, `:ptr`, or
-  `:manyptr`) in `t` whose immediate `:of` element is not a scalar, or
-  nil when every element is a scalar. The FFM marshaller carries scalar
-  elements only; a named, slice, pointer, optional, or wrapper element
-  would crash at the call, so `validate!` rejects such a spec here
-  instead of letting it reach the marshaller. The walk descends through
-  single-element wrappers (`:optional`, `:owned`, `:borrowed`,
-  `:bytes`, `:handle`, `:error-union`) so an indirection nested under
-  ownership is caught as well."
+  `:manyptr`) in `t` whose immediate `:of` element the marshaller cannot
+  carry, or nil when every element is carryable. A scalar element is
+  always carryable; a named struct element is carryable when its layout
+  is scalar-only (it crosses by value, like a nested struct field in ADR
+  43). A pointer or many-pointer must still hold a scalar; a slice or
+  array of a buffer-carrying struct, an enum, a pointer, an optional, or
+  a wrapper element is rejected. The walk descends through single-
+  element wrappers so an indirection nested under ownership is caught."
   [t]
   (when (map? t)
     (let [k (:kind t)]
       (cond
-        (contains? #{:slice :array :ptr :manyptr} k)
+        (contains? #{:slice :array} k)
         (let [elem (:of t)]
-          (if (and (map? elem) (= :scalar (:kind elem)))
+          (if (or (and (map? elem) (= :scalar (:kind elem)))
+                  (and (map? elem) (= :named (:kind elem))
+                       (get-in elem [:layout])
+                       (not (get-in elem [:layout :enum]))
+                       (layout/scalar-only-layout? (get-in elem [:layout]))))
             nil
             t))
+
+        (contains? #{:ptr :manyptr} k)
+        (let [elem (:of t)]
+          (if (and (map? elem) (= :scalar (:kind elem))) nil t))
 
         (contains? #{:optional :owned :borrowed :bytes :handle :error-union} k)
         (find-non-scalar-element (:of t))

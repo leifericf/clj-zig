@@ -136,6 +136,26 @@
          (error-code #(spec/build-spec '{:ns app.core :name f
                                          :signature [x :void :ret :i64]})))))
 
+(deftest accepts-a-slice-of-a-scalar-struct
+  (let [types {'Point (layout/describe 'Point '[x :f64 y :f64])}]
+    (testing "a slice element may be a named scalar-only struct"
+      (is (map? (spec/build-spec {:ns 'app.core :name 'f
+                                  :signature '[xs [:slice :const Point] :ret :i64]
+                                  :types types}))))
+    (testing "an owned slice of a scalar struct is a valid return"
+      (is (map? (spec/build-spec {:ns 'app.core :name 'f
+                                  :signature '[:ret [:owned [:slice Point]]]
+                                  :types types}))))))
+
+(deftest rejects-a-slice-of-a-non-scalar-struct
+  (testing "a buffer-carrying struct element is rejected"
+    (let [types {'Buf (layout/describe 'Buf '[media :string] {})
+                 'Point (layout/describe 'Point '[x :f64 y :f64])}]
+      (is (= :clj-zig/unsupported-element
+             (error-code #(spec/build-spec {:ns 'app.core :name 'f
+                                             :signature '[xs [:slice :const Buf] :ret :i64]
+                                             :types types})))))))
+
 (deftest expands-clojure-side-destructuring-into-native-params
   (testing "each destructured local becomes a native scalar param"
     (let [s (spec/build-spec
@@ -166,31 +186,38 @@
       (is (= 'app.core/f (:var (ex-data e))))
       (is (= '[x :u128 :ret :i64] (:signature (ex-data e)))))))
 
-(deftest rejects-non-scalar-slice-and-pointer-elements
-  (testing "a named element is rejected for every indirection kind"
-    (is (= :clj-zig/unsupported-element
-           (error-code #(spec/build-spec '{:ns app.core :name f
-                                           :signature [xs [:slice Point] :ret :i64]}))))
-    (is (= :clj-zig/unsupported-element
-           (error-code #(spec/build-spec '{:ns app.core :name f
-                                           :signature [xs [:array 3 Point] :ret :i64]}))))
-    (is (= :clj-zig/unsupported-element
-           (error-code #(spec/build-spec '{:ns app.core :name f
-                                           :signature [xs [:ptr Point] :ret :i64]}))))
-    (is (= :clj-zig/unsupported-element
-           (error-code #(spec/build-spec '{:ns app.core :name f
-                                           :signature [xs [:manyptr Point] :ret :i64]}))))
-    (is (= :clj-zig/unsupported-element
-           (error-code #(spec/build-spec '{:ns app.core :name f
-                                           :signature [xs [:manyptr :const Point] :ret :i64]})))))
-  (testing "the const variant of every indirection kind is covered"
-    (is (= :clj-zig/unsupported-element
-           (error-code #(spec/build-spec '{:ns app.core :name f
-                                           :signature [xs [:slice :const Point] :ret :i64]}))))
-    (is (= :clj-zig/unsupported-element
-           (error-code #(spec/build-spec '{:ns app.core :name f
-                                           :signature [xs [:ptr :const Point] :ret :i64]})))))
-  (testing "a nested indirection element is rejected (the element is not a scalar)"
+(deftest accepts-and-rejects-struct-elements-per-indirection
+  (let [types {'Point (layout/describe 'Point '[x :f64 y :f64])
+               'Buf   (layout/describe 'Buf '[media :string] {})}]
+    (testing "a scalar-only struct is a valid slice, array, and owned-slice element"
+      (is (map? (spec/build-spec {:ns 'app.core :name 'f
+                                  :signature '[xs [:slice :const Point] :ret :i64]
+                                  :types types})))
+      (is (map? (spec/build-spec {:ns 'app.core :name 'f
+                                  :signature '[xs [:array 3 Point] :ret :i64]
+                                  :types types})))
+      (is (map? (spec/build-spec {:ns 'app.core :name 'f
+                                  :signature '[:ret [:owned [:slice Point]]]
+                                  :types types}))))
+    (testing "a pointer or many-pointer must still hold a scalar element"
+      (is (= :clj-zig/unsupported-element
+             (error-code #(spec/build-spec {:ns 'app.core :name 'f
+                                             :signature '[xs [:ptr Point] :ret :i64]
+                                             :types types}))))
+      (is (= :clj-zig/unsupported-element
+             (error-code #(spec/build-spec {:ns 'app.core :name 'f
+                                             :signature '[xs [:manyptr :const Point] :ret :i64]
+                                             :types types})))))
+    (testing "a slice or array of a buffer-carrying struct is rejected"
+      (is (= :clj-zig/unsupported-element
+             (error-code #(spec/build-spec {:ns 'app.core :name 'f
+                                             :signature '[xs [:slice Buf] :ret :i64]
+                                             :types types}))))
+      (is (= :clj-zig/unsupported-element
+             (error-code #(spec/build-spec {:ns 'app.core :name 'f
+                                             :signature '[:ret [:owned [:slice Buf]]]
+                                             :types types}))))))
+  (testing "a nested indirection element is rejected (the element is not a plain scalar or struct)"
     (is (= :clj-zig/unsupported-element
            (error-code #(spec/build-spec '{:ns app.core :name f
                                            :signature [xs [:slice [:slice :u8]] :ret :i64]}))))
@@ -200,12 +227,6 @@
     (is (= :clj-zig/unsupported-element
            (error-code #(spec/build-spec '{:ns app.core :name f
                                            :signature [:ret [:slice [:slice :u8]]]})))))
-  (testing "a non-scalar element wrapped in ownership is still rejected"
-    ;; [:owned [:slice Point]] would otherwise pass the ownership check
-    ;; (it wraps a slice) and reach the marshaller, where it crashes.
-    (is (= :clj-zig/unsupported-element
-           (error-code #(spec/build-spec '{:ns app.core :name f
-                                           :signature [:ret [:owned [:slice Point]]]})))))
   (testing "a carrier-scalar element is still accepted (no over-rejection)"
     (is (map? (spec/build-spec '{:ns app.core :name f
                                  :signature [xs [:slice :u8] :ret :i64]})))
@@ -214,15 +235,17 @@
     (is (map? (spec/build-spec '{:ns app.core :name f
                                  :signature [:ret [:owned [:slice :u8]]]}))))
   (testing "the offending element is named in the diagnostic ex-data"
-    (try
-      (spec/build-spec '{:ns app.core :name f
-                         :signature [xs [:slice Point] :ret :i64]})
-      (is false "expected a diagnostic")
-      (catch clojure.lang.ExceptionInfo e
-        (let [d (ex-data e)]
-          (is (= :clj-zig/unsupported-element (:error/code d)))
-          (is (= :slice (:indirection d)))
-          (is (= {:kind :named :name 'Point} (:element d))))))
+    (let [types {'Buf (layout/describe 'Buf '[media :string] {})}]
+      (try
+        (spec/build-spec {:ns 'app.core :name 'f
+                          :signature '[xs [:slice Buf] :ret :i64]
+                          :types types})
+        (is false "expected a diagnostic")
+        (catch clojure.lang.ExceptionInfo e
+          (let [d (ex-data e)]
+            (is (= :clj-zig/unsupported-element (:error/code d)))
+            (is (= :slice (:indirection d)))
+            (is (= {:kind :named :name 'Buf} (:element d)))))))
     (testing "a nested-slice element names the slice in the diagnostic"
       (try
         (spec/build-spec '{:ns app.core :name f
@@ -232,15 +255,4 @@
           (let [d (ex-data e)]
             (is (= :clj-zig/unsupported-element (:error/code d)))
             (is (= :slice (:indirection d)))
-            (is (= {:kind :slice} (:element d))))))))
-  (testing "the rejection targets the element shape, not the named type itself"
-    ;; A declared Point is a valid bare argument; only as a slice element is
-    ;; it rejected, because the marshaller carries scalar elements only.
-    (let [types {'Point (layout/describe 'Point '[x :f64 y :f64])}]
-      (is (map? (spec/build-spec {:ns 'app.core :name 'f
-                                  :signature '[p Point :ret :f64]
-                                  :types types})))
-      (is (= :clj-zig/unsupported-element
-             (error-code #(spec/build-spec {:ns 'app.core :name 'f
-                                            :signature '[xs [:slice Point] :ret :f64]
-                                            :types types})))))))
+            (is (= {:kind :slice} (:element d)))))))))

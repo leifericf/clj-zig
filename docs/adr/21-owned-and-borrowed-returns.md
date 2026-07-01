@@ -88,3 +88,13 @@ a single owned slice carries.
 This extends, and does not reverse, the slice-only decision above. The cost
 is that a record with several buffer fields compiles one shim with one free
 call per field, and ownership cannot vary per field in this version.
+
+## Amendment (2026-07-01): owned slices of scalar-only structs
+
+An owned slice may now hold a named struct element whose layout is
+scalar-only (ADR 44). The free shim is unchanged: it frees the one slab
+allocation, because a scalar-only struct element owns no per-element
+buffer. The marshaller walks the slab at the element's stride and copies
+each struct out as a map before the free runs in the `finally`. A slice
+element carrying its own buffer field remains out of scope; its free
+would need to walk every element, a separate protocol.

@@ -111,28 +111,51 @@
       :float (case bits 32 (unchecked-float v) 64 (double v))
       :bool  (boolean v))))
 
+(declare marshal-struct-into!)
+
+(defn- marshal-struct-collection
+  "Copy a Clojure collection of maps into a fresh native segment, one
+  struct element per stride, for a slice or array argument whose
+  element is a named struct. The element layout is the wire extern
+  struct, embedded in bulk (each element at `i*stride`). There is no
+  copy-back: the caller supplied immutable maps, so mutations the body
+  makes in place are not propagated. A const slice is the natural shape;
+  a mutable struct slice compiles but does not return its edits."
+  [arena {:keys [type]} coll]
+  (let [inner  (get-in type [:of :layout])
+        stride (long (:size inner))
+        n      (count coll)
+        seg    ^MemorySegment (.allocate ^Arena arena (* n stride) (long (:align inner)))]
+    (dotimes [i n]
+      (marshal-struct-into! (.asSlice seg (* (long i) stride) stride) inner (nth coll i)))
+    {:address seg :length n :copy-back nil}))
+
 (defn- marshal-array
-  "Copy a primitive array into a fresh native segment from `arena` and pass
-  its address. Yields the segment, its length, and for a mutable pointee a
-  thunk that copies the segment back into the array after the call. Bulk
-  copy carries the numeric carriers; `bool` has no bulk array copy, so it
-  crosses element by element."
+  "Copy a caller-supplied sequence into a fresh native segment from
+  `arena` and pass its address. A scalar element is a Java primitive
+  array, bulk-copied in one move (with `bool` crossing element by
+  element, the FFM API having no boolean bulk copy); a mutable pointee
+  copies the segment back into the array after the call. A named-struct
+  element is a Clojure collection of maps, marshaled one struct per
+  stride via `marshal-struct-collection`."
   [arena {:keys [type]} arr]
-  (let [elem  (value-layout (:of type))
-        bytes (.byteSize elem)
-        len   (Array/getLength arr)
-        seg   ^MemorySegment (.allocate ^Arena arena (* len bytes) bytes)
-        bool? (= :bool (:category (type/scalar-info (:name (:of type)))))]
-    (if bool?
-      (dotimes [i len] (.set seg ValueLayout/JAVA_BOOLEAN (long i) (boolean (Array/get arr i))))
-      (MemorySegment/copy arr (int 0) seg elem (long 0) (int len)))
-    {:address   seg
-     :length    len
-     :copy-back (when-not (:const? type)
-                  (if bool?
-                    (fn [] (dotimes [i len]
-                             (Array/set arr i (.get seg ValueLayout/JAVA_BOOLEAN (long i)))))
-                    (fn [] (MemorySegment/copy seg elem (long 0) arr (int 0) (int len)))))}))
+  (if (= :named (:kind (:of type)))
+    (marshal-struct-collection arena {:type type} arr)
+    (let [elem  (value-layout (:of type))
+          bytes (.byteSize elem)
+          len   (Array/getLength arr)
+          seg   ^MemorySegment (.allocate ^Arena arena (* len bytes) bytes)
+          bool? (= :bool (:category (type/scalar-info (:name (:of type)))))]
+      (if bool?
+        (dotimes [i len] (.set seg ValueLayout/JAVA_BOOLEAN (long i) (boolean (Array/get arr i))))
+        (MemorySegment/copy arr (int 0) seg elem (long 0) (int len)))
+      {:address   seg
+       :length    len
+       :copy-back (when-not (:const? type)
+                    (if bool?
+                      (fn [] (dotimes [i len]
+                               (Array/set arr i (.get seg ValueLayout/JAVA_BOOLEAN (long i)))))
+                      (fn [] (MemorySegment/copy seg elem (long 0) arr (int 0) (int len)))))})))
 
 (defn- marshal-arg
   "Coerce one boundary argument to its native carriers. Pointers and slices
@@ -169,14 +192,17 @@
                                     :actual (Array/getLength arg)})))
                  (let [{:keys [address copy-back]} (marshal-array arena param arg)]
                    {:carriers [address] :copy-back copy-back}))
-    :array   (let [n (-> param :type :length)]
-               (when (not= n (Array/getLength arg))
-                 (throw (ex-info (str "An :array argument must have length " n ".")
-                                 {:level :error
-                                  :error/code :clj-zig/array-length
-                                  :expected n
-                                  :actual (Array/getLength arg)})))
-               {:carriers [(:address (marshal-array arena param arg))]})
+     :array   (let [n (-> param :type :length)
+                    actual (if (= :named (:kind (:of (:type param))))
+                             (count arg)
+                             (Array/getLength arg))]
+                (when (not= n actual)
+                  (throw (ex-info (str "An :array argument must have length " n ".")
+                                  {:level :error
+                                   :error/code :clj-zig/array-length
+                                   :expected n
+                                   :actual actual})))
+                {:carriers [(:address (marshal-array arena param arg))]})
     :optional (let [pointed (-> param :type :of)]
                  (cond
                    (nil? arg) {:carriers [MemorySegment/NULL]}
@@ -263,8 +289,6 @@
                32 (.set seg ValueLayout/JAVA_FLOAT off (unchecked-float cv))
                64 (.set seg ValueLayout/JAVA_DOUBLE off (double cv)))
       :bool  (.set seg ValueLayout/JAVA_BOOLEAN off (boolean cv)))))
-
-(declare marshal-struct-into!)
 
 (defn- marshal-struct
   "Write the fields of Clojure map `m` into a fresh native segment for the
@@ -360,33 +384,39 @@
   arr)
 
 (defn- read-slice-values
-  "Copy `len` elements of scalar type `elem` from the native address `addr`
-  into an immutable Clojure vector. Numeric carriers bulk-copy into a typed
-  primitive array (one native move) and are then coerced with the
-  unsigned-return policy (ADR 18); `bool` has no bulk array copy in the FFM
-  API, so it reads element by element, the same special case `marshal-array`
-  makes on the write side. A zero length reads nothing, so the address is
-  never dereferenced for an empty slice."
+  "Copy `len` elements from the native address `addr` into an immutable
+  Clojure vector. A scalar element bulk-copies into a typed primitive
+  array (one native move, `bool` element by element) and is coerced with
+  the unsigned-return policy (ADR 18). A named-struct element reads one
+  struct per stride via `read-struct`, producing a vector of maps. A
+  zero length reads nothing, so the address is never dereferenced for an
+  empty slice."
   [addr len elem]
   (if (zero? len)
     []
-    (let [n      (long len)
-          layout (value-layout elem)
-          seg    (.reinterpret (MemorySegment/ofAddress addr) (* n (.byteSize layout)))
-          {:keys [category bits]} (type/scalar-info (:name elem))]
-      (if (= :bool category)
-        (mapv #(coerce-scalar elem (read-scalar seg elem (* (long %) (.byteSize layout))))
-              (range n))
-        (let [arr (case category
-                    :int   (case bits
-                             8  (fill-array seg layout n (byte-array n))
-                             16 (fill-array seg layout n (short-array n))
-                             32 (fill-array seg layout n (int-array n))
-                             64 (fill-array seg layout n (long-array n)))
-                    :float (case bits
-                             32 (fill-array seg layout n (float-array n))
-                             64 (fill-array seg layout n (double-array n))))]
-          (mapv #(coerce-scalar elem %) arr))))))
+    (let [n (long len)]
+      (if (= :named (:kind elem))
+        (let [inner  (:layout elem)
+              stride (long (:size inner))
+              base   (.reinterpret (MemorySegment/ofAddress addr) (* n stride))]
+          (mapv #(read-struct (.asSlice base (* (long %) stride) stride) inner)
+                (range n)))
+        (let [layout (value-layout elem)
+              seg    (.reinterpret (MemorySegment/ofAddress addr) (* n (.byteSize layout)))
+              {:keys [category bits]} (type/scalar-info (:name elem))]
+          (if (= :bool category)
+            (mapv #(coerce-scalar elem (read-scalar seg elem (* (long %) (.byteSize layout))))
+                  (range n))
+            (let [arr (case category
+                        :int   (case bits
+                                 8  (fill-array seg layout n (byte-array n))
+                                 16 (fill-array seg layout n (short-array n))
+                                 32 (fill-array seg layout n (int-array n))
+                                 64 (fill-array seg layout n (long-array n)))
+                        :float (case bits
+                                 32 (fill-array seg layout n (float-array n))
+                                 64 (fill-array seg layout n (double-array n))))]
+              (mapv #(coerce-scalar elem %) arr))))))))
 
 (defn- read-bytes
   "Copy `len` bytes from native address `addr` into a Java `byte[]` in one

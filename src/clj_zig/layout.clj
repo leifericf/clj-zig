@@ -87,14 +87,14 @@
                    (type/has-carrier? (:name elem)))
           elem)))))
 
-(defn- scalar-only-layout?
+(defn scalar-only-layout?
   "True when a struct layout's fields are all carrier scalars, directly
   or through a further nested struct whose own inner layout is scalar-
   only. A buffer field, an enum field, or any non-scalar field
   disqualifies. Used to gate which named types may nest inside another
-  struct: a nested struct crosses by value (the inner extern struct is
-  embedded), and only the scalar interior composes cleanly on both sides
-  of the boundary."
+  struct and which may serve as a slice or array element: a struct
+  crossed by value (a nested field) or carried in bulk (a slice element)
+  composes cleanly only with a scalar interior."
   [layout]
   (and (not (:enum layout))
        (seq (:fields layout))

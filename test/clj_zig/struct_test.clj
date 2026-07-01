@@ -84,3 +84,52 @@
     (let [r {:origin {:x 0.0 :y 0.0} :size {:x 4.0 :y 6.0}}]
       (rect-area r)
       (is (= {:origin {:x 0.0 :y 0.0} :size {:x 4.0 :y 6.0}} r)))))
+
+;; --- Slices and arrays of structs ---------------------------------------
+
+(defnz sum-points
+  "Sum the x and y of every point a const slice carries."
+  [ps [:slice :const Point]
+   :ret Point]
+  "var sx: f64 = 0; var sy: f64 = 0;
+   for (ps) |p| { sx += p.x; sy += p.y; }
+   return .{ .x = sx, .y = sy };")
+
+(defnz make-points
+  "Allocate and return n points (0,0), (1,0), (2,0), ... as an owned slice."
+  [n :usize
+   :ret [:owned [:slice Point]]]
+  "const out = std.heap.c_allocator.alloc(Point, n) catch @panic(\"oom\");
+   for (out, 0..) |*p, i| p.* = .{ .x = @floatFromInt(i), .y = 0 };
+   return out;")
+
+(defnz array-sum
+  "Sum a fixed-size array of three points."
+  [ps [:array 3 Point]
+   :ret Point]
+  "var sx: f64 = 0; var sy: f64 = 0;
+   for (ps) |p| { sx += p.x; sy += p.y; }
+   return .{ .x = sx, .y = sy };")
+
+(deftest a-slice-of-structs-argument-round-trips
+  (testing "a const slice of maps is read element by element in the body"
+    (is (= {:x 6.0 :y 9.0}
+           (sum-points [{:x 1.0 :y 2.0} {:x 2.0 :y 3.0} {:x 3.0 :y 4.0}]))
+        (= {:x 0.0 :y 0.0} (sum-points [])))))
+
+(deftest an-owned-slice-of-structs-return-is-a-vector-of-maps
+  (testing "the body's allocation is copied out and freed"
+    (is (= [{:x 0.0 :y 0.0} {:x 1.0 :y 0.0} {:x 2.0 :y 0.0} {:x 3.0 :y 0.0}]
+           (make-points 4))))
+  (testing "an empty owned slice returns an empty vector"
+    (is (= [] (make-points 0))))
+  (testing "the slab is freed each call (the owned-slice free shim runs in volume)"
+    ;; The free shim is the same one-element slab free the scalar owned-slice
+    ;; lane covers; this drives it 400 times for the struct element so a
+    ;; missing free surfaces as a growing footprint.
+    (is (every? #(= {:x 9.0 :y 0.0} (last %))
+                (repeatedly 400 #(make-points 10))))))
+
+(deftest an-array-of-structs-argument-round-trips
+  (is (= {:x 6.0 :y 9.0}
+         (array-sum [{:x 1.0 :y 2.0} {:x 2.0 :y 3.0} {:x 3.0 :y 4.0}]))))

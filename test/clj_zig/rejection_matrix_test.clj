@@ -22,6 +22,12 @@
 (defn- build-code [case]
   (code-from #(spec/build-spec case)))
 
+;; Declared types for element-rejection rows: a scalar-only struct (a valid
+;; slice element) and a buffer-carrying struct (an invalid one).
+(def matrix-types
+  {'Point (layout/describe 'Point '[x :f64 y :f64])
+   'Buf   (layout/describe 'Buf '[media :string] {})})
+
 ;; --- Rejections that surface through build-spec -------------------------
 
 (def spec-rejections
@@ -68,22 +74,31 @@
    {:code :clj-zig/unsupported-bytes       :signature '[a [:bytes [:slice :u8]] :ret :i64]}
    {:code :clj-zig/unsupported-bytes       :signature '[:ret [:bytes :u8]]}
    {:code :clj-zig/unsupported-bytes       :signature '[:ret [:bytes [:slice :i64]]]}
-   ;; a slice/array/ptr/manyptr whose element is not a scalar would validate
-   ;; but crash at marshal time (the marshaller handles scalar elements only),
-   ;; so it is rejected at spec time instead. No silent trap.
-   {:code :clj-zig/unsupported-element     :signature '[xs [:slice Point] :ret :i64]}
-   {:code :clj-zig/unsupported-element     :signature '[xs [:array 3 Point] :ret :i64]}
-   {:code :clj-zig/unsupported-element     :signature '[xs [:ptr Point] :ret :i64]}
-   {:code :clj-zig/unsupported-element     :signature '[xs [:manyptr Point] :ret :i64]}
-   {:code :clj-zig/unsupported-element     :signature '[xs [:manyptr :const Point] :ret :i64]}
-   {:code :clj-zig/unsupported-element     :signature '[:ret [:slice Point]]}
+   ;; a slice/array of a scalar struct is a valid element now (crossed by
+   ;; value), so the element-rejection rows name the shapes still rejected:
+   ;; a pointer to any named type (a :ptr/:manyptr element must be scalar),
+   ;; a slice/array of a buffer-carrying struct (its buffers cannot ride
+   ;; inside a bulk-by-value element), and a nested indirection.
+   {:code :clj-zig/unsupported-element     :signature '[xs [:ptr Point] :ret :i64]
+    :types matrix-types}
+   {:code :clj-zig/unsupported-element     :signature '[xs [:manyptr Point] :ret :i64]
+    :types matrix-types}
+   {:code :clj-zig/unsupported-element     :signature '[xs [:manyptr :const Point] :ret :i64]
+    :types matrix-types}
+   {:code :clj-zig/unsupported-element     :signature '[xs [:slice Buf] :ret :i64]
+    :types matrix-types}
+   {:code :clj-zig/unsupported-element     :signature '[xs [:array 3 Buf] :ret :i64]
+    :types matrix-types}
+   {:code :clj-zig/unsupported-element     :signature '[:ret [:slice Buf]]
+    :types matrix-types}
    {:code :clj-zig/unsupported-element     :signature '[xs [:slice [:slice :u8]] :ret :i64]}
    {:code :clj-zig/unsupported-element     :signature '[:ret [:slice [:slice :u8]]]}])
 
 (deftest spec-rejection-matrix
-  (doseq [{:keys [code signature]} spec-rejections]
+  (doseq [{:keys [code signature types]} spec-rejections]
     (testing (pr-str signature)
-      (is (= code (build-code {:ns 'clj-zig.matrix :name 'f :signature signature}))))))
+      (is (= code (build-code {:ns 'clj-zig.matrix :name 'f :signature signature
+                               :types types}))))))
 
 (deftest spec-rejection-codes-are-distinct-where-expected
   ;; Every documented rejection arm appears in the table.
