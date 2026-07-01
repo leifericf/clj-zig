@@ -75,6 +75,15 @@
     (testing "an import outside the body's directory is left for zig to reject"
       (is (= [] (rels (imports/closure body (slurp body))))))))
 
+(deftest closure-keeps-a-sibling-whose-name-starts-with-two-dots
+  ;; A directory literally named `..drafts` is inside the body's directory;
+  ;; it relativizes to `..drafts/util.zig`, which starts with `..` but is not
+  ;; an escape by segment. It must be kept, not dropped as if it climbed out.
+  (let [dir  (scratch-dir)
+        body (write dir "geometry.zig" "const d = @import(\"..drafts/util.zig\");\n")]
+    (write dir "..drafts/util.zig" "pub const K = 1;\n")
+    (is (= ["..drafts/util.zig"] (rels (imports/closure body (slurp body)))))))
+
 (deftest closure-leaves-a-missing-import-for-the-compiler
   (let [dir  (scratch-dir)
         body (write dir "a.zig" "const gone = @import(\"missing.zig\");\n")]

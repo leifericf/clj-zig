@@ -48,11 +48,22 @@
 (defn- relativize [^java.io.File dir ^java.io.File f]
   (to-slash (str (.relativize (.toPath dir) (.toPath f)))))
 
+(defn- escapes?
+  "True when `rel` (a path relative to the body directory, in slash form)
+  climbs above its base: it is exactly `..`, or begins with `../` (or
+  `..\\` on Windows). A name that merely starts with two dots -- say
+  `..drafts/util.zig`, a real sibling -- is NOT an escape and must be
+  kept, so the check is by path segment, not by raw character prefix."
+  [rel]
+  (or (= rel "..")
+      (str/starts-with? rel "../")
+      (str/starts-with? rel "..\\")))
+
 (defn- within?
   "True when `f` is at or below `dir`, so it is inside the module path
   rooted there. A file above `dir` relativizes to a `..`-prefixed path."
   [^java.io.File dir ^java.io.File f]
-  (not (str/starts-with? (relativize dir f) "..")))
+  (not (escapes? (relativize dir f))))
 
 (defn closure
   "The relative `.zig` files a file-mode body imports, reproduced as paths
