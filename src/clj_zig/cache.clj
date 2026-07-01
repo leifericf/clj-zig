@@ -51,6 +51,17 @@
   [x]
   (subs (sha256-hex (canonical x)) 0 fingerprint-width))
 
+(defn- present?
+  "True when `x` should enter the content hash: non-nil, and when it is a
+  collection or string, non-empty. Safer than `seq` on the gate, which
+  throws on a non-seqable value (a number, a keyword); `present?` keeps
+  such a value so `canonical` renders it."
+  [x]
+  (cond
+    (nil? x)                        false
+    (or (coll? x) (string? x))      (some? (seq x))
+    :else                           true))
+
 (defn cache-key
   "The content hash for these build inputs. The generated `source` enters
   the hash directly, so a change to the source generator yields a new key
@@ -64,9 +75,9 @@
   (fingerprint (cond-> {:spec spec :body body :source source
                         :options options :zig-version zig-version
                         :target target}
-                 (seq deps)      (assoc :deps deps)
-                 (seq aux-files) (assoc :aux aux-files)
-                 (seq modules)   (assoc :modules modules))))
+                 (present? deps)      (assoc :deps deps)
+                 (present? aux-files) (assoc :aux aux-files)
+                 (present? modules)   (assoc :modules modules))))
 
 ;; --- Pure: external-module fingerprint primitives (ADR 34) ----------------
 

@@ -69,6 +69,15 @@
     (testing "no modules hashes exactly as before"
       (is (= base (cache/cache-key (assoc (inputs nil "return x + y;") :modules nil)))))))
 
+(deftest cache-key-hashes-a-non-seqable-field-without-crashing
+  (testing "a non-seqable :deps (a number) canonicalizes instead of throwing"
+    (let [k5  (cache/cache-key (assoc (inputs nil "return x + y;") :deps 5))
+          k6  (cache/cache-key (assoc (inputs nil "return x + y;") :deps 6))]
+      (is (re-matches #"[0-9a-f]{16}" k5))
+      (is (= k5 (cache/cache-key (assoc (inputs nil "return x + y;") :deps 5)))
+          "the same non-seqable value is deterministic")
+      (is (not= k5 k6) "a different non-seqable value shifts the key"))))
+
 (deftest module-fingerprint-memoizes-behind-the-dir-signature
   (let [tree  {"src/a.zig" {:content "A" :size 1 :mtime 10}
                "src/b.zig" {:content "B" :size 1 :mtime 20}}
