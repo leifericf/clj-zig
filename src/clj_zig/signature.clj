@@ -19,12 +19,16 @@
   Type forms are preserved verbatim; `clj-zig.type` normalizes them. A map
   binding carries Clojure-side destructuring that lowers to native
   scalars before the call; its argument is marked
-  `:destructured? true`.")
+  `:destructured? true`. A trailing `& binding type` is a rest argument,
+  sugar for a const slice of the named carrier scalar; its argument is
+  marked `:rest? true`."
+  (:require [clj-zig.type :as type]))
 
-(declare normalize-arg fail)
+(declare normalize-arg parse-args-region fail)
 
 (def ^:private rest-marker
-  "Reserved for future Clojure-style rest arguments."
+  "The Clojure-style rest-argument marker. A trailing `& binding type`
+  lowers to a const slice of the named carrier scalar."
   '&)
 
 (defn normalize
@@ -34,9 +38,6 @@
   (when-not (vector? signature)
     (fail signature :clj-zig/invalid-signature
           "A signature must be a vector." {:found (type signature)}))
-  (when (some #{rest-marker} signature)
-    (fail signature :clj-zig/reserved-rest-arg
-          "& is reserved for future rest arguments and is not yet supported." {}))
   (let [n       (count signature)
         ret-ats (vec (keep-indexed (fn [i x] (when (= x :ret) i)) signature))]
     (cond
@@ -58,11 +59,47 @@
 
       :else
       (let [args-region (subvec signature 0 (first ret-ats))]
-        (when (odd? (count args-region))
-          (fail signature :clj-zig/uneven-signature
-                "Each argument needs a binding and a type." {}))
-        {:args (mapv #(normalize-arg signature %) (partition 2 args-region))
+        {:args (:args (parse-args-region signature args-region))
          :ret  (peek signature)}))))
+
+(defn- parse-args-region
+  "Walk the args region (everything before `:ret`) into a vector of
+  normalized args. Leading binding/type pairs are consumed in order; a
+  trailing `& binding type` becomes one rest-flagged arg lowered to a
+  const slice of the named carrier scalar. Throws a diagnostic for a
+  misplaced `&`, an incomplete pair, a non-symbol rest binding, or a rest
+  element that is not a carrier scalar."
+  [signature region]
+  (loop [i 0 args []]
+    (cond
+      (>= i (count region))
+      {:args args}
+
+      (= (nth region i) rest-marker)
+      (let [rest-start (inc i)]
+        (when-not (= rest-start (- (count region) 2))
+          (fail signature :clj-zig/misplaced-rest
+                "& must introduce the final rest argument: & binding type." {}))
+        (let [binding (nth region rest-start)
+              elem    (nth region (inc rest-start))]
+          (when-not (symbol? binding)
+            (fail signature :clj-zig/invalid-binding
+                  "A rest argument's binding must be a symbol." {:binding binding}))
+          (when-not (type/has-carrier? elem)
+            (fail signature :clj-zig/unsupported-rest-element
+                  (str "A rest argument's element must be a carrier scalar; "
+                       "& cannot carry " (pr-str elem) ".")
+                  {:element elem}))
+          {:args (conj args (-> (normalize-arg signature [binding [:slice :const elem]])
+                                (assoc :rest? true)))}))
+
+      :else
+      (if (>= (inc i) (count region))
+        (fail signature :clj-zig/uneven-signature
+              "Each argument needs a binding and a type." {})
+        (recur (+ i 2)
+               (conj args (normalize-arg signature
+                                         [(nth region i) (nth region (inc i))])))))))
 
 (defn- normalize-arg
   "Normalize one `[binding type]` pair. A map binding is Clojure-side

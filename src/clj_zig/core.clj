@@ -20,7 +20,8 @@
             [clj-zig.signature :as signature]
             [clj-zig.source :as source]
             [clj-zig.spec :as spec]
-            [clj-zig.compiler :as compiler]))
+            [clj-zig.compiler :as compiler]
+            [clj-zig.type :as type]))
 
 ;; --- Namespace-scoped Zig declarations ----------------------------------
 
@@ -407,6 +408,45 @@
   [binding]
   (if (and (symbol? binding) (namespace binding)) (symbol (name binding)) binding))
 
+(defn- rest-array-ctor
+  "The Clojure primitive-array constructor symbol for a rest argument's
+  element scalar, matching the FFM carrier the slice marshaller copies
+  from. The element must be a carrier scalar (validated at signature
+  time)."
+  [elem-kw]
+  (let [{:keys [category bits]} (type/scalar-info elem-kw)]
+    (case category
+      :int   (case bits 8 'byte-array 16 'short-array 32 'int-array 64 'long-array)
+      :float (case bits 32 'float-array 64 'double-array)
+      :bool  'boolean-array)))
+
+(defn- build-arglist
+  "The Clojure-facing arglist for a normalized signature: each binding
+  with its namespace stripped, and `&` inserted before a rest argument so
+  the wrapper is variadic."
+  [norm]
+  (if (some :rest? (:args norm))
+    (vec (mapcat (fn [a]
+                   (let [b (simple-binding (:binding a))]
+                     (if (:rest? a) ['& b] [b])))
+                 (:args norm)))
+    (mapv #(simple-binding (:binding %)) (:args norm))))
+
+(defn- rest-wrap
+  "The variadic wrapper for a rest-arg signature: the rest binding is
+  boxed into its element's primitive array before the invoker runs, so
+  the slice marshaller receives the carrier it expects. `call-args` names
+  the invoker's parameters (the rest binding among them); the let shadows
+  that binding with the boxed array."
+  [arglist call-args rest-arg]
+  (let [rest-sym (simple-binding (:binding rest-arg))
+        elem-kw  (nth (:type rest-arg) 2)
+        ctor     (rest-array-ctor elem-kw)]
+    `(fn [invoke#]
+       (fn ~arglist
+         (let [~rest-sym (~ctor ~rest-sym)]
+           (invoke# ~@call-args))))))
+
 (defn- prepare-signature
   "Ready a raw `defnz` signature for the pipeline: replace each
   type-position symbol that names a type-builder Var with the form it
@@ -489,21 +529,29 @@
                        :var fn-name})))
     (let [the-ns        (ns-name *ns*)
           defining-file *file*
-          signature     (if infer?
+          raw-signature (if infer?
                           (infer/infer-signature
                            (:text (source/resolve-and-read
                                    defining-file (source/namespace-zig-file defining-file)))
                            (str/replace (name fn-name) "-" "_"))
                           signature)
-          signature     (prepare-signature the-ns signature)
+          ;; The rest flag rides on the raw signature's normalization;
+          ;; prepare-signature flattens through a vector that drops it, so
+          ;; arglist and wrap read from raw-norm and the spec reads from
+          ;; the prepared signature.
+          raw-norm      (signature/normalize raw-signature)
+          rest-arg      (some #(when (:rest? %) %) (:args raw-norm))
+          signature     (prepare-signature the-ns raw-signature)
           spec          (spec/build-spec {:ns the-ns :name fn-name :signature signature
                                           :types (types-in the-ns)})
-          arglist       (mapv :binding (:args (signature/normalize signature)))
+          arglist       (build-arglist raw-norm)
           call-args     (mapv :binding (:params spec))
           var-meta      (merge (when docstring {:doc docstring})
                                attr-map
                                {:arglists (list arglist)})
-          wrap          `(fn [invoke#] (fn ~arglist (invoke# ~@call-args)))
+          wrap          (if rest-arg
+                          (rest-wrap arglist call-args rest-arg)
+                          `(fn [invoke#] (fn ~arglist (invoke# ~@call-args))))
           descriptor    (if (or bodyless? infer?)
                           `{:zig/file (source/namespace-zig-file ~defining-file)}
                           body)]

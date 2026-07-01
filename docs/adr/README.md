@@ -53,3 +53,4 @@ Later ADRs capture decisions made during development. Written via the
 | [39](39-scalar-hot-path-call-mode.md) | A scalar-only hot-path call mode for defnz |
 | [40](40-namespaces-divide-by-domain.md) | Namespaces divide by domain |
 | [41](41-per-function-optimize-mode.md) | A per-function optimize mode for defnz |
+| [42](42-rest-arguments-lower-to-const-slice.md) | Rest arguments lower to a trailing const slice |

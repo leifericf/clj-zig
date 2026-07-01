@@ -66,9 +66,38 @@
   (is (= :clj-zig/invalid-binding
          (error-code #(sig/normalize '[:i64 x :ret :i64])))))
 
-(deftest reserves-rest-argument
-  (is (= :clj-zig/reserved-rest-arg
-         (error-code #(sig/normalize '[x :i64 & more :ret :i64])))))
+(deftest lowers-rest-argument-to-a-const-slice
+  (testing "a trailing & binding type lowers to a const slice flagged :rest?"
+    (is (= '{:args [{:binding x :type :i64}
+                    {:binding rest :type [:slice :const :i64] :rest? true}]
+             :ret :i64}
+           (sig/normalize '[x :i64 & rest :i64 :ret :i64]))))
+  (testing "an all-rest signature has no leading pairs"
+    (is (= '{:args [{:binding rest :type [:slice :const :f64] :rest? true}]
+             :ret :f64}
+           (sig/normalize '[& rest :f64 :ret :f64])))))
+
+(deftest rejects-misplaced-rest-marker
+  (testing "& must be followed by exactly a binding and type, then :ret"
+    (is (= :clj-zig/misplaced-rest
+           (error-code #(sig/normalize '[x :i64 & rest :i64 y :i64 :ret :i64])))))
+  (testing "a lone & with no binding and type"
+    (is (= :clj-zig/misplaced-rest
+           (error-code #(sig/normalize '[x :i64 & :ret :i64])))))
+  (testing "a second & is caught by the trailing-position rule"
+    (is (= :clj-zig/misplaced-rest
+           (error-code #(sig/normalize '[& a :i64 & b :i64 :ret :i64]))))))
+
+(deftest rejects-non-scalar-rest-element
+  (testing "a named-type element is not a carrier scalar"
+    (is (= :clj-zig/unsupported-rest-element
+           (error-code #(sig/normalize '[& rest Point :ret :i64])))))
+  (testing "a non-carrier scalar (i128) is rejected"
+    (is (= :clj-zig/unsupported-rest-element
+           (error-code #(sig/normalize '[& rest :i128 :ret :i64])))))
+  (testing "a compound element is rejected"
+    (is (= :clj-zig/unsupported-rest-element
+           (error-code #(sig/normalize '[& rest [:slice :i64] :ret :i64]))))))
 
 (deftest captures-clojure-side-destructuring
   (testing "a map binding with a field-map type is captured for Clojure-side lowering"

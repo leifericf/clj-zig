@@ -30,7 +30,7 @@
   contract validation, so all three layers' rejections show up here."
   [;; signature shape
    {:code :clj-zig/invalid-signature  :signature '(a :i64 :ret :i64)}
-   {:code :clj-zig/reserved-rest-arg  :signature '[a :i64 & b :ret :i64]}
+   {:code :clj-zig/misplaced-rest      :signature '[a :i64 & b :ret :i64]}
    {:code :clj-zig/missing-ret        :signature '[a :i64]}
    {:code :clj-zig/extra-ret          :signature '[a :i64 :ret :i64 :ret :i64]}
    {:code :clj-zig/empty-ret          :signature '[a :i64 :ret]}
@@ -87,7 +87,7 @@
 
 (deftest spec-rejection-codes-are-distinct-where-expected
   ;; Every documented rejection arm appears in the table.
-  (is (= #{:clj-zig/invalid-signature :clj-zig/reserved-rest-arg :clj-zig/missing-ret
+  (is (= #{:clj-zig/invalid-signature :clj-zig/misplaced-rest :clj-zig/missing-ret
            :clj-zig/extra-ret :clj-zig/empty-ret :clj-zig/misplaced-ret
            :clj-zig/uneven-signature :clj-zig/invalid-binding :clj-zig/unknown-type
            :clj-zig/unknown-scalar :clj-zig/malformed-compound :clj-zig/void-argument

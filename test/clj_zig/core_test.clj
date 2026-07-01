@@ -70,3 +70,24 @@
     (testing "a failed recompile throws but keeps the last good binding"
       (is (thrown? clojure.lang.ExceptionInfo (define "return x + ;")))
       (is (= 105 ((resolve 'kg-fn) 5))))))
+
+(deftest rest-argument-lowers-to-a-slice
+  (testing "a variadic scalar function boxes the rest into a long array"
+    (eval `(defnz ~'variadic-max
+             [~'x :i64 ~'& ~'more :i64 :ret :i64]
+             "var m = x;
+              for (more) |v| { if (v > m) m = v; }
+              return m;"))
+    (let [f (resolve 'variadic-max)]
+      (is (= 4 (f 1 2 3 4)))
+      (is (= 7 (f 7)))
+      (is (= -1 (f -1 -2 -3)))))
+  (testing "a rest of :f64 boxes doubles"
+    (eval `(defnz ~'variadic-sum
+             [~'& ~'xs :f64 :ret :f64]
+             "var t: f64 = 0;
+              for (xs) |v| t += v;
+              return t;"))
+    (let [f (resolve 'variadic-sum)]
+      (is (= 10.0 (f 1.0 2.0 3.0 4.0)))
+      (is (= 0.0 (f))))))
