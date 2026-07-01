@@ -309,3 +309,57 @@
   (testing "the owned field is freed each call (volume leak lane)"
     (is (every? #(= "hello" (:owned_tag %))
                 (repeatedly 200 #(make-mixed "hello"))))))
+
+;; --- Adversarial probes: feature combinations --------------------------
+
+;; Probe: array of buffer-carrying structs as argument (Phase C + Phase E)
+(defnz outer-array-sum
+  "Sum the count field of each Outer in a fixed-size array."
+  [xs [:array 2 Outer]
+   :ret :i64]
+  "var t: i64 = 0;
+   for (xs) |o| t += o.count;
+   return t;")
+
+(deftest probe-array-of-buffer-structs-arg
+  (is (= 3 (outer-array-sum [{:label "a" :count 1 :detail {:tag "x" :n 0}}
+                             {:label "b" :count 2 :detail {:tag "y" :n 1}}]))))
+
+;; Probe: const slice of nested buffer structs as argument (Phase C + Phase E)
+(defnz outer-slice-tag-len
+  "Return the total length of all label strings in a const slice of Outers."
+  [xs [:slice :const Outer]
+   :ret :i64]
+  "var t: i64 = 0;
+   for (xs) |o| t += @intCast(o.label.len);
+   return t;")
+
+(deftest probe-const-slice-of-nested-buffer-structs-arg
+  (is (= 6 (outer-slice-tag-len [{:label "ab" :count 0 :detail {:tag "x" :n 0}}
+                                 {:label "cdef" :count 1 :detail {:tag "y" :n 1}}])))
+  (is (= 0 (outer-slice-tag-len []))))
+
+;; Probe: optional struct with nested buffer fields (Phase D + Phase E)
+(defnz maybe-outer
+  "Return an Outer with nested Inner, or null."
+  [found :bool
+   :ret  [:optional Outer]]
+  "return if (found) blk: {
+       const p = std.heap.c_allocator.create(Outer) catch @panic(\"oom\");
+       const lab = std.heap.c_allocator.alloc(u8, 2) catch @panic(\"oom\");
+       @memcpy(lab, \"hi\");
+       const tg = std.heap.c_allocator.alloc(u8, 3) catch @panic(\"oom\");
+       @memcpy(tg, \"tag\");
+       p.* = .{ .label = lab, .count = 42, .detail = .{ .tag = tg, .n = 7 } };
+       break :blk p;
+   } else null;")
+
+(deftest probe-optional-struct-with-nested-buffers
+  (testing "present value reads nested buffer fields"
+    (let [r (maybe-outer true)]
+      (is (= {:label "hi" :count 42 :detail {:tag "tag" :n 7}} r))))
+  (testing "nil returns nil"
+    (is (nil? (maybe-outer false))))
+  (testing "nested buffers are freed in volume"
+    (is (every? #(= "tag" (get-in % [:detail :tag]))
+                (repeatedly 200 #(maybe-outer true))))))
