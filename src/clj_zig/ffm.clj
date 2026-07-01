@@ -602,25 +602,27 @@
              ;; to free (no leak). The result rebuilds as a record via its
              ;; map-> factory when the named type is a defrecordz, else a
              ;; plain map.
-             eu-struct?
-             (let [desc   (:layout (:of ret))
-                   out    ^MemorySegment (.allocate arena (long (:size desc))
-                                                    (long (:align desc)))
-                   errbuf ^MemorySegment (.allocate arena error-buffer-bytes 1)
-                   errlen ^MemorySegment (.allocate arena 8 8)]
-               (->> (concat base-carriers [errbuf errlen out])
-                    (object-array)
-                    (.invokeWithArguments handle))
-               (copy-back!)
-               (let [n (.get errlen ValueLayout/JAVA_LONG 0)]
-                 (if (zero? n)
-                   (try
-                     (let [m (read-struct out desc)]
-                       (if record-factory (record-factory m) m))
-                     (finally
-                       (when free-handle
-                         (.invokeWithArguments free-handle (object-array [out])))))
-                   (read-error-name errbuf n))))
+              eu-struct?
+              (let [desc   (:layout (:of ret))
+                    out    ^MemorySegment (.allocate arena (long (:size desc))
+                                                     (long (:align desc)))
+                    errbuf ^MemorySegment (.allocate arena error-buffer-bytes 1)
+                    errlen ^MemorySegment (.allocate arena 8 8)]
+                (->> (concat base-carriers [errbuf errlen out])
+                     (object-array)
+                     (.invokeWithArguments handle))
+                (let [n (.get errlen ValueLayout/JAVA_LONG 0)]
+                  (if (zero? n)
+                    (try
+                      (copy-back!)
+                      (let [m (read-struct out desc)]
+                        (if record-factory (record-factory m) m))
+                      (finally
+                        (when free-handle
+                          (.invokeWithArguments free-handle (object-array [out])))))
+                    (do
+                      (copy-back!)
+                      (read-error-name errbuf n)))))
 
              (= :error-union (:kind ret))
              (let [errbuf ^MemorySegment (.allocate arena error-buffer-bytes 1)
@@ -653,48 +655,51 @@
             ;; allocated (mirror of c8a822b for slices). A borrowed record has
             ;; no shim. The result rebuilds as a record via its map-> factory
             ;; when the named type is a defrecordz, else a plain map.
-            owned-rec?
-            (let [desc (:layout (:of ret))
-                  out  ^MemorySegment (.allocate arena (long (:size desc))
-                                                 (long (:align desc)))]
-              (->> (concat base-carriers [out])
-                   (object-array)
-                   (.invokeWithArguments handle))
-              (copy-back!)
-              (try
-                (let [m (read-struct out desc)]
-                  (if record-factory (record-factory m) m))
-                (finally
-                  (when free-handle
-                    (.invokeWithArguments free-handle (object-array [out]))))))
+             owned-rec?
+             (let [desc (:layout (:of ret))
+                   out  ^MemorySegment (.allocate arena (long (:size desc))
+                                                  (long (:align desc)))]
+               (->> (concat base-carriers [out])
+                    (object-array)
+                    (.invokeWithArguments handle))
+               (try
+                 (copy-back!)
+                 (let [m (read-struct out desc)]
+                   (if record-factory (record-factory m) m))
+                 (finally
+                   (when free-handle
+                     (.invokeWithArguments free-handle (object-array [out]))))))
 
             ;; An owned or borrowed slice return writes its pointer and
             ;; length to two out-params. clj-zig copies the elements out (a
             ;; :bytes return as one byte[], a :string return decoded as UTF-8
             ;; with replacement, any other slice as a vector), then frees
             ;; owned memory through the shim.
-            owned-slice?
-            (let [pout ^MemorySegment (.allocate arena 8 8)
-                  lout ^MemorySegment (.allocate arena 8 8)]
-              (->> (concat base-carriers [pout lout])
-                   (object-array)
-                   (.invokeWithArguments handle))
-              (copy-back!)
-              (let [addr (.get pout ValueLayout/JAVA_LONG 0)
-                    len  (.get lout ValueLayout/JAVA_LONG 0)]
-                ;; Free owned memory in a finally so a read fault (a wild
-                ;; pointer, or an OOM on a huge length) cannot leak the slice
-                ;; the body allocated (ADR 21, mirror of c8a822b). A borrowed
-                ;; return has no shim. A :string read decodes UTF-8 with the
-                ;; JVM replacement action, so invalid bytes never throw here.
-                (try
-                  (case (:kind ret)
-                    :bytes  (read-bytes addr len)
-                    :string (read-utf8-string addr len)
-                    (read-slice-values addr len (-> ret :of :of)))
-                  (finally
-                    (when free-handle
-                      (.invokeWithArguments free-handle (object-array [addr len])))))))
+             owned-slice?
+             (let [pout ^MemorySegment (.allocate arena 8 8)
+                   lout ^MemorySegment (.allocate arena 8 8)]
+               (->> (concat base-carriers [pout lout])
+                    (object-array)
+                    (.invokeWithArguments handle))
+               (let [addr (.get pout ValueLayout/JAVA_LONG 0)
+                     len  (.get lout ValueLayout/JAVA_LONG 0)]
+                 ;; Free owned memory in a finally so a read fault (a wild
+                 ;; pointer, or an OOM on a huge length) cannot leak the slice
+                 ;; the body allocated (ADR 21, mirror of c8a822b). copy-back!
+                 ;; runs inside the same try: the native call already allocated
+                 ;; the owned slice, so a copy-back fault must still free. A
+                 ;; borrowed return has no shim. A :string read decodes UTF-8
+                 ;; with the JVM replacement action, so invalid bytes never
+                 ;; throw here.
+                 (try
+                   (copy-back!)
+                   (case (:kind ret)
+                     :bytes  (read-bytes addr len)
+                     :string (read-utf8-string addr len)
+                     (read-slice-values addr len (-> ret :of :of)))
+                   (finally
+                     (when free-handle
+                       (.invokeWithArguments free-handle (object-array [addr len])))))))
 
             ;; A struct return is written through a caller-allocated
             ;; out-segment, then read back into a Clojure map. An enum
