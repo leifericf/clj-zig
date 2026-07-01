@@ -74,7 +74,11 @@
              (compile/attribute-failure "/cache/x/source.zig:2:1: error: bad" roots))))
     (testing "with no modules a failure is always the wrapper"
       (is (= {:zig/origin :wrapper}
-             (compile/attribute-failure "/cache/x/source.zig:2:1: error" nil))))))
+             (compile/attribute-failure "/cache/x/source.zig:2:1: error" nil))))
+    (testing "a nil root never matches, so it is not mis-attributed"
+      (is (= {:zig/origin :wrapper}
+             (compile/attribute-failure "/anywhere/source.zig:2:1: error: bad"
+                                        {"mymod" nil}))))))
 
 (deftest compiles-a-scalar-function
   (let [dir    (scratch-dir)

@@ -83,7 +83,7 @@
   Pure."
   [stderr module-roots]
   (or (some (fn [[name root]]
-              (when (str/includes? stderr (str (.getParent (io/file ^String root))))
+              (when (and root (str/includes? stderr (str (.getParent (io/file ^String root)))))
                 {:zig/origin :module :zig/module name}))
             module-roots)
       {:zig/origin :wrapper}))
