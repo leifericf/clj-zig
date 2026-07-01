@@ -36,7 +36,7 @@
         (#'bake/bake-function! out info bake/default-targets)))
     (let [msg (.toString err)]
       (is (str/includes? msg "host-only"))
-      (is (not (str/includes? msg (cache/target-triple)))
+      (is (not (str/includes? msg (pr-str (cache/target-triple))))
           "the host id is baked, not listed as skipped"))))
 
 (deftest bakes-a-namespace-for-the-host
