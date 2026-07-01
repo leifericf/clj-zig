@@ -41,3 +41,43 @@ rejected as a correctness trap that hides data loss. Synthesizing the
 128-bit integers and the half and extended floats from several carriers
 or a byte array was rejected as marshalling complexity beyond the proof
 of concept; the types can be added later behind the same contract.
+
+## Amendment (2026-07-01): the FFM carrier limit is an ABI limit, not
+just a width limit
+
+An attempt to ship `:f16` as a `Double`-facing scalar (compress on the
+way in via `Float/floatToFloat16`, expand on the way out via
+`Float/float16ToFloat`, carried over the wire as `JAVA_SHORT`) produced
+silent wrong answers: a body that doubled or squared its `f16` argument
+returned the argument unchanged. The cause is an ABI mismatch, not a
+width problem. `f16` is a floating-point C-ABI type: on aarch64 and
+x86_64-SSE it is passed and returned in an FP register (s0 / xmm0). FFM
+has no half-float layout, so the only available carrier, `JAVA_SHORT`,
+tells the linker to route the value through a general-purpose register.
+Zig reads its argument from the FP register and writes its result there,
+so the GPR the JVM reads still holds the input bits. The identity call
+"worked" only because nothing overwrote that GPR.
+
+The consequence is that `:f16` cannot cross as a scalar argument or
+return on stable FFM, regardless of any bit-cast on the Clojure side.
+The same constraint shapes the other carrierless types:
+
+- `:f16` is blocked until FFM ships a half-float layout that uses the FP
+  ABI. A struct field of `:f16` reads correctly (the field lives in
+  memory, not a register), but a partial field-only support is a
+  confusion trap and is deliberately not added.
+- `:f80` and `:f128` are blocked for the same reason plus an additional
+  one: the JVM has no value type for extended or quad precision, so the
+  Clojure-side representation is unresolved too.
+- `:i128` and `:u128` are the one case where the integer ABI could
+  match (a pair of general-purpose registers on aarch64 and x86_64),
+  so a by-value struct carrier of two `JAVA_LONG`s is feasible in
+  principle. It is a deep change -- a MemorySegment carrier on the
+  general path, BigInteger two's-complement conversion with platform
+  endianness, and exclusion from the scalar hot path (ADR 39) -- and is
+  deferred to its own focused slice rather than rushed alongside other
+  work.
+
+The rejection at spec time stands for all five, now with the recorded
+reason: it is not marshalling complexity the project chose to skip, but
+a carrier FFM does not provide.
