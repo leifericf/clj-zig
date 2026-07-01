@@ -74,25 +74,27 @@
    {:code :clj-zig/unsupported-bytes       :signature '[a [:bytes [:slice :u8]] :ret :i64]}
    {:code :clj-zig/unsupported-bytes       :signature '[:ret [:bytes :u8]]}
    {:code :clj-zig/unsupported-bytes       :signature '[:ret [:bytes [:slice :i64]]]}
-   ;; a slice/array of a scalar struct is a valid element now (crossed by
-   ;; value), so the element-rejection rows name the shapes still rejected:
-   ;; a pointer to any named type (a :ptr/:manyptr element must be scalar),
-   ;; a slice/array of a buffer-carrying struct (its buffers cannot ride
-   ;; inside a bulk-by-value element), and a nested indirection.
-   {:code :clj-zig/unsupported-element     :signature '[xs [:ptr Point] :ret :i64]
-    :types matrix-types}
-   {:code :clj-zig/unsupported-element     :signature '[xs [:manyptr Point] :ret :i64]
-    :types matrix-types}
-   {:code :clj-zig/unsupported-element     :signature '[xs [:manyptr :const Point] :ret :i64]
-    :types matrix-types}
-   {:code :clj-zig/unsupported-element     :signature '[xs [:slice Buf] :ret :i64]
-    :types matrix-types}
-   {:code :clj-zig/unsupported-element     :signature '[xs [:array 3 Buf] :ret :i64]
-    :types matrix-types}
-   {:code :clj-zig/unsupported-element     :signature '[:ret [:slice Buf]]
-    :types matrix-types}
-   {:code :clj-zig/unsupported-element     :signature '[xs [:slice [:slice :u8]] :ret :i64]}
-   {:code :clj-zig/unsupported-element     :signature '[:ret [:slice [:slice :u8]]]}])
+    ;; a slice/array of a scalar struct is a valid element now (crossed by
+    ;; value), so the element-rejection rows name the shapes still rejected:
+    ;; a pointer to any named type (a :ptr/:manyptr element must be scalar),
+    ;; an argument slice/array of a buffer-carrying struct (the marshaller
+    ;; writes extern slots and cannot lay out a nice struct's buffers there),
+    ;; a borrowed slice of one (the wrapper's wire slab would leak with no
+    ;; free shim), and a nested indirection.
+    {:code :clj-zig/unsupported-element     :signature '[xs [:ptr Point] :ret :i64]
+     :types matrix-types}
+    {:code :clj-zig/unsupported-element     :signature '[xs [:manyptr Point] :ret :i64]
+     :types matrix-types}
+    {:code :clj-zig/unsupported-element     :signature '[xs [:manyptr :const Point] :ret :i64]
+     :types matrix-types}
+    {:code :clj-zig/unsupported-element     :signature '[xs [:slice Buf] :ret :i64]
+     :types matrix-types}
+    {:code :clj-zig/unsupported-element     :signature '[xs [:array 3 Buf] :ret :i64]
+     :types matrix-types}
+    {:code :clj-zig/unsupported-borrowed-buffer-slice :signature '[:ret [:borrowed [:slice Buf]]]
+     :types matrix-types}
+    {:code :clj-zig/unsupported-element     :signature '[xs [:slice [:slice :u8]] :ret :i64]}
+    {:code :clj-zig/unsupported-element     :signature '[:ret [:slice [:slice :u8]]]}])
 
 (deftest spec-rejection-matrix
   (doseq [{:keys [code signature types]} spec-rejections]
@@ -110,7 +112,8 @@
            :clj-zig/unsupported-ownership :clj-zig/unsupported-handle
             :clj-zig/unsupported-carrier :clj-zig/unknown-field
             :clj-zig/unknown-type-name :clj-zig/unsupported-bytes
-            :clj-zig/unsupported-element :clj-zig/malformed-error-set}
+             :clj-zig/unsupported-element :clj-zig/malformed-error-set
+             :clj-zig/unsupported-borrowed-buffer-slice}
            (set (map :code spec-rejections)))))
 
 (deftest string-is-not-a-rejection

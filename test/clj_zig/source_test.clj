@@ -164,3 +164,48 @@
                      :library-path (str dir "/librender." (compile/dynamic-library-extension))
                      :ctx          {:var 'app.core/render}}))))
         "the owned-record wrapper and per-field free shim build")))
+
+;; --- Owned slices of buffer-carrying structs (Follow-up 4) ----------------
+
+(def ^:private label-layout
+  (layout/describe 'Label '[tag :string n :i64]))
+
+(defn- label-slice-spec [ownership]
+  {:ns     'app.core
+   :name   'make
+   :symbol (spec/symbol-name 'app.core 'make)
+   :params []
+   :ret    {:kind ownership
+            :of   {:kind :slice :const? false
+                   :of   {:kind :named :name 'Label :layout label-layout}}}})
+
+(deftest owned-buffer-slice-emits-transform-wrapper-and-walking-free-shim
+  (let [src (source/generate (label-slice-spec :owned) "return &[_]Label{};")]
+    (testing "an owned slice pulls std into scope for the slab alloc and free"
+      (is (str/starts-with? src "const std = @import(\"std\");")))
+    (testing "the wire struct expands the buffer field to ptr/len usize words"
+      (is (str/includes? src "const Label__wire = extern struct {"))
+      (is (str/includes? src "tag_ptr: usize,"))
+      (is (str/includes? src "tag_len: usize,"))
+      (is (str/includes? src "n: i64,")))
+    (testing "the inner impl returns the nice record slice"
+      (is (str/includes? src "fn clj_zig_app_2e_core_make__impl() []Label {")))
+    (testing "the wrapper transforms the nice slice into a wire slab"
+      (is (str/includes? src "const __nice = clj_zig_app_2e_core_make__impl();"))
+      (is (str/includes? src "const __wire = std.heap.c_allocator.alloc(Label__wire, __nice.len)"))
+      (is (str/includes? src "std.heap.c_allocator.free(__nice);")))
+    (testing "the copy loop decomposes the buffer field and copies scalars"
+      (is (str/includes? src "for (__nice, 0..) |__src, __i| {"))
+      (is (str/includes? src "__wire[__i].tag_ptr = @intFromPtr(__src.tag.ptr);"))
+      (is (str/includes? src "__wire[__i].tag_len = __src.tag.len;"))
+      (is (str/includes? src "__wire[__i].n = __src.n;")))
+    (testing "the free shim walks the wire slab freeing each buffer then the slab"
+      (is (str/includes? src
+                         (str "export fn clj_zig_app_2e_core_make__free"
+                              "(__ptr: usize, __len: usize) void {")))
+      (is (str/includes? src "for (__slice) |__e| {"))
+      (is (str/includes? src
+                         "std.heap.c_allocator.free(@as([*]u8, @ptrFromInt(__e.tag_ptr))[0..__e.tag_len]);"))
+      (is (str/includes? src "std.heap.c_allocator.free(__slice);")))
+    (testing "the generated source is canonical Zig"
+      (is (zig-fmt-clean? src)))))

@@ -110,6 +110,31 @@
                             (scalar-only-layout? (get-in t [:layout]))))))
                (:fields layout))))
 
+(defn slice-element-layout?
+  "True when a struct layout can serve as a slice or array element that
+  carries its own buffer fields: every field is a carrier scalar (not a
+  128-bit integer), an enum, a nested scalar-only struct, or a buffer
+  field (string, bytes, or a slice of a carrier scalar). Broader than
+  `scalar-only-layout?`: the wrapper transforms the body's nice-record
+  slice into a wire (extern) slab the marshaller reads, and the free shim
+  walks each element freeing its buffers. A nested struct inside an
+  element must still be scalar-only (a buffer nested inside an element
+  would need a recursive free walk, out of scope)."
+  [layout]
+  (and (not (:enum layout))
+       (seq (:fields layout))
+       (every? (fn [f]
+                 (let [t (:type f)]
+                   (or (and (= :scalar (:kind t))
+                            (type/has-carrier? (:name t))
+                            (not (type/i128-type? (:name t))))
+                       (and (= :named (:kind t))
+                            (get-in t [:layout])
+                            (not (get-in t [:layout :enum]))
+                            (scalar-only-layout? (get-in t [:layout])))
+                       (:target f))))
+               (:fields layout))))
+
 (defn- nested-field?
   "True when a normalized field is a nested struct: a named, non-enum
   field whose inner layout is resolved."

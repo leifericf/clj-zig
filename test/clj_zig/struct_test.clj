@@ -133,3 +133,53 @@
 (deftest an-array-of-structs-argument-round-trips
   (is (= {:x 6.0 :y 9.0}
          (array-sum [{:x 1.0 :y 2.0} {:x 2.0 :y 3.0} {:x 3.0 :y 4.0}]))))
+
+;; --- Owned slices of buffer-carrying structs --------------------------------
+;; A buffer-carrying struct element needs the nice-to-wire transform: the body
+;; builds nice records (with real slice fields), the wrapper copies each into a
+;; wire (extern) slab, and a walking free shim frees every element's buffers
+;; then the slab.
+
+(deftypez Label
+  [tag :string
+   n   :i64])
+
+(defnz make-labels
+  "Allocate `count` labels, each with a three-byte c_allocator tag and an
+  index, returned as an owned slice."
+  [count :usize
+   :ret  [:owned [:slice Label]]]
+  "const out = std.heap.c_allocator.alloc(Label, count) catch @panic(\"oom\");
+   for (out, 0..) |*b, i| {
+       const s = std.heap.c_allocator.alloc(u8, 3) catch @panic(\"oom\");
+       @memcpy(s, \"tag\");
+       b.* = .{ .tag = s, .n = @intCast(i) };
+   }
+   return out;")
+
+(defnz make-labels-with-payload
+  "Allocate `count` labels, each tag echoing the caller's bytes and a
+  per-element byte buffer, exercising a :string and a :bytes field together."
+  [text  :string
+   count :usize
+   :ret  [:owned [:slice Label]]]
+  "const out = std.heap.c_allocator.alloc(Label, count) catch @panic(\"oom\");
+   for (out, 0..) |*b, i| {
+       const s = std.heap.c_allocator.alloc(u8, text.len) catch @panic(\"oom\");
+       @memcpy(s, text);
+       b.* = .{ .tag = s, .n = @intCast(i) };
+   }
+   return out;")
+
+(deftest an-owned-slice-of-buffer-carrying-structs-is-a-vector-of-maps
+  (testing "each element's string field is copied out at the right stride"
+    (is (= [{:tag "tag" :n 0} {:tag "tag" :n 1} {:tag "tag" :n 2}]
+           (make-labels 3))))
+  (testing "a caller-supplied string echoes through each element"
+    (is (= [{:tag "abc" :n 0} {:tag "abc" :n 1}]
+           (make-labels-with-payload "abc" 2))))
+  (testing "an empty owned slice returns an empty vector"
+    (is (= [] (make-labels 0))))
+  (testing "the walking free shim frees every element's buffer in volume"
+    (is (every? #(= {:tag "tag" :n 9} (last %))
+                (repeatedly 300 #(make-labels 10))))))

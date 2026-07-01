@@ -33,10 +33,13 @@ element.
   shim; `[:borrowed [:slice Point]]` copies without freeing.
 
 A pointer (`:ptr`, `:manyptr`) must still hold a scalar element. A slice
-or array of a buffer-carrying struct (each instance owning its own
-string or byte buffer) is rejected with `:clj-zig/unsupported-element`;
-the per-element buffer free is a separate protocol deferred to a follow-
-up. A slice of an enum is not added here either.
+or array of a buffer-carrying struct in argument position is rejected
+with `:clj-zig/unsupported-element`: the argument marshaller writes
+extern slots at known offsets and cannot lay out a nice struct's slice
+fields there. An `[:owned [:slice Buf]]` return of one is accepted (see
+the amendment below); a `[:borrowed [:slice Buf]]` return is rejected
+with `:clj-zig/unsupported-borrowed-buffer-slice`. A slice of an enum is
+not added here either.
 
 ## Consequences
 
@@ -66,12 +69,47 @@ doc 10 were written to remove, on both sides of the boundary, and the
 two sides can silently disagree on the layout.
 
 Lift the scalar-only gate to allow per-element buffer fields now.
-Rejected: the free shim would have to walk every element and free every
-buffer before freeing the slab, a distinct ownership protocol that
-deserves its own design. The scalar-interior case covers the motivating
-uses and ships first.
+Implemented as the owned-return amendment below: the free shim walks
+every element and frees every buffer before freeing the slab, a distinct
+ownership protocol with its own nice-to-wire transform. The scalar-
+interior case shipped first; the buffer-carrying case follows.
 
 Copy back mutations into the caller's maps. Rejected: maps are
 immutable, so a copy-back would rebuild the whole collection, and the
 common case is a read-only const slice. A caller that needs the body's
 edits returns an owned slice and reads the result.
+
+## Amendment: owned slices of buffer-carrying structs (Follow-up 4)
+
+Date: 2026-07-02
+
+An `[:owned [:slice Buf]]` return whose element carries buffer fields
+(strings, byte slices, or scalar slices) is now accepted. The body
+builds nice records (a regular Zig struct with real slice fields the FFM
+reader cannot read at known offsets), so the wrapper transforms the
+body's `[]Buf` into a wire (extern) slab:
+
+1. The `__impl` fn returns `[]Buf` (nice records, `c_allocator`).
+2. The wrapper allocates a `[]Buf__wire` slab, iterates the nice slice,
+   and copies each field (scalars and enums direct, each buffer field
+   decomposed to its pointer and length).
+3. The wrapper frees the nice struct array (the slice of records, not
+   the buffers the slice fields point to).
+4. The wrapper writes the wire slab's pointer and length to the
+   out-params.
+5. The walking `__free` shim iterates the wire slab, frees each element's
+   buffer fields (reinterpreting each `usize` pointer back to a slice of
+   its element type), then frees the slab itself.
+
+The FFM reader reads the wire slab at the C-ABI offsets the layout
+descriptor computes, the same path the owned-record return (doc 10)
+uses for a single record. The cost is a transient double allocation
+(the nice slab plus the wire slab) during the call; the nice slab is
+freed before the call returns, so only the wire slab and its element
+buffers live until the free shim runs.
+
+Argument slices and arrays of buffer-carrying structs stay rejected: the
+argument marshaller writes extern slots in the call arena and has no
+path to lay out a nice struct's slice fields. A borrowed slice of one is
+rejected because the wrapper-allocated wire slab would leak with no free
+shim to release it.

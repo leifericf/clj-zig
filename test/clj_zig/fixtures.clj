@@ -178,6 +178,25 @@
     @memcpy(t, label);
     return .{ .tag = t, .n = @intCast(label.len) };")
 
+;; An owned slice of buffer-carrying structs: the wrapper transforms the
+;; body's []Note (nice records with real slice fields) into a wire (extern)
+;; slab, and a walking free shim iterates the slab freeing each element's
+;; tag buffer then the slab itself. Driving it in volume exercises every
+;; per-element free; a buffer left unfreed would accumulate across the run.
+
+(deftypez Note [tag :string n :i64])
+
+(defnz make-notes
+  [count :usize
+   :ret  [:owned [:slice Note]]]
+  "const out = std.heap.c_allocator.alloc(Note, count) catch @panic(\"oom\");
+   for (out, 0..) |*b, i| {
+       const s = std.heap.c_allocator.alloc(u8, 4) catch @panic(\"oom\");
+       @memcpy(s, \"note\");
+       b.* = .{ .tag = s, .n = @intCast(i) };
+   }
+   return out;")
+
 ;; --- Error-union over a struct (P3b): success returns the struct, failure
 ;; returns the error keyword. The combined wire shape carries the existing
 ;; error-union out-params (errbuf, errlen) PLUS the struct out-pointer

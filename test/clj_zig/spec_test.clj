@@ -218,14 +218,23 @@
              (error-code #(spec/build-spec {:ns 'app.core :name 'f
                                              :signature '[xs [:manyptr :const Point] :ret :i64]
                                              :types types})))))
-    (testing "a slice or array of a buffer-carrying struct is rejected"
+    (testing "an argument slice or array of a buffer-carrying struct is rejected"
       (is (= :clj-zig/unsupported-element
              (error-code #(spec/build-spec {:ns 'app.core :name 'f
                                              :signature '[xs [:slice Buf] :ret :i64]
                                              :types types}))))
       (is (= :clj-zig/unsupported-element
              (error-code #(spec/build-spec {:ns 'app.core :name 'f
-                                             :signature '[:ret [:owned [:slice Buf]]]
+                                             :signature '[xs [:array 2 Buf] :ret :i64]
+                                             :types types})))))
+    (testing "an owned slice of a buffer-carrying struct is accepted as a return"
+      (is (map? (spec/build-spec {:ns 'app.core :name 'f
+                                  :signature '[:ret [:owned [:slice Buf]]]
+                                  :types types}))))
+    (testing "a borrowed slice of a buffer-carrying struct is rejected"
+      (is (= :clj-zig/unsupported-borrowed-buffer-slice
+             (error-code #(spec/build-spec {:ns 'app.core :name 'f
+                                             :signature '[:ret [:borrowed [:slice Buf]]]
                                              :types types}))))))
   (testing "a nested indirection element is rejected (the element is not a plain scalar or struct)"
     (is (= :clj-zig/unsupported-element

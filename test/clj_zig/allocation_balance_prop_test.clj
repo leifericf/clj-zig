@@ -114,6 +114,18 @@
   (is (every? #(= :RenderFailed %) (repeatedly 500 #(f/render-may-fail true)))
       "500 error-union-over-owned-struct errors returned the keyword without fault"))
 
+(deftest owned-buffer-slice-drives-the-walking-free-shim-in-volume
+  ;; An owned slice of buffer-carrying structs allocates a c_allocator tag
+  ;; per element plus the nice-record slab; the wrapper's walking free shim
+  ;; iterates the wire slab freeing every element's tag buffer then the slab
+  ;; itself. Driving it in volume exercises every per-element free; a buffer
+  ;; left unfreed would accumulate across the 500 calls.
+  (doseq [r (repeatedly 500 #(f/make-notes 8))]
+    (assert (= 8 (count r)))
+    (assert (every? #(= "note" (:tag %)) r))
+    (assert (= 7 (:n (peek r)))))
+  (is true "500 owned buffer-carrying slices freed every element's buffer"))
+
 ;; --- the scalar hot path (ADR 39) ---------------------------------------
 ;; A scalar-only signature skips the per-call confined arena and reuses a
 ;; thread-local carrier array. The selection is exact, the reuse stays

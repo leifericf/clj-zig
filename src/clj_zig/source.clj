@@ -107,7 +107,10 @@
                           {:level :error :error/code :clj-zig/entry-name-needed
                            :name (:name spec)}))))))
 
-(declare zig-type pointee pointer-type error-union-struct-return?)
+(declare zig-type pointee pointer-type error-union-struct-return?
+         buffer-element wire-struct-name wire-struct
+         file-owned-buffer-slice file-simple-slice-ownership
+         generate-owned-buffer-slice)
 
 (defn- zig-type
   "The Zig type name for a normalized boundary type. Handles scalars,
@@ -276,13 +279,28 @@
     :string {:const? false :of {:kind :scalar :name :u8}}
     (:of ret)))
 
-(defn- generate-ownership
+(defn- buffer-carrying-slice-element?
+  "True when a slice element is a named struct with at least one buffer
+  field. Such an element needs the nice-to-wire transform: the body
+  builds nice records (with real slice fields the FFM reader cannot read
+  at known offsets), so the wrapper copies each into a wire (extern) slab
+  and a walking free shim releases each element's buffers then the slab."
+  [elem]
+  (and (= :named (:kind elem))
+       (let [layout (:layout elem)]
+         (and layout
+              (not (:enum layout))
+              (some :target (:fields layout))))))
+
+(defn- generate-simple-slice-ownership
   "An inner impl fn holding the user body returns a slice; the exported
   wrapper writes the slice's pointer and length to two out-params. An
   `:owned` return also emits a free shim and a `std` import: the body
   allocates with `std.heap.c_allocator` and the shim frees it after the
   caller copies the elements out. A `:string` return lowers to the same
-  `[]u8` shape and always carries the free shim."
+  `[]u8` shape and always carries the free shim. Used for scalar and
+  scalar-only-struct elements; buffer-carrying struct elements take the
+  transform path."
   [{:keys [params ret] sym :symbol} body]
   (let [params-str (str/join ", " (mapcat param-decls params))
         args-str   (str/join ", " (mapcat param-args params))
@@ -304,6 +322,80 @@
                 "    const __p: [*]" elem-t " = @ptrFromInt(__ptr);\n"
                 "    std.heap.c_allocator.free(__p[0..__len]);\n"
                 "}\n")))))
+
+(defn- buffer-slice-copy-stmts
+  "The statements copying one nice record `__src` into the wire element
+  `__wire[__i]`, used inside the transform loop. A scalar or enum field
+  is assigned directly; a buffer field decomposes into its pointer and
+  length."
+  [layout]
+  (mapcat (fn [{:keys [name] :as f}]
+            (if (:target f)
+              [(str "        __wire[__i]." name "_ptr = @intFromPtr(__src." name ".ptr);")
+               (str "        __wire[__i]." name "_len = __src." name ".len;")]
+              [(str "        __wire[__i]." name " = __src." name ";")]))
+          (:fields layout)))
+
+(defn- buffer-slice-free-stmts
+  "The statements freeing one wire element's buffer fields, used inside
+  the walking free shim's loop body over the wire slab."
+  [layout]
+  (for [{fname :name t :type} (filter :target (:fields layout))]
+    (let [elem (buffer-element t)]
+      (str "        std.heap.c_allocator.free(@as([*]" elem
+           ", @ptrFromInt(__e." fname "_ptr))[0..__e." fname "_len]);"))))
+
+(defn- generate-owned-buffer-slice
+  "An owned slice whose element is a buffer-carrying struct. The body
+  returns `[]NiceRecord` (c_allocator); the wrapper allocates a `[]Wire`
+  slab, copies each nice record's fields (scalars direct, buffers as
+  ptr+len), frees the nice struct array, and writes the wire slab's
+  pointer and length to the out-params. A walking free shim iterates the
+  wire slab, frees each element's buffer fields, then frees the slab
+  itself. The wire slab holds extern structs the FFM reader reads at
+  known C-ABI offsets; the nice struct (with real slice fields) lives
+  only inside the body and is freed once the transform is done."
+  [{:keys [params ret] sym :symbol} body]
+  (let [layout     (get-in ret [:of :of :layout])
+        type-name  (:name layout)
+        wire-t     (wire-struct-name type-name)
+        params-str (str/join ", " (mapcat param-decls params))
+        args-str   (str/join ", " (mapcat param-args params))
+        out-params (str (when (seq params-str) ", ") "__ptr: *usize, __len: *usize")
+        copies     (buffer-slice-copy-stmts layout)
+        frees      (buffer-slice-free-stmts layout)]
+    (str (wire-struct layout)
+         "\nfn " sym "__impl(" params-str ") []" type-name " {\n"
+         (indent-body (impl-body params body)) "\n"
+         "}\n\n"
+         "export fn " sym "(" params-str out-params ") void {\n"
+         "    const __nice = " sym "__impl(" args-str ");\n"
+         "    const __wire = std.heap.c_allocator.alloc(" wire-t ", __nice.len) catch @panic(\"oom\");\n"
+         "    for (__nice, 0..) |__src, __i| {\n"
+         (str/join "\n" copies) "\n"
+         "    }\n"
+         "    std.heap.c_allocator.free(__nice);\n"
+         "    __ptr.* = @intFromPtr(__wire.ptr);\n"
+         "    __len.* = __wire.len;\n"
+         "}\n"
+         "\nexport fn " sym "__free(__ptr: usize, __len: usize) void {\n"
+         "    const __p: [*]" wire-t " = @ptrFromInt(__ptr);\n"
+         "    const __slice = __p[0..__len];\n"
+         "    for (__slice) |__e| {\n"
+         (str/join "\n" frees) "\n"
+         "    }\n"
+         "    std.heap.c_allocator.free(__slice);\n"
+         "}\n")))
+
+(defn- generate-ownership
+  "Dispatch an owned, borrowed, bytes, or string slice return: the simple
+  one-slab path for a scalar or scalar-only-struct element, or the
+  nice-to-wire transform path for a buffer-carrying struct element."
+  [spec body]
+  (let [slice (ownership-slice (:ret spec))]
+    (if (buffer-carrying-slice-element? (:of slice))
+      (generate-owned-buffer-slice spec body)
+      (generate-simple-slice-ownership spec body))))
 
 (defn- needs-std?
   "True when a function's generated wrapper needs `std` in scope: an owned
@@ -551,6 +643,16 @@
          "}\n")))
 
 (defn- file-ownership
+  "Dispatch a file-mode owned, borrowed, bytes, or string slice return:
+  the simple one-slab path, or the nice-to-wire transform path for a
+  buffer-carrying struct element."
+  [{:keys [ret] :as spec} entry]
+  (let [slice (ownership-slice ret)]
+    (if (buffer-carrying-slice-element? (:of slice))
+      (file-owned-buffer-slice spec entry)
+      (file-simple-slice-ownership spec entry))))
+
+(defn- file-simple-slice-ownership
   "A file-mode `export fn` that calls the user fn and writes the returned
   slice's pointer and length to two out-params. An `:owned` or `:string`
   return also emits a free shim; it imports `std` inline so the user
@@ -572,6 +674,49 @@
                 "    const __p: [*]" elem-t " = @ptrFromInt(__ptr);\n"
                 "    @import(\"std\").heap.c_allocator.free(__p[0..__len]);\n"
                 "}\n")))))
+
+(defn- file-buffer-slice-free-stmts
+  "The file-mode free statements for one wire element's buffer fields:
+  `std` is imported inline so a user file's own imports never collide."
+  [layout]
+  (for [{fname :name t :type} (filter :target (:fields layout))]
+    (let [elem (buffer-element t)]
+      (str "        @import(\"std\").heap.c_allocator.free(@as([*]" elem
+           ", @ptrFromInt(__e." fname "_ptr))[0..__e." fname "_len]);"))))
+
+(defn- file-owned-buffer-slice
+  "File-mode owned slice of buffer-carrying structs: calls the user's
+  `pub fn` (which returns `[]NiceRecord`), transforms it into a wire
+  slab, and emits a walking free shim. `std` is imported inline so a
+  user file's own imports never collide."
+  [{:keys [params ret] sym :symbol} entry]
+  (let [layout     (get-in ret [:of :of :layout])
+        type-name  (:name layout)
+        wire-t     (wire-struct-name type-name)
+        params-str (str/join ", " (mapcat param-decls params))
+        out-params (str (when (seq params-str) ", ") "__ptr: *usize, __len: *usize")
+        copies     (buffer-slice-copy-stmts layout)
+        frees      (file-buffer-slice-free-stmts layout)]
+    (str (wire-struct layout)
+         "\nexport fn " sym "(" params-str out-params ") void {\n"
+         (wrapper-prelude params)
+         "    const __nice = " (user-call entry params) ";\n"
+         "    const __wire = @import(\"std\").heap.c_allocator.alloc(" wire-t ", __nice.len) catch @panic(\"oom\");\n"
+         "    for (__nice, 0..) |__src, __i| {\n"
+         (str/join "\n" copies) "\n"
+         "    }\n"
+         "    @import(\"std\").heap.c_allocator.free(__nice);\n"
+         "    __ptr.* = @intFromPtr(__wire.ptr);\n"
+         "    __len.* = __wire.len;\n"
+         "}\n"
+         "\nexport fn " sym "__free(__ptr: usize, __len: usize) void {\n"
+         "    const __p: [*]" wire-t " = @ptrFromInt(__ptr);\n"
+         "    const __slice = __p[0..__len];\n"
+         "    for (__slice) |__e| {\n"
+         (str/join "\n" frees) "\n"
+         "    }\n"
+         "    @import(\"std\").heap.c_allocator.free(__slice);\n"
+         "}\n")))
 
 (defn- file-owned-struct-return
   "A file-mode `export fn` that calls the user fn and writes the returned
