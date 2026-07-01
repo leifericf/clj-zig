@@ -4,8 +4,7 @@
   `zig` on PATH, then a pinned hermetic Zig under `.clj-zig/zig/<version>/`.
   Preferring PATH means a developer who already has Zig sees no download;
   the pinned fallback means a fresh machine still compiles on first use."
-  (:require [clojure.data.json :as json]
-            [clojure.java.io :as io]
+  (:require [clojure.java.io :as io]
             [clojure.java.shell :as sh]
             [clojure.string :as str]
             [clj-zig.fs :as fs])
@@ -111,20 +110,33 @@
                             {:level :error :error/code :clj-zig/unsupported-host
                              :clj-zig/arch arch})))))
 
+(def ^:private pinned-shasums
+  "The SHA-256 each supported host's `pinned-version` archive published,
+  recorded from Zig's release index at pin time. This is the integrity
+  anchor: a download is checked against THIS constant, not against a digest
+  fetched from the same host that serves the archive, so a host compromise
+  cannot tamper the two in concert. Update this map whenever
+  `pinned-version` changes; a host not listed fails fast in
+  `expected-shasum` rather than downloading unverified."
+  {"aarch64-macos"   "b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489"
+   "x86_64-macos"    "0387557ed1877bc6a2e1802c8391953baddba76081876301c522f52977b52ba7"
+   "aarch64-windows" "aee38316ee4111717900f45dd3130145c39289e105541d737eb8c5ed653c78ef"
+   "x86_64-windows"  "68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e"
+   "aarch64-linux"   "ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17"
+   "x86_64-linux"    "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"})
+
 (defn- expected-shasum
-  "The SHA-256 the Zig release index publishes for a host's pinned archive.
-  Verifying against this published digest is the integrity check; a host or
-  version the index does not list is a clear error, not an unverified
-  download."
-  [os arch version]
-  (let [index (json/read-str (slurp (str base-url "/index.json")))
-        entry (get-in index [version (archive-key os arch)])]
-    (or (get entry "shasum")
-        (throw (ex-info (str "The Zig release index lists no " version " build for "
-                             (archive-key os arch) ".")
-                        {:level :error :error/code :clj-zig/zig-release-not-listed
-                         :clj-zig/pinned-version version
-                         :clj-zig/host (archive-key os arch)})))))
+  "The pinned SHA-256 for a host's `pinned-version` archive. The integrity
+  anchor lives in `pinned-shasums`, recorded at pin time, so verification
+  does not depend on a digest fetched from the download host. A host not
+  pinned fails fast rather than downloading unverified."
+  [os arch]
+  (or (get pinned-shasums (archive-key os arch))
+      (throw (ex-info (str "No pinned Zig build for " (archive-key os arch)
+                           " at " pinned-version ".")
+                      {:level :error :error/code :clj-zig/zig-release-not-listed
+                       :clj-zig/pinned-version pinned-version
+                       :clj-zig/host (archive-key os arch)}))))
 
 (defn- download-to!
   "Stream the resource at `url` into `file`."
@@ -209,7 +221,7 @@
     (.mkdirs staging)
     (try
       (download-to! (download-url os arch pinned-version) archive)
-      (verify-archive! archive (expected-shasum os arch pinned-version))
+      (verify-archive! archive (expected-shasum os arch))
       (if (= os "windows")
         (extract-zip! archive staging)
         (extract-tar! archive staging))
@@ -250,5 +262,5 @@
   (zig-exe)
   (pinned-dir)
   (download-url "macos" "aarch64" pinned-version)
-  (expected-shasum "macos" "aarch64" pinned-version)
+  (expected-shasum "macos" "aarch64")
   (ensure-pinned!))

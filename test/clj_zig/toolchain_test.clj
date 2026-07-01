@@ -62,6 +62,19 @@
         (is (str/starts-with? url "https://ziglang.org/download/0.16.0/"))
         (is (str/ends-with? url (if (= os "windows") ".zip" ".tar.xz")))))))
 
+(deftest every-host-in-the-matrix-has-a-pinned-shasum
+  (testing "the integrity anchor is a local constant for the whole host
+  matrix, so verification never fetches a digest from the download host"
+    (doseq [os   ["linux" "macos" "windows"]
+            arch ["x86_64" "aarch64"]]
+      (let [sum (#'toolchain/expected-shasum os arch)]
+        (is (re-matches #"[0-9a-f]{64}" sum)
+            (str arch "-" os " has a 64-hex pinned shasum")))))
+  (testing "a host not pinned fails fast rather than downloading unverified"
+    (let [ex (try (#'toolchain/expected-shasum "bsd" "riscv64")
+                  (catch clojure.lang.ExceptionInfo e e))]
+      (is (= :clj-zig/zig-release-not-listed (:error/code (ex-data ex)))))))
+
 (defn- temp-dir []
   (let [d (.toFile (java.nio.file.Files/createTempDirectory
                     "clj-zig-toolchain" (make-array java.nio.file.attribute.FileAttribute 0)))]
