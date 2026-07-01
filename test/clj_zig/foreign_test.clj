@@ -53,6 +53,14 @@
       (is (= :library-open-failed (:foreign/error (ex-data ex))))
       (is (= "/no/such/libnope.dylib" (:path (ex-data ex)))))))
 
+(deftest library-lookup-degrades-a-nil-path-as-data
+  (testing "a nil path throws the tagged ex-info, not a raw NPE"
+    (let [ex (try (ff/library-lookup nil)
+                  (catch clojure.lang.ExceptionInfo e e)
+                  (catch Throwable t (ex-info "raw" {} t)))]
+      (is (= :library-open-failed (:foreign/error (ex-data ex)))
+          "nil degrades to the same tagged error as a missing path"))))
+
 ;; --- symbols ------------------------------------------------------------
 
 (deftest symbol-presence-is-data

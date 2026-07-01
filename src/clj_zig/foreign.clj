@@ -33,7 +33,8 @@
   operations; a JVM that denies native access throws
   `IllegalCallerException`. Run with `--enable-native-access=ALL-UNNAMED`
   (the `:repl` and `:test` aliases in deps.edn set it)."
-  (:require [clojure.java.io :as io])
+  (:require [clojure.java.io :as io]
+            [clojure.string :as str])
   (:import (java.lang.foreign Arena FunctionDescriptor Linker Linker$Option
                               MemoryLayout MemorySegment SymbolLookup ValueLayout)
            (java.lang.invoke MethodHandle MethodHandles MethodType)
@@ -86,6 +87,9 @@
   caller can catch and degrade as data, ADR 19) when the library cannot be
   opened."
   ^SymbolLookup [^String path]
+  (when (str/blank? path)
+    (throw (ex-info (str "Cannot open native library: " (pr-str path))
+                    {:foreign/error :library-open-failed :path path})))
   (try
     (SymbolLookup/libraryLookup (.toPath (io/file path)) (Arena/global))
     (catch IllegalArgumentException e
