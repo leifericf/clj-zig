@@ -419,6 +419,9 @@
   ([layout elem-path]
    (mapcat (fn [{:keys [name type] :as f}]
              (cond
+               (and (:target f) (= :borrowed (:kind type)))
+               nil
+
                (:target f)
                (let [elem (buffer-element type)]
                  [(str "        std.heap.c_allocator.free(@as([*]" elem
@@ -552,6 +555,13 @@
      (str "    __ret.*." fname "_len = __r." fname ".len;")]
     [(str "    __ret.*." fname " = __r." fname ";")]))
 
+(defn- owned-buffer-field?
+  "True when a field is a buffer field the free shim should free: it has
+  a `:target` (string, bytes, or slice) and is not `:borrowed`."
+  [f]
+  (and (:target f)
+       (not (= :borrowed (:kind (:type f))))))
+
 (defn- free-field-stmt
   "The free-shim statement freeing one owned buffer field, reading its
   pointer and length back out of the wire struct and reinterpreting the
@@ -587,7 +597,7 @@
         out-params (str (when (seq params-str) ", ") "__ret: *" wire-t)
         writes     (mapcat wire-write-stmts (:fields layout))
         owned?     (= :owned (:kind ret))
-        buf-fields (filter :target (:fields layout))
+        buf-fields (filter owned-buffer-field? (:fields layout))
         free-body  (if (seq buf-fields)
                      (str/join "\n" (map free-field-stmt buf-fields))
                      "    _ = __ret;")]
@@ -623,7 +633,7 @@
         out-params (str (when (seq params-str) ", ")
                         "__err: [*]u8, __errlen: *usize, __ret: *" wire-t)
         writes     (mapcat wire-write-stmts (:fields layout))
-        buf-fields (filter :target (:fields layout))
+        buf-fields (filter owned-buffer-field? (:fields layout))
         free-body  (if (seq buf-fields)
                      (str/join "\n" (map free-field-stmt buf-fields))
                      "    _ = __ret;")
@@ -661,7 +671,7 @@
   directly (the nice struct holds a real `[]T` slice, not `{ptr, len}`
   words)."
   [layout]
-  (for [{fname :name} (filter :target (:fields layout))]
+  (for [{fname :name} (filter owned-buffer-field? (:fields layout))]
     (str "    std.heap.c_allocator.free(__p." fname ");")))
 
 (defn- optional-struct-free-shim
@@ -671,7 +681,7 @@
   [{:keys [ret] sym :symbol}]
   (let [layout     (get-in ret [:of :layout])
         type-name  (:name layout)
-        buf-fields (filter :target (:fields layout))
+        buf-fields (filter owned-buffer-field? (:fields layout))
         free-body  (if (seq buf-fields)
                      (str (str/join "\n" (nice-struct-free-stmts layout)) "\n")
                      "")]
@@ -695,7 +705,7 @@
   [{:keys [ret] sym :symbol :as spec} entry]
   (let [layout     (get-in ret [:of :layout])
         type-name  (:name layout)
-        buf-fields (filter :target (:fields layout))
+        buf-fields (filter owned-buffer-field? (:fields layout))
         free-body  (if (seq buf-fields)
                      (str (str/join "\n" (for [{fname :name} buf-fields]
                                             (str "    @import(\"std\").heap.c_allocator.free(__p." fname ");")))
@@ -889,6 +899,9 @@
   ([layout elem-path]
    (mapcat (fn [{:keys [name type] :as f}]
              (cond
+               (and (:target f) (= :borrowed (:kind type)))
+               nil
+
                (:target f)
                (let [elem (buffer-element type)]
                  [(str "        @import(\"std\").heap.c_allocator.free(@as([*]" elem
@@ -949,7 +962,7 @@
         out-params (str (when (seq params-str) ", ") "__ret: *" wire-t)
         writes     (mapcat wire-write-stmts (:fields layout))
         owned?     (= :owned (:kind ret))
-        buf-fields (filter :target (:fields layout))
+        buf-fields (filter owned-buffer-field? (:fields layout))
         free-body  (if (seq buf-fields)
                      (str/join "\n" (map file-free-field-stmt buf-fields))
                      "    _ = __ret;")]
@@ -978,7 +991,7 @@
         out-params (str (when (seq params-str) ", ")
                         "__err: [*]u8, __errlen: *usize, __ret: *" wire-t)
         writes     (mapcat wire-write-stmts (:fields layout))
-        buf-fields (filter :target (:fields layout))
+        buf-fields (filter owned-buffer-field? (:fields layout))
         free-body  (if (seq buf-fields)
                      (str/join "\n" (map file-free-field-stmt buf-fields))
                      "    _ = __ret;")

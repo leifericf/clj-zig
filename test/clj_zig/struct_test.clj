@@ -280,6 +280,32 @@
            (make-outers 2))))
   (testing "an empty owned slice returns an empty vector"
     (is (= [] (make-outers 0))))
-  (testing "the recursive walking free shim frees every nested buffer in volume"
+   (testing "the recursive walking free shim frees every nested buffer in volume"
     (is (every? #(= {:tag "inner" :n 18} (:detail (last %)))
                 (repeatedly 200 #(make-outers 10))))))
+
+;; --- Per-field mixed ownership (Phase F) --------------------------------
+;; A record with an owned buffer field beside a borrowed one: the free shim
+;; frees the owned field and leaves the borrowed field alone.
+
+(deftypez Mixed [owned_tag :string borrowed_tag [:borrowed [:slice :u8]]])
+
+(defnz make-mixed
+  "Allocate a Mixed: owned_tag is c_allocator bytes the shim frees;
+  borrowed_tag points at static storage the shim must NOT free."
+  [text :string
+   :ret  [:owned Mixed]]
+  "const s = std.heap.c_allocator.alloc(u8, text.len) catch @panic(\"oom\");
+   @memcpy(s, text);
+   const S = struct { var buf: [16]u8 = .{0} ** 16; };
+   @memcpy(S.buf[0..text.len], text);
+   return .{ .owned_tag = s, .borrowed_tag = S.buf[0..text.len] };")
+
+(deftest a-mixed-ownership-record-frees-only-owned-fields
+  (testing "both fields are read"
+    (let [r (make-mixed "hello")]
+      (is (= "hello" (:owned_tag r)))
+      (is (= (vec (map byte "hello")) (seq (:borrowed_tag r))))))
+  (testing "the owned field is freed each call (volume leak lane)"
+    (is (every? #(= "hello" (:owned_tag %))
+                (repeatedly 200 #(make-mixed "hello"))))))
