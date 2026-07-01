@@ -42,15 +42,10 @@
 
 (defn- function-inputs
   "The build inputs for an established `defnz`, from the inspection data its
-  Var carries. Mirrors how `recompile!` reconstructs the build mode, so a
-  baked artifact hashes identically to the same function built in place."
-  [{:keys [spec body source-mode entry source-file options-extra aux-files]}]
-  (let [gen (cond-> {:mode (or source-mode :inline)}
-              entry         (assoc :entry entry)
-              source-file   (assoc :source-file source-file)
-              options-extra (assoc :options-extra options-extra)
-              aux-files     (assoc :aux-files aux-files))]
-    (core/build-inputs spec body gen)))
+  Var carries. Shares `core/gen-from-info` with `recompile!`, so a baked
+  artifact hashes identically to the same function built in place."
+  [info]
+  (core/build-inputs (:spec info) (:body info) (core/gen-from-info info)))
 
 (defn- baked-functions
   "The inspection data of every successfully established `defnz` in

@@ -289,18 +289,27 @@
                        :clj-zig/failed-attempt (assoc data :body body))
           (throw (ex-info (diagnostics/render data) data e)))))))
 
+(defn gen-from-info
+  "The build `gen` map reconstructed from a Var's inspection info: the
+  source mode plus the file-mode keys (`:entry`, `:source-file`,
+  `:options-extra`, `:aux-files`) that `establish-binding!` recorded.
+  The single source for how `recompile!` and `bake` re-derive a
+  function's build mode, so a new gen key lands in one place and the
+  bake-equals-recompile hash invariant cannot drift (docs/04)."
+  [{:keys [source-mode entry source-file options-extra aux-files]}]
+  (cond-> {:mode (or source-mode :inline)}
+    entry         (assoc :entry entry)
+    source-file   (assoc :source-file source-file)
+    options-extra (assoc :options-extra options-extra)
+    aux-files     (assoc :aux-files aux-files)))
+
 (defn recompile!
   "Force a fresh build of `the-var`'s current spec and body, ignoring the
   cached artifact, and rebind. Returns the Var. Rebuilds in the same mode
   the function was defined with (inline, file, or raw)."
   [the-var]
-  (let [{:keys [spec body source-mode entry source-file options-extra aux-files]}
-        (:clj-zig/info (meta the-var))
-        gen  (cond-> {:mode (or source-mode :inline)}
-               entry         (assoc :entry entry)
-               source-file   (assoc :source-file source-file)
-               options-extra (assoc :options-extra options-extra)
-               aux-files     (assoc :aux-files aux-files))
+  (let [{:keys [spec body] :as info} (:clj-zig/info (meta the-var))
+        gen  (gen-from-info info)
         wrap (get @rebinders the-var)]
     (when-not (and spec wrap)
       (throw (ex-info "recompile! needs a defnz Var with a current binding."
