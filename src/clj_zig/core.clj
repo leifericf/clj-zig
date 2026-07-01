@@ -11,6 +11,7 @@
   but that are not themselves callable from Clojure."
   (:require [clojure.string :as str]
             [clj-zig.cache :as cache]
+            [clj-zig.cachestore :as cachestore]
             [clj-zig.compile :as compile]
             [clj-zig.diagnostics :as diagnostics]
             [clj-zig.ffm :as ffm]
@@ -202,9 +203,9 @@
               :deps        decls
               :options     (merge {:optimize "ReleaseSafe"} (deps-in (:ns spec)) options-extra)
               :zig-version toolchain/pinned-version
-              :target      (cache/target-triple)}
+               :target      (cachestore/target-triple)}
        aux-files (assoc :aux-files aux-files)
-       mods      (assoc :modules      (cache/modules-fingerprint mods)
+       mods      (assoc :modules      (cachestore/modules-fingerprint mods)
                         :module-roots (cache/module-roots mods))))))
 
 (defn- module-info
@@ -228,7 +229,7 @@
   ([spec body] (artifact spec body {:mode :inline}))
   ([spec body gen]
    (let [inputs (build-inputs spec body gen)
-         paths  (cache/ensure-library! inputs compile/compile!)]
+          paths  (cachestore/ensure-library! inputs compile/compile!)]
      (cond-> {:spec             spec
               :body             body
               :generated-source (:source inputs)
@@ -315,7 +316,7 @@
       (throw (ex-info "recompile! needs a defnz Var with a current binding."
                       {:level :error :error/code :clj-zig/not-recompilable
                        :var the-var})))
-    (cache/evict! (build-inputs spec body gen))
+     (cachestore/evict! (build-inputs spec body gen))
     (establish-binding! the-var spec body {} wrap gen)))
 
 ;; --- File-sourced bodies ------------------------------------------------

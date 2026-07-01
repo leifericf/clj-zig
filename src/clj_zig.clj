@@ -10,7 +10,7 @@
   `generate-source`, `compile!`, `load!`). A library or macro author can
   drive the whole pipeline through these without the macro."
   (:refer-clojure :exclude [fn symbol])
-  (:require [clj-zig.cache :as cache]
+  (:require [clj-zig.cachestore :as cachestore]
             [clj-zig.core :as core]
             [clj-zig.ffm :as ffm]
             [clj-zig.inspect :as inspect]
@@ -88,8 +88,8 @@
 
 (defn clean!
   "Remove the artifact cache under `root` (default `.clj-zig/cache`)."
-  ([] (cache/clean!))
-  ([root] (cache/clean! root)))
+  ([] (cachestore/clean!))
+  ([root] (cachestore/clean! root)))
 
 ;; --- Pure data pipeline -------------------------------------------------
 

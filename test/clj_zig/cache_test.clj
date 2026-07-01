@@ -4,6 +4,7 @@
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [clj-zig.cache :as cache]
+            [clj-zig.cachestore :as cachestore]
             [clj-zig.compile :as compile]
             [clj-zig.ffm :as ffm]
             [clj-zig.gen :as g]
@@ -76,34 +77,34 @@
                :read (fn [_] (swap! reads inc) (g/tree->contents tree))}
         ref   {:path (str "mod-" (System/nanoTime) ".zig")}]
     (testing "the first call reads the closure and fingerprints it"
-      (let [fp (cache/module-fingerprint ref io)]
+      (let [fp (cachestore/module-fingerprint ref io)]
         (is (re-matches #"[0-9a-f]{16}" fp))
         (is (= 1 @reads))))
     (testing "an unchanged tree reuses the fingerprint without rereading"
-      (let [fp1 (cache/module-fingerprint ref io)
-            fp2 (cache/module-fingerprint ref io)]
+      (let [fp1 (cachestore/module-fingerprint ref io)
+            fp2 (cachestore/module-fingerprint ref io)]
         (is (= fp1 fp2))
         (is (= 1 @reads))))
     (testing "a changed stat signature recomputes from the contents"
       (let [io2 {:stat (fn [_] (g/tree->stats (assoc-in tree ["src/a.zig" :size] 99)))
                  :read (fn [_] (swap! reads inc) (g/tree->contents tree))}]
-        (cache/module-fingerprint ref io2)
+        (cachestore/module-fingerprint ref io2)
         (is (= 2 @reads))))))
 
 (deftest a-pinned-module-fingerprints-without-reading-the-filesystem
   (let [boom {:stat (fn [_] (throw (AssertionError. "stat must not run")))
               :read (fn [_] (throw (AssertionError. "read must not run")))}
-        fp   (cache/module-fingerprint {:git/sha "abc123" :root "src/root.zig"} boom)]
+        fp   (cachestore/module-fingerprint {:git/sha "abc123" :root "src/root.zig"} boom)]
     (testing "a :git/sha ref hashes from the sha and root alone"
       (is (re-matches #"[0-9a-f]{16}" fp))
-      (is (= fp (cache/module-fingerprint {:git/sha "abc123" :root "src/root.zig"} boom))))
+      (is (= fp (cachestore/module-fingerprint {:git/sha "abc123" :root "src/root.zig"} boom))))
     (testing "a different sha or root yields a different fingerprint"
-      (is (not= fp (cache/module-fingerprint {:git/sha "def456" :root "src/root.zig"} boom)))
-      (is (not= fp (cache/module-fingerprint {:git/sha "abc123" :root "src/other.zig"} boom))))
+      (is (not= fp (cachestore/module-fingerprint {:git/sha "def456" :root "src/root.zig"} boom)))
+      (is (not= fp (cachestore/module-fingerprint {:git/sha "abc123" :root "src/other.zig"} boom))))
     (testing "a local :path does not change the pinned identity (ADR 36)"
       ;; A baker (pinned + local checkout) and a consumer (pinned, no path)
       ;; must hash identically, so the consumer reproduces the baked key.
-      (is (= fp (cache/module-fingerprint
+      (is (= fp (cachestore/module-fingerprint
                  {:git/sha "abc123" :root "src/root.zig" :path "/co/root.zig"} boom))))))
 
 (deftest module-roots-resolve-dev-path-refs-for-compilation
@@ -171,15 +172,15 @@
                    (io/make-parents (io/file library-path))
                    (spit library-path "stub"))]
     (testing "first build compiles"
-      (let [r (cache/ensure-library! (inputs root "return x + y;") stub)]
+      (let [r (cachestore/ensure-library! (inputs root "return x + y;") stub)]
         (is (false? (:cached? r)))
         (is (= 1 @compiles))))
     (testing "an identical build reuses the cached library"
-      (let [r (cache/ensure-library! (inputs root "return x + y;") stub)]
+      (let [r (cachestore/ensure-library! (inputs root "return x + y;") stub)]
         (is (true? (:cached? r)))
         (is (= 1 @compiles))))
     (testing "a changed body rebuilds under a fresh path"
-      (let [r (cache/ensure-library! (inputs root "return x + y + 10;") stub)]
+      (let [r (cachestore/ensure-library! (inputs root "return x + y + 10;") stub)]
         (is (false? (:cached? r)))
         (is (= 2 @compiles))))))
 
@@ -188,8 +189,8 @@
         stub  (fn [{:keys [library-path]}]
                 (io/make-parents (io/file library-path))
                 (spit library-path "stub"))
-        r     (cache/ensure-library! (inputs root "return x + y;") stub)
-        manifest (cache/read-manifest r)]
+        r     (cachestore/ensure-library! (inputs root "return x + y;") stub)
+        manifest (cachestore/read-manifest r)]
     (is (= 'app.core/add (:var manifest)))
     (is (= '[x :i64 y :i64 :ret :i64] (:signature manifest)))
     (is (= (:hash r) (:hash manifest)))
@@ -200,9 +201,9 @@
         stub (fn [{:keys [library-path]}]
                (io/make-parents (io/file library-path))
                (spit library-path "stub"))]
-    (cache/ensure-library! (inputs root "return x + y;") stub)
+    (cachestore/ensure-library! (inputs root "return x + y;") stub)
     (is (.exists (io/file root)))
-    (cache/clean! root)
+    (cachestore/clean! root)
     (is (not (.exists (io/file root))))))
 
 (deftest bundled-resource-path-mirrors-the-cache-layout
@@ -219,8 +220,8 @@
   (testing "a baked library on the classpath is extracted and loaded, and
   the compiler is never invoked"
     (let [in        (assoc (inputs nil "return x + y;")
-                           :target (cache/target-triple)
-                           :zig-version (cache/zig-version))
+                           :target (cachestore/target-triple)
+                           :zig-version (cachestore/zig-version))
           key       (cache/cache-key in)
           coords    {:target (:target in) :ns 'app.core :name 'add :hash key}
           res-root  (scratch-root)
@@ -240,7 +241,7 @@
       (io/copy (io/file (:library built)) res-file)
       (try
         (.setContextClassLoader (Thread/currentThread) loader)
-        (let [r (cache/ensure-library! (assoc in :root (scratch-root))
+        (let [r (cachestore/ensure-library! (assoc in :root (scratch-root))
                                        (fn [_] (reset! compiled? true)))]
           (is (true? (:bundled? r)) "the library resolves from the classpath")
           (is (false? @compiled?) "the bundled path never invokes the compiler")
@@ -255,8 +256,8 @@
   (testing "a baked resource under a different hash is a clean miss; the
   loader compiles rather than loading the wrong library"
     (let [in       (assoc (inputs nil "return x + y;")
-                          :target (cache/target-triple)
-                          :zig-version (cache/zig-version))
+                          :target (cachestore/target-triple)
+                          :zig-version (cachestore/zig-version))
           coords   {:target (:target in) :ns 'app.core :name 'add :hash "000000000000"}
           res-root (scratch-root)
           res-file (io/file res-root (cache/bundled-resource-path coords))
@@ -273,7 +274,7 @@
       (spit res-file "not the right library")
       (try
         (.setContextClassLoader (Thread/currentThread) loader)
-        (let [r (cache/ensure-library! (assoc in :root (scratch-root)) stub)]
+        (let [r (cachestore/ensure-library! (assoc in :root (scratch-root)) stub)]
           (is (not (:bundled? r)) "the mismatched resource is ignored")
           (is (= 1 @compiled) "the loader compiles instead of loading it"))
         (finally
@@ -283,10 +284,10 @@
   (testing "content addressing over a genuine zig build"
     (let [root (scratch-root)
           in   (assoc (inputs root "return x + y;")
-                      :target (cache/target-triple)
-                      :zig-version (cache/zig-version))
-          r1   (cache/ensure-library! in compile/compile!)
-          r2   (cache/ensure-library! in compile/compile!)]
+                      :target (cachestore/target-triple)
+                      :zig-version (cachestore/zig-version))
+          r1   (cachestore/ensure-library! in compile/compile!)
+          r2   (cachestore/ensure-library! in compile/compile!)]
       (is (false? (:cached? r1)))
       (is (true? (:cached? r2)))
       (is (= (:library-path r1) (:library-path r2)))

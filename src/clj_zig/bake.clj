@@ -11,6 +11,7 @@
   baking then re-derives and compiles each for every target."
   (:require [clojure.java.io :as io]
             [clj-zig.cache :as cache]
+            [clj-zig.cachestore :as cachestore]
             [clj-zig.compile :as compile]
             [clj-zig.core :as core]))
 
@@ -32,7 +33,7 @@
   "The host as a matrix entry: the resolved clj-zig id and a nil triple,
   which compiles natively without a `-target` flag."
   []
-  {:id (cache/target-triple) :triple nil})
+  {:id (cachestore/target-triple) :triple nil})
 
 (defn- third-party-c?
   "True when a function links a C library beyond libc and libm. Such a
