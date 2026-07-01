@@ -439,7 +439,7 @@
   [^MemorySegment buf n]
   (let [bytes (byte-array n)]
     (MemorySegment/copy buf ValueLayout/JAVA_BYTE 0 bytes (int 0) (int n))
-    (keyword (String. bytes "UTF-8"))))
+    (keyword (String. bytes StandardCharsets/UTF_8))))
 
 (defn- native-access-disabled
   "The diagnostic for a JVM that denied native access, naming the flag and
