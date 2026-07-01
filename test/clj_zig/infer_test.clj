@@ -102,3 +102,11 @@
     (is (= [:slice :const :f64] (infer/zig-type->boundary "[]const f64")))) ; only u8 promoted
   (testing "a []const u8 return still needs an ownership policy"
     (is (= :clj-zig.infer/policy-needed (infer/zig-type->boundary "[]const u8" :return)))))
+
+(deftest a-malformed-parameter-surfaces-as-data
+  (testing "a parameter with no colon is a structured diagnostic, not a raw index error"
+    (let [ex (try (infer/prototype "pub fn f(x: i64, nope) void {}" "f")
+                  (catch clojure.lang.ExceptionInfo e e)
+                  (catch Throwable t t))]
+      (is (instance? clojure.lang.ExceptionInfo ex))
+      (is (= :clj-zig/malformed-parameter (:error/code (ex-data ex)))))))

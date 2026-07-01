@@ -25,6 +25,11 @@
   on the binding's colon."
   [p]
   (let [idx (.indexOf p ":")]
+    (when (neg? idx)
+      (throw (ex-info (str "Malformed parameter declaration " (pr-str p)
+                           "; expected `name: type`.")
+                      {:level :error :error/code :clj-zig/malformed-parameter
+                       :param p})))
     {:binding  (str/trim (subs p 0 idx))
      :zig-type (str/trim (subs p (inc idx)))}))
 
