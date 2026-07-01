@@ -173,13 +173,18 @@
                                    :signature [xs [:slice :i64] :ret :i64]}))))))
 
 (deftest rejects-a-slice-of-a-non-scalar-struct
-  (testing "a buffer-carrying struct element is rejected"
+  (testing "a buffer-carrying struct element is accepted when const"
     (let [types {'Buf (layout/describe 'Buf '[media :string] {})
                  'Point (layout/describe 'Point '[x :f64 y :f64])}]
-      (is (= :clj-zig/unsupported-element
-             (error-code #(spec/build-spec {:ns 'app.core :name 'f
-                                             :signature '[xs [:slice :const Buf] :ret :i64]
-                                             :types types})))))))
+      (is (map? (spec/build-spec {:ns 'app.core :name 'f
+                                  :signature '[xs [:slice :const Buf] :ret :i64]
+                                  :types types}))))
+    (testing "but rejected as mutable when non-const"
+      (let [types {'Buf (layout/describe 'Buf '[media :string] {})}]
+        (is (= :clj-zig/mutable-struct-slice
+               (error-code #(spec/build-spec {:ns 'app.core :name 'f
+                                               :signature '[xs [:slice Buf] :ret :i64]
+                                               :types types}))))))))
 
 (deftest expands-clojure-side-destructuring-into-native-params
   (testing "each destructured local becomes a native scalar param"
@@ -233,15 +238,13 @@
              (error-code #(spec/build-spec {:ns 'app.core :name 'f
                                              :signature '[xs [:manyptr :const Point] :ret :i64]
                                              :types types})))))
-    (testing "an argument slice or array of a buffer-carrying struct is rejected"
-      (is (= :clj-zig/unsupported-element
-             (error-code #(spec/build-spec {:ns 'app.core :name 'f
-                                             :signature '[xs [:slice Buf] :ret :i64]
-                                             :types types}))))
-      (is (= :clj-zig/unsupported-element
-             (error-code #(spec/build-spec {:ns 'app.core :name 'f
-                                             :signature '[xs [:array 2 Buf] :ret :i64]
-                                             :types types})))))
+    (testing "a const slice or array of a buffer-carrying struct is accepted"
+      (is (map? (spec/build-spec {:ns 'app.core :name 'f
+                                  :signature '[xs [:slice :const Buf] :ret :i64]
+                                  :types types})))
+      (is (map? (spec/build-spec {:ns 'app.core :name 'f
+                                  :signature '[xs [:array 2 Buf] :ret :i64]
+                                  :types types}))))
     (testing "an owned slice of a buffer-carrying struct is accepted as a return"
       (is (map? (spec/build-spec {:ns 'app.core :name 'f
                                   :signature '[:ret [:owned [:slice Buf]]]
@@ -272,13 +275,13 @@
     (let [types {'Buf (layout/describe 'Buf '[media :string] {})}]
       (try
         (spec/build-spec {:ns 'app.core :name 'f
-                          :signature '[xs [:slice Buf] :ret :i64]
+                          :signature '[xs [:ptr Buf] :ret :i64]
                           :types types})
         (is false "expected a diagnostic")
         (catch clojure.lang.ExceptionInfo e
           (let [d (ex-data e)]
             (is (= :clj-zig/unsupported-element (:error/code d)))
-            (is (= :slice (:indirection d)))
+            (is (= :ptr (:indirection d)))
             (is (= {:kind :named :name 'Buf} (:element d)))))))
     (testing "a nested-slice element names the slice in the diagnostic"
       (try

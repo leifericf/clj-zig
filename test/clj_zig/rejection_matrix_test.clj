@@ -90,13 +90,11 @@
      :types matrix-types}
     {:code :clj-zig/unsupported-element     :signature '[xs [:manyptr Point] :ret :i64]
      :types matrix-types}
-    {:code :clj-zig/unsupported-element     :signature '[xs [:manyptr :const Point] :ret :i64]
-     :types matrix-types}
-    {:code :clj-zig/unsupported-element     :signature '[xs [:slice Buf] :ret :i64]
-     :types matrix-types}
-    {:code :clj-zig/unsupported-element     :signature '[xs [:array 3 Buf] :ret :i64]
-     :types matrix-types}
-    {:code :clj-zig/unsupported-borrowed-buffer-slice :signature '[:ret [:borrowed [:slice Buf]]]
+     {:code :clj-zig/unsupported-element     :signature '[xs [:manyptr :const Point] :ret :i64]
+      :types matrix-types}
+     {:code :clj-zig/mutable-struct-slice     :signature '[xs [:slice Buf] :ret :i64]
+      :types matrix-types}
+     {:code :clj-zig/unsupported-borrowed-buffer-slice :signature '[:ret [:borrowed [:slice Buf]]]
      :types matrix-types}
     {:code :clj-zig/unsupported-element     :signature '[xs [:slice [:slice :u8]] :ret :i64]}
     {:code :clj-zig/unsupported-element     :signature '[:ret [:slice [:slice :u8]]]}])
@@ -119,7 +117,8 @@
              :clj-zig/unknown-type-name :clj-zig/unsupported-bytes
               :clj-zig/unsupported-element :clj-zig/malformed-error-set
               :clj-zig/unsupported-borrowed-buffer-slice
-              :clj-zig/unsupported-return-kind}
+              :clj-zig/unsupported-return-kind
+              :clj-zig/mutable-struct-slice}
            (set (map :code spec-rejections)))))
 
 (deftest string-is-not-a-rejection

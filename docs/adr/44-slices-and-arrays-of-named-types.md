@@ -108,8 +108,18 @@ uses for a single record. The cost is a transient double allocation
 freed before the call returns, so only the wire slab and its element
 buffers live until the free shim runs.
 
-Argument slices and arrays of buffer-carrying structs stay rejected: the
-argument marshaller writes extern slots in the call arena and has no
-path to lay out a nice struct's slice fields. A borrowed slice of one is
-rejected because the wrapper-allocated wire slab would leak with no free
-shim to release it.
+Argument slices and arrays of buffer-carrying structs are now supported
+(amendment, 2026-07-02): a `[:slice :const Buf]` or `[:array N Buf]`
+argument where `Buf` carries buffer fields crosses as a slab of wire
+(extern) structs. The FFM marshaller copies each caller value's buffer
+fields into the call arena and writes the `{ptr, len}` pair into the
+extern slot. The wrapper allocates a nice-record slab with
+`c_allocator`, converts each wire element (scalars direct, each
+`{ptr, len}` pair reinterpreted as a real slice), runs the body, and
+frees the nice slab in a `defer`. The buffer contents live in the FFM
+call arena; the nice slab's slice fields point at them for the call's
+duration. A non-const buffer-carrying struct slice is still rejected
+(`:mutable-struct-slice`): the caller's immutable maps have no mutable
+container for copy-back. A borrowed slice of a buffer-carrying struct
+remains rejected for returns (the wrapper-allocated wire slab would
+leak with no free shim).

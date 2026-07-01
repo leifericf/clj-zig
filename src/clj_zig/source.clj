@@ -110,7 +110,8 @@
 (declare zig-type pointee pointer-type error-union-struct-return?
          buffer-element wire-struct-name wire-struct
          file-owned-buffer-slice file-simple-slice-ownership
-         generate-owned-buffer-slice)
+         generate-owned-buffer-slice wire-to-nice-copy-stmts
+         buffer-wire-decls buffer-carrying-slice-element?)
 
 (defn- zig-type
   "The Zig type name for a normalized boundary type. Handles scalars,
@@ -162,26 +163,79 @@
   (case (:kind type)
     :string          [(str binding "_ptr: [*]const u8")
                       (str binding "_len: usize")]
-    :slice           [(str binding "_ptr: [*]" (pointee type))
-                      (str binding "_len: usize")]
+    :slice           (if (buffer-carrying-slice-element? (:of type))
+                       (let [wire-t (wire-struct-name (:name (:layout (:of type))))]
+                         [(str binding "_ptr: [*]const " wire-t)
+                          (str binding "_len: usize")])
+                       [(str binding "_ptr: [*]" (pointee type))
+                        (str binding "_len: usize")])
     (:ptr :manyptr)  [(str binding ": " (pointer-type type))]
     :optional        [(str binding ": " (zig-type type))]
-    :array           [(str binding "_ptr: *const [" (:length type) "]" (zig-type (:of type)))]
+    :array           (if (buffer-carrying-slice-element? (:of type))
+                       (let [wire-t (wire-struct-name (:name (:layout (:of type))))]
+                         [(str binding "_ptr: *const [" (:length type) "]" wire-t)])
+                       [(str binding "_ptr: *const [" (:length type) "]" (zig-type (:of type)))])
     :named           (if (enum-type? type)
                        [(str binding ": " (zig-type type))]
                        [(str binding "_ptr: *const " (zig-type type))])
     [(str binding ": " (zig-type type))]))
 
+(defn- wire-to-nice-copy-stmts
+  "The statements converting one wire element `__src` into the nice record
+  `__dst`, used inside a reconstruction loop. Inverse of
+  `buffer-slice-copy-stmts`: a scalar field is assigned directly; a buffer
+  field reinterprets the `{ptr, len}` pair as a real slice."
+  [layout]
+  (mapcat (fn [{:keys [name type] :as f}]
+            (if (:target f)
+              (let [elem (buffer-element type)]
+                [(str "    __dst." name " = @as([*]" elem
+                      ", @ptrFromInt(__src." name "_ptr))[0..__src." name "_len];")])
+              [(str "    __dst." name " = __src." name ";")]))
+          (:fields layout)))
+
 (defn- reconstruction
   "The statement that rebuilds a binding the body uses by name: a slice or
-  string from its pointer and length, or an array value from its pointer."
-  [{:keys [binding type]}]
-  (case (:kind type)
-    (:slice :string) (str "const " binding " = " binding "_ptr[0.." binding "_len];")
-    :array           (str "const " binding " = " binding "_ptr.*;")
-    :named           (when-not (enum-type? type)
-                       (str "const " binding " = " binding "_ptr.*;"))
-    nil))
+  string from its pointer and length, an array value from its pointer, or
+  a wire-to-nice conversion for a buffer-carrying struct element. The
+  optional `file-mode?` flag selects between a top-level std import
+  (inline mode) and an inline @import of std (file mode)."
+  ([param] (reconstruction param false))
+  ([{:keys [binding type]} file-mode?]
+   (let [alloc (if file-mode?
+                 "@import(\"std\").heap.c_allocator"
+                 "std.heap.c_allocator")]
+   (case (:kind type)
+    :slice (if (buffer-carrying-slice-element? (:of type))
+             (let [layout   (:layout (:of type))
+                   type-name (:name layout)
+                   copies   (wire-to-nice-copy-stmts layout)]
+               (str "const __nice_" binding " = " alloc ".alloc("
+                    type-name ", " binding "_len) catch @panic(\"oom\");\n"
+                    "for (__nice_" binding ", 0..) |*__dst, __i| {\n"
+                    "    const __src = " binding "_ptr[__i];\n"
+                    (str/join "\n" copies) "\n"
+                    "}\n"
+                    "defer " alloc ".free(__nice_" binding ");\n"
+                    "const " binding " = __nice_" binding ";"))
+             (str "const " binding " = " binding "_ptr[0.." binding "_len];"))
+    :string (str "const " binding " = " binding "_ptr[0.." binding "_len];")
+    :array  (if (buffer-carrying-slice-element? (:of type))
+              (let [layout    (:layout (:of type))
+                    type-name  (:name layout)
+                    n          (:length type)
+                    copies     (wire-to-nice-copy-stmts layout)]
+                (str "var __nice_" binding ": [" n "]" type-name " = undefined;\n"
+                     "for (0.." n ") |__i| {\n"
+                     "    const __src = " binding "_ptr.*[__i];\n"
+                     "    var __dst = &__nice_" binding "[__i];\n"
+                     (str/join "\n" copies) "\n"
+                     "}\n"
+                     "const " binding " = __nice_" binding ";"))
+              (str "const " binding " = " binding "_ptr.*;"))
+    :named  (when-not (enum-type? type)
+              (str "const " binding " = " binding "_ptr.*;"))
+    nil))))
 
 (defn- param-args
   "The argument names the wrapper passes to an inner function, mirroring
@@ -208,7 +262,7 @@
 (defn- impl-body
   "The user body with any slice or array bindings reconstructed first."
   [params body]
-  (let [prelude (str/join "\n" (keep reconstruction params))]
+  (let [prelude (str/join "\n" (keep #(reconstruction % false) params))]
     (if (str/blank? prelude) body (str prelude "\n" body))))
 
 (defn- generate-plain
@@ -364,8 +418,7 @@
         out-params (str (when (seq params-str) ", ") "__ptr: *usize, __len: *usize")
         copies     (buffer-slice-copy-stmts layout)
         frees      (buffer-slice-free-stmts layout)]
-    (str (wire-struct layout)
-         "\nfn " sym "__impl(" params-str ") []" type-name " {\n"
+    (str "fn " sym "__impl(" params-str ") []" type-name " {\n"
          (indent-body (impl-body params body)) "\n"
          "}\n\n"
          "export fn " sym "(" params-str out-params ") void {\n"
@@ -400,15 +453,18 @@
 (defn- needs-std?
   "True when a function's generated wrapper needs `std` in scope: an owned
   or `:string` return uses `std.heap.c_allocator` in its free shim, a handle
-  in any position is allocated or freed with `std`, and an error-union over
-  a struct emits a per-field free shim with the same allocator. (A
-  scalar-only record under either path emits a no-op shim body but still
-  pulls std in, uniform with the `:owned ScalarRecord` path.)"
+  in any position is allocated or freed with `std`, an error-union over a
+  struct emits a per-field free shim, and a const slice or array of
+  buffer-carrying struct arguments allocates a nice-record slab with
+  `c_allocator` in its reconstruction."
   [{:keys [params ret]}]
   (or (contains? #{:owned :bytes :string} (:kind ret))
       (error-union-struct-return? ret)
       (= :handle (:kind ret))
-      (some #(= :handle (:kind (:type %))) params)))
+      (some #(= :handle (:kind (:type %))) params)
+      (some #(and (contains? #{:slice :array} (:kind (:type %)))
+                  (buffer-carrying-slice-element? (:of (:type %))))
+            params)))
 
 (defn- owned-record-return?
   "True when a return is an `:owned` or `:borrowed` wrapper around a named
@@ -492,8 +548,7 @@
         free-body  (if (seq buf-fields)
                      (str/join "\n" (map free-field-stmt buf-fields))
                      "    _ = __ret;")]
-    (str (wire-struct layout)
-         "\nfn " sym "__impl(" params-str ") " type-name " {\n"
+    (str "fn " sym "__impl(" params-str ") " type-name " {\n"
          (indent-body (impl-body params body)) "\n"
          "}\n\n"
          "export fn " sym "(" params-str out-params ") void {\n"
@@ -536,8 +591,7 @@
                         "        __errlen.* = __n;\n"
                         "        return;\n"
                         "    };")]
-    (str (wire-struct layout)
-         "\nfn " sym "__impl(" params-str ") " err-set "!" type-name " {\n"
+    (str "fn " sym "__impl(" params-str ") " err-set "!" type-name " {\n"
          (indent-body (impl-body params body)) "\n"
          "}\n\n"
          "export fn " sym "(" params-str out-params ") void {\n"
@@ -558,22 +612,63 @@
        (= :named (get-in ret [:of :kind]))
        (not (enum-type? (:of ret)))))
 
+(defn- buffer-wire-decls
+  "Wire struct declarations for every struct type the spec references in
+  a wire position: buffer-carrying struct elements in argument slices or
+  arrays, owned or borrowed record returns (any struct, scalar-only or
+  buffer-carrying), error-union-over-struct returns, and owned slices of
+  buffer-carrying structs. Deduplicated by name and emitted once at the
+  top level."
+  [spec]
+  (let [param-layouts (keep (fn [p]
+                              (let [t (:type p)]
+                                (when (contains? #{:slice :array} (:kind t))
+                                  (when (buffer-carrying-slice-element? (:of t))
+                                    (:layout (:of t))))))
+                            (:params spec))
+        ret            (:ret spec)
+        ret-layouts    (cond
+                         (and (contains? #{:owned :borrowed} (:kind ret))
+                              (= :slice (get-in ret [:of :kind]))
+                              (buffer-carrying-slice-element? (get-in ret [:of :of])))
+                         [(get-in ret [:of :of :layout])]
+
+                         (and (contains? #{:owned :borrowed} (:kind ret))
+                              (= :named (get-in ret [:of :kind]))
+                              (not (enum-type? (:of ret))))
+                         [(get-in ret [:of :layout])]
+
+                         (and (= :error-union (:kind ret))
+                              (= :named (get-in ret [:of :kind]))
+                              (not (enum-type? (:of ret))))
+                         [(get-in ret [:of :layout])]
+
+                         :else [])
+        all-layouts    (distinct (concat param-layouts ret-layouts))]
+    (str/join "\n" (map wire-struct all-layouts))))
+
 (defn- generate-inline
   "The inline-mode wrapper: the user's body string is spliced into the
-  exported function (or its inner impl fn). A wrapper that allocates gets
-  `std` in scope."
+  exported function (or its inner impl fn). Wire struct declarations and
+  the std import are emitted at the top level."
   [{:keys [ret] :as spec} body]
-  (let [core (cond
-               (error-union-struct-return? ret)                 (generate-error-union-struct-return spec body)
-               (= :error-union (:kind ret))                       (generate-error-union spec body)
-               (owned-record-return? ret)                         (generate-owned-struct-return spec body)
-               (contains? #{:owned :borrowed :bytes :string} (:kind ret)) (generate-ownership spec body)
-               (and (= :named (:kind ret)) (enum-type? ret))      (generate-plain spec body)
-               (= :named (:kind ret))                             (generate-struct-return spec body)
-               :else                                              (generate-plain spec body))]
-    (if (needs-std? spec)
-      (str "const std = @import(\"std\");\n\n" core)
-      core)))
+  (let [core      (cond
+                    (error-union-struct-return? ret)                 (generate-error-union-struct-return spec body)
+                    (= :error-union (:kind ret))                       (generate-error-union spec body)
+                    (owned-record-return? ret)                         (generate-owned-struct-return spec body)
+                    (contains? #{:owned :borrowed :bytes :string} (:kind ret)) (generate-ownership spec body)
+                    (and (= :named (:kind ret)) (enum-type? ret))      (generate-plain spec body)
+                    (= :named (:kind ret))                             (generate-struct-return spec body)
+                    :else                                              (generate-plain spec body))
+        wire-decls (buffer-wire-decls spec)
+        std?       (needs-std? spec)
+        parts      (cond-> []
+                      std?                          (conj "const std = @import(\"std\");")
+                      (not (str/blank? wire-decls)) (conj (str/trim wire-decls)))
+        preamble   (str/join "\n\n" parts)]
+    (if (str/blank? preamble)
+      core
+      (str preamble "\n\n" core))))
 
 ;; --- File mode: the wrapper calls a user-written `pub fn` ----------------
 
@@ -586,12 +681,17 @@
 
 (defn- wrapper-prelude
   "Reconstruction statements run inside the export wrapper before it calls
-  the user fn, indented to the function-body level. Empty when no param
-  needs rebuilding."
+  the user fn, indented to the function-body level. A reconstruction may
+  span multiple lines (a wire-to-nice conversion); each line is indented
+  individually. Empty when no param needs rebuilding."
   [params]
-  (let [stmts (keep reconstruction params)]
+  (let [stmts (keep #(reconstruction % true) params)]
     (when (seq stmts)
-      (str (str/join "\n" (map #(str "    " %) stmts)) "\n"))))
+      (->> (str/join "\n" stmts)
+           (str/split-lines)
+           (map #(if (str/blank? %) "" (str "    " %)))
+           (str/join "\n")
+           (#(str % "\n"))))))
 
 (defn- file-plain
   "A file-mode `export fn` that reconstructs its slice and struct args and
@@ -697,8 +797,7 @@
         out-params (str (when (seq params-str) ", ") "__ptr: *usize, __len: *usize")
         copies     (buffer-slice-copy-stmts layout)
         frees      (file-buffer-slice-free-stmts layout)]
-    (str (wire-struct layout)
-         "\nexport fn " sym "(" params-str out-params ") void {\n"
+    (str "export fn " sym "(" params-str out-params ") void {\n"
          (wrapper-prelude params)
          "    const __nice = " (user-call entry params) ";\n"
          "    const __wire = @import(\"std\").heap.c_allocator.alloc(" wire-t ", __nice.len) catch @panic(\"oom\");\n"
@@ -737,8 +836,7 @@
         free-body  (if (seq buf-fields)
                      (str/join "\n" (map file-free-field-stmt buf-fields))
                      "    _ = __ret;")]
-    (str (wire-struct layout)
-         "\nexport fn " sym "(" params-str out-params ") void {\n"
+    (str "export fn " sym "(" params-str out-params ") void {\n"
          (wrapper-prelude params)
          "    const __r = " (user-call entry params) ";\n"
          (str/join "\n" writes) "\n"
@@ -774,8 +872,7 @@
                         "        __errlen.* = __n;\n"
                         "        return;\n"
                         "    };")]
-    (str (wire-struct layout)
-         "\nexport fn " sym "(" params-str out-params ") void {\n"
+    (str "export fn " sym "(" params-str out-params ") void {\n"
          (wrapper-prelude params)
          "    const __r = " (user-call entry params) " " on-error "\n"
          "    __errlen.* = 0;\n"
@@ -786,17 +883,22 @@
 
 (defn- generate-file
   "The file-mode wrapper: an `export fn` that reconstructs args and calls
-  the user's `pub fn`. No impl fn and no top-level `std` are emitted; the
-  user's file owns its declarations and imports."
+  the user's `pub fn`. Wire struct declarations are emitted for any buffer-
+  carrying struct type in the spec; `std` is imported inline by the
+  reconstruction and free shims so the user's file owns its own imports."
   [{:keys [ret] :as spec} entry]
-  (cond
-    (error-union-struct-return? ret)                   (file-error-union-struct-return spec entry)
-    (= :error-union (:kind ret))                       (file-error-union spec entry)
-    (owned-record-return? ret)                         (file-owned-struct-return spec entry)
-    (contains? #{:owned :borrowed :bytes :string} (:kind ret)) (file-ownership spec entry)
-    (and (= :named (:kind ret)) (enum-type? ret))      (file-plain spec entry)
-    (= :named (:kind ret))                             (file-struct-return spec entry)
-    :else                                              (file-plain spec entry)))
+  (let [wire-decls (buffer-wire-decls spec)
+        core       (cond
+                    (error-union-struct-return? ret)                   (file-error-union-struct-return spec entry)
+                    (= :error-union (:kind ret))                       (file-error-union spec entry)
+                    (owned-record-return? ret)                         (file-owned-struct-return spec entry)
+                    (contains? #{:owned :borrowed :bytes :string} (:kind ret)) (file-ownership spec entry)
+                    (and (= :named (:kind ret)) (enum-type? ret))      (file-plain spec entry)
+                    (= :named (:kind ret))                             (file-struct-return spec entry)
+                    :else                                              (file-plain spec entry))]
+    (if (str/blank? wire-decls)
+      core
+      (str (str/trim wire-decls) "\n\n" core))))
 
 (defn generate
   "Emit the Zig wrapper for `spec`. In the default inline mode the user's

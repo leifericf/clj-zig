@@ -154,7 +154,7 @@
       :float (case bits 32 (unchecked-float v) 64 (double v))
       :bool  (boolean v))))
 
-(declare marshal-struct-into!)
+(declare marshal-struct-into! marshal-buffer-field buffer-field-element)
 
 (defn- marshal-struct-collection
   "Copy a Clojure collection of maps into a fresh native segment, one
@@ -170,7 +170,7 @@
         n      (count coll)
         seg    ^MemorySegment (.allocate ^Arena arena (* n stride) (long (:align inner)))]
     (dotimes [i n]
-      (marshal-struct-into! (.asSlice seg (* (long i) stride) stride) inner (nth coll i)))
+      (marshal-struct-into! arena (.asSlice seg (* (long i) stride) stride) inner (nth coll i)))
     {:address seg :length n :copy-back nil}))
 
 (defn- marshal-array
@@ -362,31 +362,73 @@
 (defn- marshal-struct
   "Write the fields of Clojure map `m` into a fresh native segment for the
   struct `descriptor`, each at its C-ABI offset. A scalar field is
-  written directly; a nested struct field recurses into a sub-segment at
-  the field's offset (the inner extern struct is embedded by value)."
+  written directly; a buffer field copies the caller's value into the call
+  arena and writes the `{ptr, len}` pair; a nested struct field recurses
+  into a sub-segment at the field's offset."
   [arena descriptor m]
   (let [seg ^MemorySegment (.allocate ^Arena arena (long (:size descriptor))
                                       (long (:align descriptor)))]
-    (marshal-struct-into! seg descriptor m)
+    (marshal-struct-into! arena seg descriptor m)
     seg))
 
 (defn- marshal-struct-into!
   "Write the fields of Clojure map `m` into the existing segment `seg`
-  for the struct `descriptor`, each at its C-ABI offset. Used both by
-  `marshal-struct` (for a top-level struct argument) and by the nested-
-  field recursion (writing into a sub-slice of the outer struct)."
-  [^MemorySegment seg descriptor m]
-  (doseq [{:keys [name type offset nested]} (:fields descriptor)]
+  for the struct `descriptor`, each at its C-ABI offset. A scalar field
+  is written directly; a buffer field (`:target`) copies the caller's
+  value into `arena` and writes the `{ptr, len}` pair at the field's two
+  wire offsets; a nested struct field recurses into a sub-segment. Used
+  by `marshal-struct` (top-level struct argument), the nested-field
+  recursion, and `marshal-struct-collection` (slice/array of structs)."
+  [arena ^MemorySegment seg descriptor m]
+  (doseq [{:keys [name type offset len-offset target nested]} (:fields descriptor)]
     (let [v (get m (keyword name))]
       (when (nil? v)
         (throw (ex-info (str "Struct " (:name descriptor) " is missing field " name ".")
                         {:level :error :error/code :clj-zig/missing-field
                          :type (:name descriptor) :field name})))
-      (if nested
+      (cond
+        target
+        (let [{:keys [address length]} (marshal-buffer-field arena type v)]
+          (.set seg ValueLayout/JAVA_LONG (long offset) (.address ^MemorySegment address))
+          (.set seg ValueLayout/JAVA_LONG (long len-offset) (long length)))
+
+        nested
         (let [inner (:layout type)
               sub   (.asSlice seg (long offset) (long (:size inner)))]
-          (marshal-struct-into! sub inner v))
+          (marshal-struct-into! arena sub inner v))
+
+        :else
         (write-scalar seg type offset (to-carrier {:type type} v))))))
+
+(defn- marshal-buffer-field
+  "Copy a buffer field's value into the call arena, returning
+  `{:address seg :length len}`. A `:string` field copies UTF-8 bytes; a
+  `:bytes` field copies a `byte[]`; a slice field writes each scalar
+  element at the backing carrier's stride. The arena owns the copy for
+  the call's duration."
+  [arena type v]
+  (case (:kind type)
+    :string (let [bs (.getBytes ^String v StandardCharsets/UTF_8)
+                  len (alength ^bytes bs)
+                  seg ^MemorySegment (.allocate ^Arena arena (long len) 1)]
+              (when (pos? len)
+                (MemorySegment/copy bs (long 0) seg ValueLayout/JAVA_BYTE (long 0) (long len)))
+              {:address seg :length len})
+    :bytes  (let [bs v
+                  len (alength ^bytes bs)
+                  seg ^MemorySegment (.allocate ^Arena arena (long len) 1)]
+              (when (pos? len)
+                (MemorySegment/copy bs (long 0) seg ValueLayout/JAVA_BYTE (long 0) (long len)))
+              {:address seg :length len})
+    (let [elem (buffer-field-element type)
+          bl   (value-layout elem)
+          bb   (.byteSize bl)
+          coll (if (vector? v) v (vec v))
+          n    (count coll)
+          seg  ^MemorySegment (.allocate ^Arena arena (* n bb) bb)]
+      (dotimes [i n]
+        (write-scalar seg elem (* (long i) bb) (to-carrier {:type elem} (nth coll i))))
+      {:address seg :length n})))
 
 (defn- buffer-field-element
   "The scalar element a `:vector` buffer field carries, for the bulk copy.

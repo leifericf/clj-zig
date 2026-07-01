@@ -155,9 +155,7 @@
                     (and (map? elem) (= :named (:kind elem))
                          (get-in elem [:layout])
                          (not (get-in elem [:layout :enum]))
-                         (if broad-elements?
-                           (layout/slice-element-layout? (get-in elem [:layout]))
-                           (layout/scalar-only-layout? (get-in elem [:layout])))))
+                         (layout/slice-element-layout? (get-in elem [:layout]))))
               nil
               t))
 

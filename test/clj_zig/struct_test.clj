@@ -183,3 +183,36 @@
   (testing "the walking free shim frees every element's buffer in volume"
     (is (every? #(= {:tag "tag" :n 9} (last %))
                 (repeatedly 300 #(make-labels 10))))))
+
+;; --- Const slice arguments of buffer-carrying structs -------------------
+;; A const slice of buffer-carrying structs arrives as a wire (extern) slab;
+;; the wrapper allocates a nice-record slab, converts each wire element (ptr/len
+;; words reinterpreted as real slices), runs the body, and frees the nice slab.
+
+(defnz longest-tag
+  "Return the length of the longest tag in a const slice of Labels."
+  [ls [:slice :const Label]
+   :ret :i64]
+  "var best: i64 = 0;
+   for (ls) |l| { if (l.tag.len > best) best = @intCast(l.tag.len); }
+   return best;")
+
+(deftest a-const-slice-of-buffer-structs-argument-round-trips
+  (testing "the body reads each element's string field"
+    (is (= 5 (longest-tag [{:tag "hello" :n 1} {:tag "hi" :n 2} {:tag "hey" :n 3}]))))
+  (testing "an empty const slice is valid"
+    (is (= 0 (longest-tag []))))
+  (testing "a single element round-trips"
+    (is (= 3 (longest-tag [{:tag "abc" :n 0}])))))
+
+(defnz count-labels
+  "Count the labels whose n field is positive."
+  [ls [:slice :const Label]
+   :ret :i64]
+  "var c: i64 = 0;
+   for (ls) |l| { if (l.n > 0) c += 1; }
+   return c;")
+
+(deftest a-const-slice-of-buffer-structs-reads-scalar-fields
+  (is (= 2 (count-labels [{:tag "a" :n 0} {:tag "b" :n 1} {:tag "c" :n 2}])))
+  (is (= 0 (count-labels [{:tag "x" :n 0}]))))
