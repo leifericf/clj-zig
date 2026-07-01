@@ -4,7 +4,8 @@
   parses only the declaration, never the body: the parameter bindings and
   their Zig type strings, and the return type string. Mapping those strings
   to boundary type forms is a separate step. Pure."
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [clj-zig.type :as type]))
 
 (defn- top-level-split
   "Split `s` on `sep` characters that sit at bracket depth zero, so a comma
@@ -62,9 +63,10 @@
 
 ;; --- Mapping Zig type strings to boundary type forms --------------------
 
-(def ^:private scalar-types
-  #{:i8 :i16 :i32 :i64 :i128 :u8 :u16 :u32 :u64 :u128 :isize :usize
-    :f16 :f32 :f64 :f80 :f128 :bool :void})
+;; The single source of truth for the scalar vocabulary is `type/scalars`;
+;; deriving the set from it keeps the two from drifting (a scalar added here
+;; but not there, or vice versa, would silently misparse).
+(def ^:private scalar-types (set (keys type/scalars)))
 
 (defn- strip-const
   "Split a leading `const ` qualifier off a pointee type, returning

@@ -60,7 +60,10 @@
   (is (= :f64 (infer/zig-type->boundary "f64")))
   (is (= :bool (infer/zig-type->boundary "bool")))
   (is (= :void (infer/zig-type->boundary "void")))
-  (is (= :usize (infer/zig-type->boundary "usize"))))
+  (is (= :usize (infer/zig-type->boundary "usize")))
+  (testing "noreturn is a scalar, not a named-type symbol"
+    (is (= :noreturn (infer/zig-type->boundary "noreturn")))
+    (is (= :noreturn (infer/zig-type->boundary "noreturn" :return)))))
 
 (deftest maps-compound-types
   (is (= [:slice :const :f64] (infer/zig-type->boundary "[]const f64")))
