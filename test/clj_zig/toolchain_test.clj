@@ -95,3 +95,20 @@
       (with-redefs [toolchain/pinned-dir (constantly dir)]
         (is (nil? (#'toolchain/pinned-exe))
             "the resolver skips a 'zig' that is a directory, not a file")))))
+
+(deftest extract-zip-rejects-an-entry-outside-the-install-root
+  (testing "a crafted zip with a ../ entry is refused (zip-slip defense)"
+    (let [dest    (temp-dir)
+          evil    (io/file (.getParentFile dest) "clj-zig-zipslip-evil.txt")
+          archive (java.io.File/createTempFile "clj-zig-zip" ".zip")]
+      (.deleteOnExit archive)
+      (when (.exists evil) (.delete evil))
+      (with-open [zos (java.util.zip.ZipOutputStream. (io/output-stream archive))]
+        (let [entry (java.util.zip.ZipEntry. "../clj-zig-zipslip-evil.txt")]
+          (.putNextEntry zos entry)
+          (.write zos (.getBytes "pwned"))
+          (.closeEntry zos)))
+      (let [ex (try (#'toolchain/extract-zip! archive dest)
+                    (catch clojure.lang.ExceptionInfo e e))]
+        (is (= :clj-zig/zig-extract-failed (:error/code (ex-data ex))))
+        (is (not (.exists evil)) "nothing was written outside the install root")))))

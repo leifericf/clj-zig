@@ -167,18 +167,27 @@
                        :clj-zig/stderr err})))))
 
 (defn- extract-zip!
-  "Unpack a zip archive into `dest-dir`."
+  "Unpack a zip archive into `dest-dir`. Each entry is validated to stay
+  within `dest-dir` before it is written, so a crafted archive with a
+  `../` entry (zip-slip) cannot write outside the install root; the
+  download is checksum-verified first, but this is defense in depth."
   [archive dest-dir]
-  (with-open [zin (java.util.zip.ZipInputStream. (io/input-stream archive))]
-    (loop []
-      (when-let [entry (.getNextEntry zin)]
-        (let [out (io/file dest-dir (.getName entry))]
-          (if (.isDirectory entry)
-            (.mkdirs out)
-            (do (io/make-parents out)
-                (with-open [os (io/output-stream out)]
-                  (io/copy zin os)))))
-        (recur)))))
+  (let [dest-canonical (.getCanonicalPath dest-dir)]
+    (with-open [zin (java.util.zip.ZipInputStream. (io/input-stream archive))]
+      (loop []
+        (when-let [entry (.getNextEntry zin)]
+          (let [out (io/file dest-dir (.getName entry))]
+            (when-not (str/starts-with? (.getCanonicalPath out) dest-canonical)
+              (throw (ex-info (str "Refusing to extract a zip entry outside the"
+                                   " install dir: " (.getName entry))
+                              {:level :error :error/code :clj-zig/zig-extract-failed
+                               :clj-zig/entry (.getName entry)})))
+            (if (.isDirectory entry)
+              (.mkdirs out)
+              (do (io/make-parents out)
+                  (with-open [os (io/output-stream out)]
+                    (io/copy zin os)))))
+          (recur))))))
 
 (defn- install-pinned!
   "Download, verify, and extract the pinned Zig so `(pinned-dir)` holds a
