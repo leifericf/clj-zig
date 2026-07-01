@@ -87,3 +87,11 @@
           (is (zero? (:exit (sh/sh installed "version"))) "the installed zig runs")
           (is (= installed (toolchain/ensure-pinned!)) "a second call reuses the install")
           (is (= 1 @installs) "and does not fetch again"))))))
+
+(deftest pinned-exe-rejects-a-directory-named-zig
+  (testing "a directory with the execute bit is not a runnable zig"
+    (let [dir (temp-dir)]
+      (.mkdirs (io/file dir "zig"))
+      (with-redefs [toolchain/pinned-dir (constantly dir)]
+        (is (nil? (#'toolchain/pinned-exe))
+            "the resolver skips a 'zig' that is a directory, not a file")))))

@@ -49,7 +49,7 @@
     (->> (str/split (or (System/getenv "PATH") "") sep)
          (remove str/blank?)
          (map #(io/file % exe))
-         (filter #(.canExecute ^java.io.File %))
+         (filter executable?)
          (map #(.getPath ^java.io.File %))
          first)))
 
@@ -62,7 +62,7 @@
   "The pinned `zig` path if already installed, else nil."
   []
   (let [f (io/file (pinned-dir) (exe-name))]
-    (when (.canExecute f) (.getPath f))))
+    (when (executable? f) (.getPath f))))
 
 ;; --- The bootstrap fetch: name a release, download it, verify it, place it ---
 
