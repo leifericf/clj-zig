@@ -364,8 +364,13 @@
         :vector             (read-slice-values ptr len (buffer-field-element type))))
 
     nested
-    (let [inner (:layout type)]
-      (read-struct (.asSlice seg (long offset) (long (:size inner))) inner))
+    (let [inner (:layout type)
+          m (read-struct (.asSlice seg (long offset) (long (:size inner))) inner)]
+      ;; A nested defrecordz field rebuilds via its map factory, mirroring the
+      ;; top-level record-return path; a deftypez field (no :record) stays a map.
+      (if-let [factory-sym (:record inner)]
+        ((requiring-resolve factory-sym) m)
+        m))
 
     (get-in type [:layout :enum])
     (enum-value->member (:layout type)

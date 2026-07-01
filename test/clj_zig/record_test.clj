@@ -52,3 +52,28 @@
 (deftest the-record-struct-appears-in-the-generated-preamble
   (is (str/includes? (zig/generated-source #'norm)
                      "const Point = extern struct {")))
+
+;; --- A nested record field ----------------------------------------------
+
+(defrecordz Rect
+  [origin Point
+   size   Point])
+
+(defnz make-rect
+  [x :f64 y :f64 w :f64 h :f64
+   :ret Rect]
+  "return .{ .origin = .{ .x = x, .y = y }, .size = .{ .x = w, .y = h } };")
+
+(defnz rect-area
+  [r Rect
+   :ret :f64]
+  "return r.size.x * r.size.y;")
+
+(deftest a-nested-record-field-rebuilds-as-a-record
+  (testing "a record field of a record return rebuilds via its map factory"
+    (let [r (make-rect 1.0 2.0 4.0 6.0)]
+      (is (instance? Rect r))
+      (is (instance? Point (:origin r)))
+      (is (instance? Point (:size r)))
+      (is (= (->Point 1.0 2.0) (:origin r)))
+      (is (= (->Point 4.0 6.0) (:size r))))))
