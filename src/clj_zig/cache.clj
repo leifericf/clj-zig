@@ -113,12 +113,46 @@
     (str/includes? target "windows") "dll"
     :else                            "so"))
 
+(defn- escapes-segment?
+  "True when the string form of `x` could break out of a single cache path
+  segment: a path separator (`/` or `\\`), a NUL byte, or the parent token
+  `..` standing alone. A name with internal dots stays a single segment and
+  does not climb, so only `..` as a whole segment is rejected, mirroring the
+  import-escape rule in `clj-zig.imports`."
+  [x]
+  (let [s (str x)]
+    (or (str/includes? s "/")
+        (str/includes? s "\\")
+        (str/includes? s "\u0000")
+        (= s ".."))))
+
+(defn- segment
+  "The string form of the cache path component named `label` (`x`), checked
+  against `escapes-segment?`. The cache interpolates `ns`, `name`, `target`,
+  and `hash` straight into filesystem and resource paths, so each is gated
+  here; a value that could escape its segment is refused as data."
+  [label x]
+  (let [s (str x)]
+    (when (escapes-segment? s)
+      (throw (ex-info (str "Refusing a cache path component that escapes its"
+                           " segment: " label " = " (pr-str s))
+                      {:level        :error
+                       :error/code   :clj-zig/unsafe-path-component
+                       :component    label
+                       :value        s})))
+    s))
+
 (defn artifact-paths
   "The artifact directory and file paths for a build, under `root`
-  (default `.clj-zig/cache`)."
+  (default `.clj-zig/cache`). Each path component is checked, so a malformed
+  spec cannot write outside the cache."
   [{:keys [root target ns name hash]}]
-  (let [root (or root ".clj-zig/cache")
-        dir  (str root "/" target "/" ns "/" name "-" hash)]
+  (let [root   (or root ".clj-zig/cache")
+        target (segment :target target)
+        ns     (segment :ns ns)
+        name   (segment :name name)
+        hash   (segment :hash hash)
+        dir    (str root "/" target "/" ns "/" name "-" hash)]
     {:dir           dir
      :source-path   (str dir "/source.zig")
      :library-path  (str dir "/lib" name "-" hash "." (extension-for-target target))
@@ -134,10 +168,14 @@
   "The classpath resource path for a baked library, mirroring the cache
   layout under the resource root. The library's content hash is in the
   path, so a resource matches a function's hash for a target or it does
-  not."
+  not. Components are checked, as in `artifact-paths`."
   [{:keys [target ns name hash]}]
-  (str resource-root "/" target "/" ns "/" name "-" hash
-       "/lib" name "-" hash "." (extension-for-target target)))
+  (let [target (segment :target target)
+        ns     (segment :ns ns)
+        name   (segment :name name)
+        hash   (segment :hash hash)]
+    (str resource-root "/" target "/" ns "/" name "-" hash
+         "/lib" name "-" hash "." (extension-for-target target))))
 
 ;; --- Shell: environment, filesystem -------------------------------------
 

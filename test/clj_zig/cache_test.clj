@@ -132,6 +132,37 @@
     (is (str/ends-with? (:manifest-path p) "/manifest.edn"))
     (is (str/includes? (:library-path p) "/libadd-83a1c0f9e1b2."))))
 
+(deftest path-components-cannot-escape-the-cache
+  (let [good {:root "/tmp/c" :target "macos-aarch64"
+              :ns 'app.core :name 'add :hash "83a1c0f9e1b2dead"}]
+    (testing "a parent-traversal segment is refused"
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"escapes its segment"
+           (cache/artifact-paths (assoc good :target "..")))))
+    (testing "a path separator in any component is refused"
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"escapes its segment"
+           (cache/artifact-paths (assoc good :name "a/b"))))
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"escapes its segment"
+           (cache/artifact-paths (assoc good :ns "x\\y")))))
+    (testing "a NUL byte is refused"
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"escapes its segment"
+           (cache/artifact-paths (assoc good :hash (str "ab" \u0000 "cd"))))))
+    (testing "the same gate covers the bundled resource path"
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"escapes its segment"
+           (cache/bundled-resource-path (assoc good :target "..")))))
+    (testing "a name with internal dots stays a single segment"
+      (is (= "/tmp/c/macos-aarch64/app.core/edge..case-83a1c0f9e1b2dead"
+             (:dir (cache/artifact-paths (assoc good :name "edge..case"))))))))
+
 (deftest reuses-when-unchanged-rebuilds-when-changed
   (let [root     (scratch-root)
         compiles (atom 0)
