@@ -16,6 +16,28 @@
   (:require [clojure.string :as str]
             [clj-zig.layout :as layout]))
 
+(defn- valid-zig-ident?
+  "True when `s` is a legal Zig identifier, so it can name the user fn the
+  file-mode wrapper calls."
+  [s]
+  (boolean (re-matches #"[A-Za-z_][A-Za-z0-9_]*" s)))
+
+(defn entry-name
+  "The user fn name the file-mode wrapper calls: `:zig/fn` when given, else
+  the Clojure fn name with hyphens as underscores, the way Clojure names
+  munge for the JVM (`dot-product` becomes `dot_product`). A name still not a
+  legal Zig identifier, such as `red?` or `saxpy!`, needs `:zig/fn`."
+  [spec descriptor]
+  (or (:zig/fn descriptor)
+      (let [n (str/replace (name (:name spec)) "-" "_")]
+        (if (valid-zig-ident? n)
+          n
+          (throw (ex-info (str "The Clojure name " (pr-str (:name spec))
+                               " is not a legal Zig identifier; name the entry"
+                               " fn with :zig/fn.")
+                          {:level :error :error/code :clj-zig/entry-name-needed
+                           :name (:name spec)}))))))
+
 (declare zig-type pointee pointer-type error-union-struct-return?)
 
 (defn- zig-type

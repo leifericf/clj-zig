@@ -7,8 +7,9 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
-            [clj-zig.core :as core]
-            [clj-zig :as zig]))
+             [clj-zig.core :as core]
+             [clj-zig.fileref :as fileref]
+             [clj-zig :as zig]))
 
 (defn- scratch-dir []
   (str (java.nio.file.Files/createTempDirectory
@@ -30,13 +31,13 @@
 (deftest namespace-zig-file-swaps-the-extension
   (testing "the co-located .zig sits beside the namespace source"
     (is (= "/proj/src/app/geometry.zig"
-           (core/namespace-zig-file "/proj/src/app/geometry.clj")))
+           (fileref/namespace-zig-file "/proj/src/app/geometry.clj")))
     (is (= "/proj/src/app/geometry.zig"
-           (core/namespace-zig-file "/proj/src/app/geometry.cljc")))))
+           (fileref/namespace-zig-file "/proj/src/app/geometry.cljc")))))
 
 (deftest namespace-zig-file-rejects-a-fileless-namespace
   (testing "a bodyless defnz needs a defining file"
-    (let [ex (try (core/namespace-zig-file "NO_SOURCE_PATH")
+    (let [ex (try (fileref/namespace-zig-file "NO_SOURCE_PATH")
                   (catch clojure.lang.ExceptionInfo e e))]
       (is (= :clj-zig/no-namespace-file (:error/code (ex-data ex)))))))
 

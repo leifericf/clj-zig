@@ -320,58 +320,12 @@
 
 ;; --- File-sourced bodies ------------------------------------------------
 
-(defn- valid-zig-ident?
-  "True when `s` is a legal Zig identifier, so it can name the user fn the
-  file-mode wrapper calls."
-  [s]
-  (boolean (re-matches #"[A-Za-z_][A-Za-z0-9_]*" s)))
-
-(defn- entry-name
-  "The user fn name the file-mode wrapper calls: `:zig/fn` when given, else
-  the Clojure fn name with hyphens as underscores, the way Clojure names
-   munge for the JVM (`dot-product` becomes `dot_product`). A name still not a
-  legal Zig identifier, such as `red?` or `saxpy!`, needs `:zig/fn`."
-  [spec descriptor]
-  (or (:zig/fn descriptor)
-      (let [n (str/replace (name (:name spec)) "-" "_")]
-        (if (valid-zig-ident? n)
-          n
-          (throw (ex-info (str "The Clojure name " (pr-str (:name spec))
-                               " is not a legal Zig identifier; name the entry"
-                               " fn with :zig/fn.")
-                          {:level :error :error/code :clj-zig/entry-name-needed
-                           :name (:name spec)}))))))
-
-(defn namespace-zig-file
-  "The `.zig` file co-located with a namespace's Clojure source: the
-  defining file's path with its `.clj`/`.cljc` extension replaced by
-  `.zig`. A bodyless `defnz` sources its body from this file's matching
-  `pub fn`. Pure; the filesystem and classpath resolution happens in
-  `establish-binding-from!`. Throws when there is no defining file, as at
-  the REPL, where a bodyless `defnz` has no co-located file to read."
-  [defining-file]
-  (when (or (nil? defining-file) (= defining-file "NO_SOURCE_PATH"))
-    (throw (ex-info (str "A bodyless defnz needs a file-loaded namespace with"
-                         " a co-located .zig; give an explicit {:zig/file ...}"
-                         " body when there is no defining file.")
-                    {:level :error :error/code :clj-zig/no-namespace-file})))
-  (str/replace defining-file #"\.cljc?$" ".zig"))
-
-(defn declared-namespace
-  "The namespace a `.zig` file asserts it belongs to via a leading
-  `//! clj-zig: <ns>` doc-comment line, or nil when it makes no such
-  assertion. Pure."
-  [zig-text]
-  (some (fn [line]
-          (second (re-matches #"\s*//!\s*clj-zig:\s*(\S+)\s*" line)))
-        (str/split-lines zig-text)))
-
 (defn- check-namespace!
   "Throw when a `.zig` file's `//! clj-zig: <ns>` header names a namespace
   other than the one using it. The path binds the file to its namespace;
   the header only catches a file wired to the wrong namespace."
   [expected-ns text file]
-  (when-let [declared (declared-namespace text)]
+  (when-let [declared (fileref/declared-namespace text)]
     (when (not= declared (str expected-ns))
       (throw (ex-info (str "The Zig file " (pr-str file) " declares namespace "
                            declared " but is used from " expected-ns ".")
@@ -400,7 +354,7 @@
                    (:zig/symbol descriptor) (assoc :symbol (:zig/symbol descriptor)))
         gen      (cond-> {:mode (if raw? :raw :file) :source-file path}
                    opts        (assoc :options-extra opts)
-                   (not raw?)  (assoc :entry (entry-name spec descriptor))
+                   (not raw?)  (assoc :entry (source/entry-name spec descriptor))
                    (seq files) (assoc :aux-files files))]
     (establish-binding! the-var the-spec text var-meta wrap gen)))
 
@@ -510,7 +464,7 @@
           signature     (if infer?
                           (infer/infer-signature
                            (:text (fileref/resolve-and-read
-                                   defining-file (namespace-zig-file defining-file)))
+                                   defining-file (fileref/namespace-zig-file defining-file)))
                            (str/replace (name fn-name) "-" "_"))
                           signature)
           signature     (prepare-signature the-ns signature)
@@ -523,7 +477,7 @@
                                {:arglists (list arglist)})
           wrap          `(fn [invoke#] (fn ~arglist (invoke# ~@call-args)))
           descriptor    (if (or bodyless? infer?)
-                          `{:zig/file (namespace-zig-file ~defining-file)}
+                          `{:zig/file (fileref/namespace-zig-file ~defining-file)}
                           body)]
       `(do
          (def ~fn-name)

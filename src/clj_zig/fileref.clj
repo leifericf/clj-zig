@@ -7,7 +7,8 @@
 
   `candidate-paths` is pure path arithmetic; `resolve-and-read` touches
   the filesystem and the classpath."
-  (:require [clojure.java.io :as io]))
+  (:require [clojure.java.io :as io]
+            [clojure.string :as str]))
 
 (def ^:private no-source
   "The value of `*file*` when a form is evaluated with no source file, as
@@ -29,6 +30,30 @@
             rel]
            (remove nil?)
            vec))))
+
+(defn namespace-zig-file
+  "The `.zig` file co-located with a namespace's Clojure source: the
+  defining file's path with its `.clj`/`.cljc` extension replaced by
+  `.zig`. A bodyless `defnz` sources its body from this file's matching
+  `pub fn`. Pure; the filesystem and classpath resolution happens in
+  `establish-binding-from!`. Throws when there is no defining file, as at
+  the REPL, where a bodyless `defnz` has no co-located file to read."
+  [defining-file]
+  (when (or (nil? defining-file) (= defining-file no-source))
+    (throw (ex-info (str "A bodyless defnz needs a file-loaded namespace with"
+                         " a co-located .zig; give an explicit {:zig/file ...}"
+                         " body when there is no defining file.")
+                    {:level :error :error/code :clj-zig/no-namespace-file})))
+  (str/replace defining-file #"\.cljc?$" ".zig"))
+
+(defn declared-namespace
+  "The namespace a `.zig` file asserts it belongs to via a leading
+  `//! clj-zig: <ns>` doc-comment line, or nil when it makes no such
+  assertion. Pure."
+  [zig-text]
+  (some (fn [line]
+          (second (re-matches #"\s*//!\s*clj-zig:\s*(\S+)\s*" line)))
+        (str/split-lines zig-text)))
 
 (defn resolve-and-read
   "Read the text of the Zig source file `rel`, trying the filesystem
