@@ -23,3 +23,18 @@
       (is (not (.exists gone)))
       (is (false? (fs/delete-recursively! gone))
           "delete returns false for a file that was not there"))))
+
+(deftest a-symlink-to-a-directory-is-removed-not-descended
+  (testing "deleting a symlink does not follow it into the target's tree"
+    (let [target (temp-dir)
+          leaf   (io/file target "kept.txt")]
+      (spit leaf "x")
+      (let [link-root (temp-dir)
+            link      (java.nio.file.Files/createSymbolicLink
+                       (.toPath (io/file link-root "link"))
+                       (.toPath target) (make-array java.nio.file.attribute.FileAttribute 0))]
+        (is (.exists (.toFile link)))
+        (fs/delete-recursively! (.toFile link))
+        (is (not (.exists (.toFile link))) "the symlink itself is gone")
+        (is (.exists leaf) "the target's contents survive")
+        (fs/delete-recursively! target)))))
