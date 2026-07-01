@@ -8,7 +8,8 @@
             [clojure.java.io :as io]
             [clojure.java.shell :as sh]
             [clojure.string :as str]
-            [clj-zig.fs :as fs]))
+            [clj-zig.fs :as fs])
+  (:import (java.lang ProcessHandle)))
 
 (def pinned-version
   "The Zig release the bootstrap installs and the generated wrappers
@@ -189,7 +190,11 @@
         stem    (archive-stem os arch pinned-version)
         target  (.getAbsoluteFile (pinned-dir))
         parent  (.getParentFile target)
-        staging (io/file parent (str ".staging-" stem))
+        ;; A process-unique staging dir so two JVMs bootstrapping at once
+        ;; (parallel CI, a monorepo) cannot race on the same path: each
+        ;; downloads and extracts into its own dir, then renames into place.
+        staging (io/file parent (str ".staging-" stem "-"
+                                     (.pid (ProcessHandle/current))))
         archive (io/file staging (str stem "." (archive-ext os)))]
     (when (.exists staging) (fs/delete-recursively! staging))
     (.mkdirs staging)
