@@ -202,3 +202,23 @@
     (is (= 6 (call! 5))))
   (core/recompile! the-var)
   (is (= 6 (call! 5))))
+
+(deftest a-non-ex-info-shell-failure-is-recorded-as-a-failed-attempt
+  ;; The keep-last-good contract must hold for ANY failure to (re)establish,
+  ;; not only the structured ex-info a compile throws. A raw shell failure
+  ;; (an IOException, an IllegalStateException) is recorded as
+  ;; :clj-zig/shell-failure and the last good binding stays live.
+  (define! 1)
+  (is (= 6 (call! 5)))
+  (with-redefs [core/establish! (fn [& _]
+                                  (throw (IllegalStateException. "shell blew up")))]
+    (let [ex (try (core/establish-binding! the-var (spec0) "return x + 2;" {} wrap)
+                  (catch clojure.lang.ExceptionInfo e e))]
+      (is (instance? clojure.lang.ExceptionInfo ex)
+          "the raw failure is rethrown as a structured diagnostic")
+      (is (= :clj-zig/shell-failure (:error/code (ex-data ex))))
+      (is (instance? IllegalStateException (.getCause ex)))
+      (let [attempt (:clj-zig/failed-attempt (meta the-var))]
+        (is (some? attempt) "the failed attempt is recorded for explain")
+        (is (= :clj-zig/shell-failure (:error/code attempt))))
+      (is (= 6 (call! 5)) "the last good binding is still live"))))

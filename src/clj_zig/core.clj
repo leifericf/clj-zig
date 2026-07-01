@@ -276,10 +276,18 @@
                     #(-> (merge % var-meta {:clj-zig/info info})
                          (dissoc :clj-zig/failed-attempt)))
        the-var)
-     (catch clojure.lang.ExceptionInfo e
-       (alter-meta! the-var assoc
-                    :clj-zig/failed-attempt (assoc (ex-data e) :body body))
-       (throw (ex-info (diagnostics/render (ex-data e)) (ex-data e) e))))))
+      (catch Throwable e
+        (let [data (if (instance? clojure.lang.ExceptionInfo e)
+                     (ex-data e)
+                     {:level      :error
+                      :error/code :clj-zig/shell-failure
+                      :message    (str "clj-zig hit an unexpected failure while"
+                                       " building the native function: "
+                                       (.getMessage e))
+                      :cause      e})]
+          (alter-meta! the-var assoc
+                       :clj-zig/failed-attempt (assoc data :body body))
+          (throw (ex-info (diagnostics/render data) data e)))))))
 
 (defn recompile!
   "Force a fresh build of `the-var`'s current spec and body, ignoring the
