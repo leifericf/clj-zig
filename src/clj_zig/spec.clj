@@ -128,34 +128,38 @@
   "Return the first indirection node (`:slice`, `:array`, `:ptr`, or
   `:manyptr`) in `t` whose immediate `:of` element the marshaller cannot
   carry, or nil when every element is carryable. A scalar element is
-  always carryable; a named struct element is carryable when its layout
+  always carryable; a named enum element is carryable (it crosses as its
+  backing integer); a named struct element is carryable when its layout
   is scalar-only (it crosses by value, like a nested struct field in ADR
   43). When `broad-elements?` is true (return position), a struct that
   carries buffer fields is also a carryable slice element: the wrapper
   transforms the body's nice-record slice into a wire slab and the free
   shim walks each element's buffers. A pointer or many-pointer must still
-  hold a scalar; a slice or array of a buffer-carrying struct, an enum, a
-  pointer, an optional, or a wrapper element is rejected. The walk
-  descends through single-element wrappers so an indirection nested under
-  ownership is caught."
+  hold a scalar; a slice or array of a buffer-carrying struct element
+  (in argument position), a pointer, an optional, or a wrapper element
+  is rejected. The walk descends through single-element wrappers so an
+  indirection nested under ownership is caught."
   ([t] (find-non-scalar-element t false))
   ([t broad-elements?]
    (when (map? t)
      (let [k (:kind t)]
        (cond
-         (contains? #{:slice :array} k)
-         (let [elem (:of t)]
-           (if (or (and (map? elem) (= :scalar (:kind elem))
-                        (not (type/i128-type? (:name elem)))
-                        (type/has-carrier? (:name elem)))
-                   (and (map? elem) (= :named (:kind elem))
-                        (get-in elem [:layout])
-                        (not (get-in elem [:layout :enum]))
-                        (if broad-elements?
-                          (layout/slice-element-layout? (get-in elem [:layout]))
-                          (layout/scalar-only-layout? (get-in elem [:layout])))))
-             nil
-             t))
+          (contains? #{:slice :array} k)
+          (let [elem (:of t)]
+            (if (or (and (map? elem) (= :scalar (:kind elem))
+                         (not (type/i128-type? (:name elem)))
+                         (type/has-carrier? (:name elem)))
+                    (and (map? elem) (= :named (:kind elem))
+                         (get-in elem [:layout])
+                         (get-in elem [:layout :enum]))
+                    (and (map? elem) (= :named (:kind elem))
+                         (get-in elem [:layout])
+                         (not (get-in elem [:layout :enum]))
+                         (if broad-elements?
+                           (layout/slice-element-layout? (get-in elem [:layout]))
+                           (layout/scalar-only-layout? (get-in elem [:layout])))))
+              nil
+              t))
 
          (contains? #{:ptr :manyptr} k)
          (let [elem (:of t)]

@@ -78,3 +78,54 @@
   (testing "the generated preamble declares the backing width"
     (is (str/includes? (zig/generated-source #'flag-for)
                        "const CompactTag = enum(u8) {"))))
+
+;; --- Slices and arrays of enums -----------------------------------------
+
+(defnz classify-batch
+  "Classify each byte as a ParseStatus, returned as an owned slice."
+  [bs [:slice :const :u8]
+   :ret [:owned [:slice ParseStatus]]]
+  "const out = std.heap.c_allocator.alloc(ParseStatus, bs.len) catch @panic(\"oom\");
+   for (bs, 0..) |b, i| {
+       out[i] = if (b == 0) .eof else if (b < 10) .ok else .invalid;
+   }
+   return out;")
+
+(deftest an-owned-slice-of-enums-returns-keywords
+  (testing "each element crosses as its backing int and maps to a keyword"
+    (is (= [:ok :ok :invalid :eof]
+           (classify-batch (byte-array [5 9 50 0])))))
+  (testing "an empty input yields an empty owned slice"
+    (is (= [] (classify-batch (byte-array [])))))
+  (testing "the slab is freed each call"
+    (is (every? #(= :invalid (last %))
+                (repeatedly 200 #(classify-batch (byte-array [50])))))))
+
+(defnz status-sum
+  "Sum the backing values of each status in a const enum slice."
+  [ss [:slice :const ParseStatus]
+   :ret :i64]
+  "var t: i64 = 0;
+   for (ss) |s| t += @intFromEnum(s);
+   return t;")
+
+(deftest a-const-slice-of-enums-argument-round-trips
+  (testing "each keyword crosses as its backing int"
+    (is (= 3 (status-sum [:ok :invalid :eof]))))
+  (testing "an empty slice is valid"
+    (is (= 0 (status-sum [])))))
+
+(defnz compact-codes
+  "Return the backing codes of three compact tags as an owned slice."
+  [tags [:slice :const CompactTag]
+   :ret [:owned [:slice CompactTag]]]
+  "const out = std.heap.c_allocator.alloc(CompactTag, tags.len) catch @panic(\"oom\");
+   for (tags, 0..) |t, i| out[i] = t;
+   return out;")
+
+(deftest a-u8-backed-enum-slice-round-trips
+  (testing "a const slice of u8-backed enums passes and an owned slice returns"
+    (is (= [:red :green :blue]
+           (compact-codes [:red :green :blue]))))
+  (testing "an empty slice round-trips"
+    (is (= [] (compact-codes [])))))

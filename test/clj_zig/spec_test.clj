@@ -142,6 +142,21 @@
                                   :signature '[:ret [:owned [:slice Point]]]
                                   :types types}))))))
 
+(deftest accepts-a-slice-of-an-enum
+  (let [types {'Status (layout/describe-enum 'Status '[ok 0 bad 1])}]
+    (testing "a const slice of an enum is a valid argument"
+      (is (map? (spec/build-spec {:ns 'app.core :name 'f
+                                  :signature '[xs [:slice :const Status] :ret :i64]
+                                  :types types}))))
+    (testing "an owned slice of an enum is a valid return"
+      (is (map? (spec/build-spec {:ns 'app.core :name 'f
+                                  :signature '[:ret [:owned [:slice Status]]]
+                                  :types types}))))
+    (testing "an array of an enum is a valid argument"
+      (is (map? (spec/build-spec {:ns 'app.core :name 'f
+                                  :signature '[xs [:array 3 Status] :ret :i64]
+                                  :types types}))))))
+
 (deftest rejects-a-mutable-struct-element-slice
   (let [types {'Point (layout/describe 'Point '[x :f64 y :f64])}]
     (testing "a non-const struct-element slice cannot propagate mutations to maps"

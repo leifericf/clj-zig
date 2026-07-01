@@ -64,3 +64,14 @@ struct field. Lowering the enum to its backing int in the `export`
 signature with `@enumFromInt`/`@intFromEnum`, mirroring the
 struct-by-pointer scheme, was also considered. Raw FFM showed `enum(i32)`
 is already ABI-stable as a plain int, so the indirection is unnecessary.
+
+A slice or array of enums crosses as a slab of backing integers
+(amendment, 2026-07-02). The element gate accepts a named-enum element
+for both argument and return positions. The marshaller maps each keyword
+to its backing int via `enum-member->value` and writes the int slab; the
+reader bulk-copies the backing ints and maps each through
+`enum-value->member`. A `:const` qualifier is required for an
+enum-element slice argument (same discipline as a struct-element slice:
+the caller's immutable keyword sequence has no mutable container for
+copy-back). An owned enum-slice return uses the simple slab free (ints,
+no buffers).

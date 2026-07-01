@@ -182,23 +182,45 @@
   element is a Clojure collection of maps, marshaled one struct per
   stride via `marshal-struct-collection`."
   [arena {:keys [type]} arr]
-  (if (= :named (:kind (:of type)))
-    (marshal-struct-collection arena {:type type} arr)
-    (let [elem  (value-layout (:of type))
-          bytes (.byteSize elem)
-          len   (Array/getLength arr)
-          seg   ^MemorySegment (.allocate ^Arena arena (* len bytes) bytes)
-          bool? (= :bool (:category (type/scalar-info (:name (:of type)))))]
-      (if bool?
-        (dotimes [i len] (.set seg ValueLayout/JAVA_BOOLEAN (long i) (boolean (Array/get arr i))))
-        (MemorySegment/copy arr (int 0) seg elem (long 0) (int len)))
-      {:address   seg
-       :length    len
-       :copy-back (when-not (:const? type)
-                    (if bool?
-                      (fn [] (dotimes [i len]
-                               (Array/set arr i (.get seg ValueLayout/JAVA_BOOLEAN (long i)))))
-                      (fn [] (MemorySegment/copy seg elem (long 0) arr (int 0) (int len)))))})))
+  (let [elem (:of type)]
+    (cond
+      (and (= :named (:kind elem)) (enum-type? elem))
+      (let [layout  (:layout elem)
+            backing (:backing layout)
+            bl      (value-layout backing)
+            bb      (.byteSize bl)
+            len     (count arr)
+            seg     ^MemorySegment (.allocate ^Arena arena (* len bb) bb)]
+        (dotimes [i len]
+          (let [v (enum-member->value layout (nth arr i))]
+            (when (nil? v)
+              (throw (ex-info (str (nth arr i) " is not a member of enum " (:name layout) ".")
+                              {:level :error
+                               :error/code :clj-zig/unknown-enum-member
+                               :type (:name layout) :member (nth arr i)})))
+            (write-scalar seg backing (* (long i) bb) (to-carrier {:type backing} v))))
+        {:address seg :length len :copy-back nil})
+
+      (= :named (:kind elem))
+      (marshal-struct-collection arena {:type type} arr)
+
+      :else
+      (let [bl    (value-layout elem)
+            bytes (.byteSize bl)
+            len   (Array/getLength arr)
+            seg   ^MemorySegment (.allocate ^Arena arena (* len bytes) bytes)
+            bool? (= :bool (:category (type/scalar-info (:name elem))))]
+        (if bool?
+          (dotimes [i len] (.set seg ValueLayout/JAVA_BOOLEAN (long i) (boolean (Array/get arr i))))
+          (MemorySegment/copy arr (int 0) seg bl (long 0) (int len)))
+        {:address   seg
+         :length    len
+         :copy-back (when-not (:const? type)
+                      (if bool?
+                        (fn [] (dotimes [i len]
+                                 (Array/set arr i (.get seg ValueLayout/JAVA_BOOLEAN (long i)))))
+                         (fn [] (MemorySegment/copy seg bl (long 0) arr (int 0) (int len)))))}))))
+
 
 (defn- marshal-arg
   "Coerce one boundary argument to its native carriers. Pointers and slices
@@ -439,20 +461,36 @@
   "Copy `len` elements from the native address `addr` into an immutable
   Clojure vector. A scalar element bulk-copies into a typed primitive
   array (one native move, `bool` element by element) and is coerced with
-  the unsigned-return policy (ADR 18). A named-struct element reads one
-  struct per stride via `read-struct`, producing a vector of maps. A
-  zero length reads nothing, so the address is never dereferenced for an
-  empty slice."
+  the unsigned-return policy (ADR 18). A named-enum element bulk-copies
+  its backing ints the same way, then maps each to its member keyword.
+  A named-struct element reads one struct per stride via `read-struct`,
+  producing a vector of maps. A zero length reads nothing, so the
+  address is never dereferenced for an empty slice."
   [addr len elem]
   (if (zero? len)
     []
     (let [n (long len)]
-      (if (= :named (:kind elem))
+      (cond
+        (and (= :named (:kind elem)) (enum-type? elem))
+        (let [backing (:backing (:layout elem))
+              bl      (value-layout backing)
+              seg     (.reinterpret (MemorySegment/ofAddress addr) (* n (.byteSize bl)))
+              {:keys [bits]} (type/scalar-info (:name backing))
+              arr     (case bits
+                        8  (fill-array seg bl n (byte-array n))
+                        16 (fill-array seg bl n (short-array n))
+                        32 (fill-array seg bl n (int-array n))
+                        64 (fill-array seg bl n (long-array n)))]
+          (mapv #(enum-value->member (:layout elem) (coerce-scalar backing %)) arr))
+
+        (= :named (:kind elem))
         (let [inner  (:layout elem)
               stride (long (:size inner))
               base   (.reinterpret (MemorySegment/ofAddress addr) (* n stride))]
           (mapv #(read-struct (.asSlice base (* (long %) stride) stride) inner)
                 (range n)))
+
+        :else
         (let [layout (value-layout elem)
               seg    (.reinterpret (MemorySegment/ofAddress addr) (* n (.byteSize layout)))
               {:keys [category bits]} (type/scalar-info (:name elem))]
