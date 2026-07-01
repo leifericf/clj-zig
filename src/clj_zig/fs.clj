@@ -1,6 +1,6 @@
 (ns clj-zig.fs
   "Filesystem helpers shared by the shell namespaces. Effects on files live
-  here so the cache and the toolchain bootstrap reuse one implementation."
+  here so the cache and the compiler bootstrap reuse one implementation."
   (:require [clojure.java.io :as io]))
 
 (defn delete-recursively!

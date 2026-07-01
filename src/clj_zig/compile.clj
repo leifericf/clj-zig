@@ -10,7 +10,7 @@
   (:require [clojure.java.io :as io]
             [clojure.java.shell :as sh]
             [clojure.string :as str]
-            [clj-zig.toolchain :as toolchain]))
+            [clj-zig.compiler :as compiler]))
 
 (def ^:private optimize-mode
   "Safety checks stay on; this is part of the cache key."
@@ -40,7 +40,7 @@
   "The project-local directory Zig memoizes its intermediate build artifacts
   in across compiles (ADR 35). Keeping it stable lets a wrapper miss over an
   unchanged module relink the already-built module rather than rebuild it,
-  and it shares the `.clj-zig/` lifecycle the toolchain and artifact cache
+  and it shares the `.clj-zig/` lifecycle the compiler and artifact cache
   already own. It is build-tool state, not part of any content hash."
   []
   (.getAbsolutePath (io/file ".clj-zig" "global-cache")))
@@ -100,7 +100,7 @@
   `target` is a Zig target triple to cross-compile for (e.g.
   `x86_64-linux-musl`); omit it to build for the host."
   [{:keys [source source-path library-path ctx options aux-files target module-roots]}]
-  (let [zig      (toolchain/zig-exe)
+  (let [zig      (compiler/zig-exe)
         src-file (io/file source-path)
         lib-file (io/file library-path)
         src-abs  (.getAbsolutePath src-file)

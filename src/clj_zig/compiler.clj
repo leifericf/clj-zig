@@ -1,9 +1,10 @@
-(ns clj-zig.toolchain
-  "Resolve the `zig` executable (imperative shell). One seam decides which
-  compiler every other namespace runs, in order: an explicit override, a
-  `zig` on PATH, then a pinned hermetic Zig under `.clj-zig/zig/<version>/`.
-  Preferring PATH means a developer who already has Zig sees no download;
-  the pinned fallback means a fresh machine still compiles on first use."
+(ns clj-zig.compiler
+  "Resolve the `zig` executable and report its version (imperative shell).
+  One seam decides which compiler every other namespace runs, in order: an
+  explicit override, a `zig` on PATH, then a pinned hermetic Zig under
+  `.clj-zig/zig/<version>/`. Preferring PATH means a developer who already
+  has Zig sees no download; the pinned fallback means a fresh machine still
+  compiles on first use."
   (:require [clojure.java.io :as io]
             [clojure.java.shell :as sh]
             [clojure.string :as str]
@@ -258,8 +259,14 @@
       (pinned-exe)
       (ensure-pinned!)))
 
+(defn zig-version
+  "The `zig` compiler version string, part of the cache key."
+  []
+  (str/trim (:out (sh/sh (zig-exe) "version"))))
+
 (comment
   (zig-exe)
+  (zig-version)
   (pinned-dir)
   (download-url "macos" "aarch64" pinned-version)
   (expected-shasum "macos" "aarch64")

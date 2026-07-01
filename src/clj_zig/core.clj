@@ -21,7 +21,7 @@
             [clj-zig.signature :as signature]
             [clj-zig.source :as source]
             [clj-zig.spec :as spec]
-            [clj-zig.toolchain :as toolchain]))
+            [clj-zig.compiler :as compiler]))
 
 ;; --- Namespace-scoped Zig declarations ----------------------------------
 
@@ -78,7 +78,7 @@
   "Validate and canonicalize one external-module reference, keyed by the
   name a body imports: a dev `:path` to the module root, or a pinned
   `:git/sha` with a `:root`. An optional `:zig/version` must match the
-  pinned toolchain. Throws a diagnostic with a specific `:error/code` for
+  pinned compiler. Throws a diagnostic with a specific `:error/code` for
   each malformed shape."
   [module-name descriptor]
   (when-not (string? module-name)
@@ -97,13 +97,13 @@
                     {:level :error :error/code :clj-zig/bad-module-ref
                      :module module-name})))
   (when-let [v (:zig/version descriptor)]
-    (when (not= v toolchain/pinned-version)
+    (when (not= v compiler/pinned-version)
       (throw (ex-info (str "The Zig module " (pr-str module-name) " pins Zig "
-                           v " but clj-zig pins " toolchain/pinned-version ".")
+                           v " but clj-zig pins " compiler/pinned-version ".")
                       {:level :error :error/code :clj-zig/module-zig-version-mismatch
                        :module module-name
                        :requested v
-                       :pinned toolchain/pinned-version}))))
+                       :pinned compiler/pinned-version}))))
   (cond
     ;; A pinned reference fingerprints from sha and root; an optional :path is
     ;; a local checkout bake and the dev loop compile from (ADR 36).
@@ -175,11 +175,11 @@
 
 (defn build-inputs
   "The cache/compile inputs for `spec` and `body`: the generated source,
-  prefixed with this namespace's `defz` declarations, plus the toolchain
+  prefixed with this namespace's `defz` declarations, plus the compiler
   identity that the content hash includes. The Zig version in the hash is
   the pinned version, not a live `zig version`: every machine pins the same
-  toolchain, so a baked library and a function built in place hash alike,
-  and a consumer with no toolchain reproduces the hash without running Zig.
+  compiler, so a baked library and a function built in place hash alike,
+  and a consumer with no compiler reproduces the hash without running Zig.
   `gen` selects the source shape: inline splices the body string into a
   wrapper; file concatenates the user's file text and a wrapper that calls
   its `pub fn`; raw uses the file text as-is. `gen` also carries any
@@ -201,7 +201,7 @@
               :source      src
               :deps        decls
               :options     (merge {:optimize "ReleaseSafe"} (deps-in (:ns spec)) options-extra)
-               :zig-version toolchain/pinned-version
+               :zig-version compiler/pinned-version
                 :target      (cache/target-triple)}
         aux-files (assoc :aux-files aux-files)
         mods      (assoc :modules      (cache/modules-fingerprint mods)

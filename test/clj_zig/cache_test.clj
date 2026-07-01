@@ -5,6 +5,7 @@
             [clojure.test :refer [deftest is testing]]
              [clj-zig.cache :as cache]
              [clj-zig.compile :as compile]
+             [clj-zig.compiler :as compiler]
             [clj-zig.ffm :as ffm]
             [clj-zig.gen :as g]
             [clj-zig.source :as source]
@@ -229,7 +230,7 @@
   the compiler is never invoked"
     (let [in        (assoc (inputs nil "return x + y;")
                            :target (cache/target-triple)
-                           :zig-version (cache/zig-version))
+                           :zig-version (compiler/zig-version))
           key       (cache/cache-key in)
           coords    {:target (:target in) :ns 'app.core :name 'add :hash key}
           res-root  (scratch-root)
@@ -265,7 +266,7 @@
   loader compiles rather than loading the wrong library"
     (let [in       (assoc (inputs nil "return x + y;")
                           :target (cache/target-triple)
-                          :zig-version (cache/zig-version))
+                          :zig-version (compiler/zig-version))
           coords   {:target (:target in) :ns 'app.core :name 'add :hash "000000000000"}
           res-root (scratch-root)
           res-file (io/file res-root (cache/bundled-resource-path coords))
@@ -293,7 +294,7 @@
     (let [root (scratch-root)
           in   (assoc (inputs root "return x + y;")
                       :target (cache/target-triple)
-                      :zig-version (cache/zig-version))
+                      :zig-version (compiler/zig-version))
           r1   (cache/ensure-library! in compile/compile!)
           r2   (cache/ensure-library! in compile/compile!)]
       (is (false? (:cached? r1)))

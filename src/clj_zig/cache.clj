@@ -18,11 +18,9 @@
   split is function-level, not namespace-level."
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
-            [clojure.java.shell :as sh]
             [clojure.pprint :as pprint]
             [clojure.string :as str]
-            [clj-zig.fs :as fs]
-            [clj-zig.toolchain :as toolchain]))
+            [clj-zig.fs :as fs]))
 
 ;; --- Pure: hashing and the cache key -------------------------------------
 
@@ -230,11 +228,6 @@
 
 (defn- var-symbol [spec]
   (symbol (str (:ns spec)) (str (:name spec))))
-
-(defn zig-version
-  "The `zig` compiler version string, part of the cache key."
-  []
-  (str/trim (:out (sh/sh (toolchain/zig-exe) "version"))))
 
 (defn target-triple
   "The development target as `<os>-<arch>`, part of the cache key and the
@@ -448,8 +441,4 @@
   (bundled-resource-path {:target "linux-x86_64" :ns 'app.core
                           :name 'add :hash "83a1c0f9e1b2"})
 
-  (let [s (spec/build-spec '{:ns app.core :name add :signature [x :i64 y :i64 :ret :i64]})]
-    (cache-key {:spec s :body "return x + y;" :options {:optimize "ReleaseSafe"}
-                :zig-version (zig-version) :target (target-triple)}))
-  (target-triple)   ;; => "macos-aarch64"
-  (zig-version))    ;; => "0.16.0"
+  (target-triple))   ;; => "macos-aarch64"
