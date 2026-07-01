@@ -321,7 +321,7 @@
   Identical inputs reuse a resolved library; any change resolves a fresh
   path. `inputs` carries `:spec`, `:body`, `:source`, `:deps`, `:options`,
   `:zig-version`, `:target`, and an optional `:root`."
-  [{:keys [spec source root aux-files module-roots] :as inputs} compile!-fn]
+  [{:keys [spec source root aux-files] :as inputs} compile!-fn]
   (let [artifact-key (cache-key inputs)
         coords       {:target (:target inputs) :ns (:ns spec) :name (:name spec)
                       :hash artifact-key}
@@ -338,7 +338,8 @@
         (assoc paths :hash artifact-key :cached? false :bundled? true))
 
       :else
-      (let [missing (remove (set (keys module-roots)) (keys (:modules inputs)))]
+      (let [roots   (:module-roots inputs)
+            missing (remove (set (keys roots)) (keys (:modules inputs)))]
         ;; A fresh compile needs every declared module's source. A pinned
         ;; module with no local checkout (ADR 36) resolves a baked library
         ;; above; reaching here means none shipped for this target.
@@ -353,7 +354,7 @@
                       :source-path  (:source-path paths)
                       :library-path (:library-path paths)
                       :options      (:options inputs)
-                      :module-roots module-roots
+                      :module-roots roots
                       :aux-files    (mapv (fn [{:keys [rel text]}]
                                             {:path (str (:dir paths) "/" rel) :text text})
                                           aux-files)
