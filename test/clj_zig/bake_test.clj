@@ -5,9 +5,8 @@
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [clj-zig.bake :as bake]
-            [clj-zig.cache :as cache]
-            [clj-zig.cachestore :as cachestore]
-            [clj-zig.ffm :as ffm]
+             [clj-zig.cache :as cache]
+             [clj-zig.ffm :as ffm]
             [clj-zig.spec :as spec]))
 
 (defn- scratch-root []
@@ -37,7 +36,7 @@
         (#'bake/bake-function! out info bake/default-targets)))
     (let [msg (.toString err)]
       (is (str/includes? msg "host-only"))
-      (is (not (str/includes? msg (cachestore/target-triple)))
+      (is (not (str/includes? msg (cache/target-triple)))
           "the host id is baked, not listed as skipped"))))
 
 (deftest bakes-a-namespace-for-the-host
@@ -59,8 +58,8 @@
     (testing "the resource path matches what the loader will look up"
       (let [add-info (:clj-zig/info (meta (resolve 'clj-zig.bake-fixture/add)))
             inputs   (#'bake/function-inputs add-info)
-            coords   {:target (cachestore/target-triple) :ns 'clj-zig.bake-fixture
-                      :name 'add :hash (cache/cache-key (assoc inputs :target (cachestore/target-triple)))}]
+            coords   {:target (cache/target-triple) :ns 'clj-zig.bake-fixture
+                      :name 'add :hash (cache/cache-key (assoc inputs :target (cache/target-triple)))}]
         (is (some #(= (cache/bundled-resource-path coords) (:resource %)) results))))))
 
 (deftest bakes-a-module-dependent-function
@@ -76,8 +75,8 @@
         (is (.exists (io/file library)))
         (is (= 42 ((ffm/bind (:spec info) library))))))
     (testing "the baked hash equals the in-place hash, so it is reproducible"
-      (let [coords {:target (cachestore/target-triple) :ns 'clj-zig.bake-module-fixture
-                    :name 'ask :hash (cache/cache-key (assoc inputs :target (cachestore/target-triple)))}]
+      (let [coords {:target (cache/target-triple) :ns 'clj-zig.bake-module-fixture
+                    :name 'ask :hash (cache/cache-key (assoc inputs :target (cache/target-triple)))}]
         (is (= (cache/bundled-resource-path coords) (:resource (first results))))))))
 
 (deftest bakes-a-pinned-module-and-a-consumer-resolves-without-the-checkout
@@ -97,13 +96,13 @@
     (testing "a consumer reproduces the key from the pin alone, with no fs read"
       (let [boom             {:stat (fn [_] (throw (AssertionError. "no fs read")))
                               :read (fn [_] (throw (AssertionError. "no fs read")))}
-            consumer-modules {"answers" (cachestore/module-fingerprint
+            consumer-modules {"answers" (cache/module-fingerprint
                                          {:git/sha "0000000000000000000000000000000000000000"
                                           :root    "src/root.zig"}
                                          boom)}
             consumer-inputs  (assoc inputs :modules consumer-modules
-                                    :target (cachestore/target-triple))
-            coords           {:target (cachestore/target-triple)
+                                    :target (cache/target-triple))
+            coords           {:target (cache/target-triple)
                               :ns 'clj-zig.bake-pinned-fixture :name 'ask-pinned
                               :hash (cache/cache-key consumer-inputs)}]
         (is (= (cache/bundled-resource-path coords) (:resource (first results))))))))
