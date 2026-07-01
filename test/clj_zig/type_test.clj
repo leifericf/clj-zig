@@ -124,3 +124,8 @@
   (testing "it never enters the scalar table, so it has no carrier"
     (is (nil? (type/scalar-info :string)))
     (is (false? (type/has-carrier? :string)))))
+
+(deftest i128-and-u128-have-carriers
+  (testing "the 128-bit integers cross as a 16-byte struct of two longs"
+    (is (true? (type/has-carrier? :i128)))
+    (is (true? (type/has-carrier? :u128)))))

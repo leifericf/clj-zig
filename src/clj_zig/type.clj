@@ -65,17 +65,26 @@
 
 (defn has-carrier?
   "True when a scalar crosses the FFM boundary as a primitive value.
-  Stable FFM (Java 22) carries 8/16/32/64-bit integers and
-  32/64-bit floats and `bool`; 128-bit integers and 16/80/128-bit floats
-  have no carrier, so they are rejected at spec time. `:void` and
-  `:noreturn` are not value carriers (a `:void` return carries nothing)."
+  Stable FFM (Java 22) carries 8/16/32/64-bit integers, 32/64-bit floats,
+  and `bool`. `:i128` and `:u128` cross too, as a 16-byte struct of two
+  `JAVA_LONG`s (the C `__int128` ABI), marshalled to and from
+  `BigInteger`. 80/128-bit floats have no carrier, so they are rejected
+  at spec time. `:void` and `:noreturn` are not value carriers (a `:void`
+  return carries nothing)."
   [name]
   (let [{:keys [category bits]} (scalars name)]
     (case category
-      :int    (<= bits 64)
+      :int    (<= bits 128)
       :float  (boolean (#{32 64} bits))
       :bool   true
       false)))
+
+(defn i128-type?
+  "True when `name` is one of the 128-bit integer scalars (`:i128` or
+  `:u128`). These cross as a 16-byte struct of two longs and take the
+  general call path with a `BigInteger` carrier, not the scalar hot path."
+  [name]
+  (contains? #{:i128 :u128} name))
 
 (defn normalize
   "Normalize a boundary type form to its canonical data shape. Throws a

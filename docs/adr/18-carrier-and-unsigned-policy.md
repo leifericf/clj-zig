@@ -69,14 +69,20 @@ The same constraint shapes the other carrierless types:
 - `:f80` and `:f128` are blocked for the same reason plus an additional
   one: the JVM has no value type for extended or quad precision, so the
   Clojure-side representation is unresolved too.
-- `:i128` and `:u128` are the one case where the integer ABI could
-  match (a pair of general-purpose registers on aarch64 and x86_64),
-  so a by-value struct carrier of two `JAVA_LONG`s is feasible in
-  principle. It is a deep change -- a MemorySegment carrier on the
-  general path, BigInteger two's-complement conversion with platform
-  endianness, and exclusion from the scalar hot path (ADR 39) -- and is
-  deferred to its own focused slice rather than rushed alongside other
-  work.
+- `:i128` and `:u128` are delivered (2026-07-01). A probe confirmed the
+  integer ABI matches: FFM passes and returns a 128-bit value correctly
+  as a struct of two `JAVA_LONG`s (the C `__int128` ABI), with a
+  `SegmentAllocator` prepended to the downcall handle for the by-value
+  return. The Clojure side sees a `BigInteger`; the marshaller writes the
+  little-endian two's-complement halves and reassembles them, applying
+  the unsigned policy for `:u128`. They take the general call path
+  (not the scalar hot path of ADR 39), since a 16-byte segment carrier
+  and the prepended allocator need the call's arena. A 128-bit integer is
+  a carrier for a top-level argument or return only; a struct field, a
+  slice/array element, an `:optional` cell, a rest argument, or an enum
+  backing of one is rejected (`:unsupported-field`/`:unsupported-element`/
+  `:unsupported-optional`/`:unsupported-rest-element`/`:bad-enum-backing`)
+  until those positions are wired.
 
 The rejection at spec time stands for all five, now with the recorded
 reason: it is not marshalling complexity the project chose to skip, but

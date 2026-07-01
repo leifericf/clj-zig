@@ -85,9 +85,9 @@
           (when-not (symbol? binding)
             (fail signature :clj-zig/invalid-binding
                   "A rest argument's binding must be a symbol." {:binding binding}))
-          (when-not (type/has-carrier? elem)
+          (when-not (and (type/has-carrier? elem) (not (type/i128-type? elem)))
             (fail signature :clj-zig/unsupported-rest-element
-                  (str "A rest argument's element must be a carrier scalar; "
+                  (str "A rest argument's element must be a primitive carrier scalar; "
                        "& cannot carry " (pr-str elem) ".")
                   {:element elem}))
           {:args (conj args (-> (normalize-arg signature [binding [:slice :const elem]])

@@ -140,7 +140,9 @@
       (cond
         (contains? #{:slice :array} k)
         (let [elem (:of t)]
-          (if (or (and (map? elem) (= :scalar (:kind elem)))
+          (if (or (and (map? elem) (= :scalar (:kind elem))
+                       (not (type/i128-type? (:name elem)))
+                       (type/has-carrier? (:name elem)))
                   (and (map? elem) (= :named (:kind elem))
                        (get-in elem [:layout])
                        (not (get-in elem [:layout :enum]))
@@ -170,13 +172,13 @@
   "True when `t` is a shape an `:optional` argument may wrap: a single or
   many-item pointer, or a carrier scalar (which lowers to a nullable
   pointer-to-const-scalar, `?*const T`, reusing the optional-pointer wire
-  shape). A slice, array, named type, or a carrierless scalar (`:u128`) is
-  rejected -- a slice has no length semantics under optional, and a
-  carrierless scalar has no FFM cell to point at."
+  shape). A slice, array, named type, a carrierless scalar, or a 128-bit
+  integer (whose 16-byte struct has no optional cell path) is rejected."
   [t]
   (or (contains? #{:ptr :manyptr} (:kind t))
       (and (= :scalar (:kind t))
-           (type/has-carrier? (:name t)))))
+           (type/has-carrier? (:name t))
+           (not (type/i128-type? (:name t))))))
 
 (defn- element-description
   "A short human label for a non-scalar element, for the diagnostic

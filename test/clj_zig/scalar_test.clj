@@ -85,3 +85,25 @@
   (let [add (native-fn 'add2 '[x :i64 y :i64 :ret :i64] "return x + y;")]
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Wrong number of arguments"
                           (add 1)))))
+
+(deftest i128-round-trips-as-biginteger
+  (testing "i128 arguments and returns cross as BigInteger over two longs"
+    (let [add (native-fn 'iadd '[a :i128 b :i128 :ret :i128] "return a + b;")]
+      (is (= (biginteger 3) (add 1 2)))
+      (is (instance? BigInteger (add 1 2)))
+      (is (= (biginteger "300000000000000000000")
+             (add (biginteger "100000000000000000000")
+                  (biginteger "200000000000000000000"))))))
+  (testing "the signed range boundary round-trips"
+    (let [id (native-fn 'iid2 '[x :i128 :ret :i128] "return x;")
+          max-i127 (.subtract (.shiftLeft BigInteger/ONE 127) BigInteger/ONE)
+          min-i127 (.negate (.shiftLeft BigInteger/ONE 127))]
+      (is (= max-i127 (id max-i127)))
+      (is (= min-i127 (id min-i127))))))
+
+(deftest u128-round-trips-and-stays-non-negative
+  (testing "u128 values above the signed range come back exact, never negative"
+    (let [id (native-fn 'uid '[x :u128 :ret :u128] "return x;")
+          big (.subtract (.shiftLeft BigInteger/ONE 128) BigInteger/ONE)] ; 2^128 - 1
+      (is (= big (id big)))
+      (is (instance? BigInteger (id big))))))

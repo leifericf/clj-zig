@@ -106,18 +106,13 @@
                                           :types types}))))))
 
 (deftest rejects-unsupported-128-bit-carriers
-  (testing "as an argument"
-    (is (= :clj-zig/unsupported-carrier
+  (testing "a 128-bit integer scalar is valid as a top-level arg and return"
+    (is (map? (spec/build-spec '{:ns app.core :name f :signature [x :u128 :ret :i64]})))
+    (is (map? (spec/build-spec '{:ns app.core :name f :signature [x :i64 :ret :i128]}))))
+  (testing "a 128-bit integer as a slice element is rejected (bulk marshalling not wired)"
+    (is (= :clj-zig/unsupported-element
            (error-code #(spec/build-spec '{:ns app.core :name f
-                                           :signature [x :u128 :ret :i64]})))))
-  (testing "as a return"
-    (is (= :clj-zig/unsupported-carrier
-           (error-code #(spec/build-spec '{:ns app.core :name f
-                                           :signature [x :i64 :ret :i128]})))))
-  (testing "nested inside a compound"
-    (is (= :clj-zig/unsupported-carrier
-           (error-code #(spec/build-spec '{:ns app.core :name f
-                                           :signature [xs [:slice :u128] :ret :i64]}))))))
+                                           :signature [xs [:slice :i128] :ret :i64]}))))))
 
 (deftest rejects-floats-without-an-ffm-carrier
   (testing "stable FFM carries only 32- and 64-bit floats"
@@ -195,11 +190,11 @@
 
 (deftest diagnostic-carries-the-var-and-signature
   (try
-    (spec/build-spec '{:ns app.core :name f :signature [x :u128 :ret :i64]})
+    (spec/build-spec '{:ns app.core :name f :signature [x :f80 :ret :i64]})
     (is false "expected a diagnostic")
     (catch clojure.lang.ExceptionInfo e
       (is (= 'app.core/f (:var (ex-data e))))
-      (is (= '[x :u128 :ret :i64] (:signature (ex-data e)))))))
+      (is (= '[x :f80 :ret :i64] (:signature (ex-data e)))))))
 
 (deftest accepts-and-rejects-struct-elements-per-indirection
   (let [types {'Point (layout/describe 'Point '[x :f64 y :f64])

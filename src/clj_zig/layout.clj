@@ -82,9 +82,12 @@
                 nil)]
     (when (and (map? slice) (= :slice (:kind slice)))
       (let [elem (:of slice)]
+        ;; A 128-bit integer is a carrier for a top-level arg/return but not
+        ;; for a bulk slice element (the marshaller moves primitives only).
         (when (and (map? elem)
                    (= :scalar (:kind elem))
-                   (type/has-carrier? (:name elem)))
+                   (type/has-carrier? (:name elem))
+                   (not (type/i128-type? (:name elem))))
           elem)))))
 
 (defn scalar-only-layout?
@@ -129,6 +132,17 @@
   integer backing)."
   [type-name fname ftype t]
   (cond
+    ;; A 128-bit integer scalar is a valid top-level arg/return, but a struct
+    ;; field of one is not yet wired into the field marshaller (read/write at
+    ;; a 16-byte stride). Reject it here with a clear message rather than
+    ;; crashing at the call.
+    (and (= :scalar (:kind t)) (type/i128-type? (:name t)))
+    (throw (ex-info (str "Field " fname " of " type-name
+                         " is " (:name t) "; a 128-bit-integer struct field is"
+                         " not yet supported. Use it as a top-level argument or return.")
+                    {:level :error :error/code :clj-zig/unsupported-field
+                     :type type-name :field fname :clj-zig/type-form ftype}))
+
     (and (= :scalar (:kind t)) (type/has-carrier? (:name t)))
     {:wire :scalar}
 
@@ -265,7 +279,8 @@
   non-integer or carrierless scalar (an enum tag is an integer width)."
   [type-name backing-kw]
   (let [info (type/scalar-info backing-kw)]
-    (when-not (and info (= :int (:category info)) (type/has-carrier? backing-kw))
+    (when-not (and info (= :int (:category info)) (type/has-carrier? backing-kw)
+                   (not (type/i128-type? backing-kw)))
       (throw (ex-info (str "The enum " type-name " backing must be an integer scalar "
                            "with an FFM carrier; got " (pr-str backing-kw) ".")
                       {:level :error :error/code :clj-zig/bad-enum-backing

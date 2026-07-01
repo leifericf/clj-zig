@@ -25,8 +25,12 @@
 ;; --- Scalar vocabulary --------------------------------------------------
 
 (def carrier-scalars
-  "Scalar boundary types that cross the FFM boundary as a primitive value."
-  (vec (sort (filter type/has-carrier? (keys type/scalars)))))
+  "Primitive carrier scalars. The 128-bit integers cross as a 16-byte
+  struct on a separate path (a `BigInteger` carrier, the general call
+  path) and have their own tests, so they are excluded from the primitive
+  scalar matrix."
+  (vec (sort (filter #(and (type/has-carrier? %) (not (type/i128-type? %)))
+                     (keys type/scalars)))))
 
 (def int-carriers
   (vec (filter #(= :int (:category (type/scalars %))) carrier-scalars)))

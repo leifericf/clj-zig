@@ -56,7 +56,7 @@
    {:code :clj-zig/unsupported-error-union :signature '[a [:error-union E :i64] :ret :i64]}
    {:code :clj-zig/unsupported-ownership  :signature '[a [:owned [:slice :u8]] :ret :i64]}
    {:code :clj-zig/unsupported-handle     :signature '[a [:handle :i64] :ret :i64]}
-   {:code :clj-zig/unsupported-carrier    :signature '[a :u128 :ret :i64]}
+   {:code :clj-zig/unsupported-carrier    :signature '[a :f80 :ret :i64]}
    {:code :clj-zig/unknown-field          :signature '[{x :x} {:y :i64} :ret :i64]}
    ;; contract validation, return position
    {:code :clj-zig/unsupported-optional    :signature '[:ret [:optional [:manyptr :i64]]]}
@@ -67,7 +67,7 @@
    {:code :clj-zig/malformed-error-set    :signature '[:ret [:error-union [:slice :u8] :i64]]}
    {:code :clj-zig/unsupported-ownership   :signature '[:ret [:owned :i64]]}
    {:code :clj-zig/unsupported-handle      :signature '[:ret [:handle :i64]]}
-   {:code :clj-zig/unsupported-carrier     :signature '[:ret :i128]}
+   {:code :clj-zig/unsupported-carrier     :signature '[:ret :f128]}
    ;; named type the registry does not declare
    {:code :clj-zig/unknown-type-name       :signature '[a Point :ret :i64]}
    ;; :bytes is a return-only owned u8-slice wrapper

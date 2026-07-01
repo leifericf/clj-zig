@@ -19,6 +19,47 @@
            (java.nio.charset StandardCharsets)))
 
 (def ^:private two-to-64 (.shiftLeft BigInteger/ONE 64))
+(def ^:private two-to-64-minus-1 (.subtract two-to-64 BigInteger/ONE))
+(def ^:private two-to-128 (.shiftLeft BigInteger/ONE 128))
+
+;; The C `__int128` ABI: a 16-byte value passed and returned by value as a
+;; pair of 64-bit halves. FFM represents it as a struct of two JAVA_LONGs;
+;; the carrier is a MemorySegment, and a by-value return makes FFM prepend a
+;; SegmentAllocator to the downcall handle. A probe confirmed the round-trip.
+(def ^:private i128-layout
+  (MemoryLayout/structLayout (into-array MemoryLayout [ValueLayout/JAVA_LONG ValueLayout/JAVA_LONG])))
+
+(defn- i128-type?
+  "True when a normalized type is one of the 128-bit integer scalars."
+  [t]
+  (and (= :scalar (:kind t)) (type/i128-type? (:name t))))
+
+(defn- bigint->i128-segment
+  "Write `b` as a little-endian two's-complement i128 (two longs) into a
+  fresh 16-byte segment allocated from `arena`."
+  [^Arena arena ^BigInteger b]
+  (let [pattern (.mod (.add b two-to-128) two-to-128)  ; the 128-bit pattern, 0..2^128-1
+        lo (.longValue (.mod pattern two-to-64))
+        hi (.longValue (.shiftRight pattern 64))
+        seg (.allocate arena i128-layout)]
+    (.set seg ValueLayout/JAVA_LONG 0 lo)
+    (.set seg ValueLayout/JAVA_LONG 8 hi)
+    seg))
+
+(defn- i128-segment->bigint
+  "Read a little-endian i128 (two longs) from `seg` as a BigInteger,
+  applying the unsigned-or-signed policy of `t` (`:u128` keeps the full
+  unsigned pattern; `:i128` subtracts 2^128 when the sign bit is set)."
+  [t ^MemorySegment seg]
+  (let [lo (.get seg ValueLayout/JAVA_LONG 0)
+        hi (.get seg ValueLayout/JAVA_LONG 8)
+        ;; Reassemble the unsigned 128-bit pattern from the two longs.
+        lo-big (.and (BigInteger/valueOf lo) two-to-64-minus-1)
+        hi-big (.and (BigInteger/valueOf hi) two-to-64-minus-1)
+        pattern (.add (.shiftLeft hi-big 64) lo-big)]
+    (if (and (= :i128 (:name t)) (.testBit pattern 127))
+      (.subtract pattern two-to-128)
+      pattern)))
 
 (declare marshal-struct read-struct-field read-bytes read-slice-values
          read-utf8-string write-scalar enum-member->value enum-value->member)
@@ -47,9 +88,10 @@
 
 (defn- param-layouts
   "The native layouts one boundary param crosses as. A scalar is one
-  layout; a pointer, array, or named struct is an address; an enum is its
-  backing scalar; a slice or `:string` is an address and a `usize` length
-  (a `:string` argument lowers to the same const-u8 wire shape as a slice)."
+  layout (a 128-bit integer is a 16-byte struct of two longs); a pointer,
+  array, or named struct is an address; an enum is its backing scalar; a
+  slice or `:string` is an address and a `usize` length (a `:string`
+  argument lowers to the same const-u8 wire shape as a slice)."
   [{:keys [type]}]
   (case (:kind type)
     (:slice :string)                          [ValueLayout/ADDRESS ValueLayout/JAVA_LONG]
@@ -57,14 +99,15 @@
                                                  [(value-layout (-> type :layout :backing))]
                                                  [ValueLayout/ADDRESS])
     (:ptr :manyptr :array :optional :handle)  [ValueLayout/ADDRESS]
-    [(value-layout type)]))
+    [(if (i128-type? type) i128-layout (value-layout type))]))
 
-(defn- return-layout ^ValueLayout [ret]
+(defn- return-layout ^MemoryLayout [ret]
   (cond
     (= :optional (:kind ret))                ValueLayout/ADDRESS
     (= :handle (:kind ret))                  ValueLayout/ADDRESS
     (and (= :named (:kind ret))
          (enum-type? ret))                   (value-layout (-> ret :layout :backing))
+    (i128-type? ret)                         i128-layout
     :else                                    (value-layout ret)))
 
 (defn- descriptor ^FunctionDescriptor [spec]
@@ -239,7 +282,11 @@
                                    :error/code :clj-zig/handle-type-mismatch
                                    :expected expected :actual arg})))
                 {:carriers [(:segment arg)]})
-    {:carriers [(to-carrier param arg)]}))
+    (if (i128-type? (:type param))
+      ;; A 128-bit integer crosses as a 16-byte segment allocated in the call
+      ;; arena; the general path (not the scalar hot path) owns that arena.
+      {:carriers [(bigint->i128-segment arena (biginteger arg))]}
+      {:carriers [(to-carrier param arg)]})))
 
 (defn- coerce-scalar
   "Coerce a native scalar value of type `t` to Clojure, applying the
@@ -475,8 +522,9 @@
 
 (defn- from-return
   "Coerce a native return to a Clojure value: nil for `:void`, the pointee
-  or nil for an `:optional` pointer, and the unsigned-aware scalar value
-  otherwise."
+  or nil for an `:optional` pointer, a `BigInteger` for a 128-bit integer
+  (read out of the returned 16-byte segment), and the unsigned-aware
+  scalar value otherwise."
   [ret v]
   (cond
     (type/void-type? ret)     nil
@@ -485,6 +533,7 @@
                                 (->Handle (-> ret :of :name) v))
     (and (= :named (:kind ret))
          (enum-type? ret))    (enum-value->member (:layout ret) (long v))
+    (i128-type? ret)          (i128-segment->bigint ret v)
     :else                     (coerce-scalar ret v)))
 
 (def ^:private error-buffer-bytes
@@ -539,13 +588,17 @@
   the call needs no confined arena. A scalar param coerces straight to its
   carrier with `to-carrier` (no native segment is allocated), and a scalar
   or `:void` return reads back with no out-pointer. Anything that touches
-  the arena -- a slice, pointer, array, struct, enum, handle, optional, or
-  an error-union/owned/struct return -- is excluded and takes the general
-  path. (`:void` normalizes to `{:kind :scalar :name :void}`, so the return
-  test covers it.)"
+  the arena -- a slice, pointer, array, struct, enum, handle, optional, a
+  128-bit integer (a 16-byte segment, and a by-value return prepends a
+  SegmentAllocator to the handle), or an error-union/owned/struct return
+  -- is excluded and takes the general path. (`:void` normalizes to
+  `{:kind :scalar :name :void}`, so the return test covers it.)"
   [params ret]
-  (and (every? (fn [p] (= :scalar (-> p :type :kind))) params)
-       (= :scalar (:kind ret))))
+  (and (every? (fn [p] (and (= :scalar (-> p :type :kind))
+                            (not (i128-type? (:type p)))))
+               params)
+       (= :scalar (:kind ret))
+       (not (i128-type? ret))))
 
 ;; --- general-path return dispatch ----------------------------------------
 ;; The non-scalar return shapes each need their own downcall choreography:
@@ -674,11 +727,15 @@
 
 (defn- invoke-scalar
   "Run a plain scalar, enum, or void downcall: invoke, copy mutable args
-  back, and read the return with the unsigned policy. The arena is held by
-  the caller for slice arguments; a scalar return reads nothing through a
-  segment, so it is unused here."
-  [{:keys [handle ret]} _arena base-carriers copy-back!]
-  (let [result (->> base-carriers (object-array) (.invokeWithArguments handle))]
+  back, and read the return with the unsigned policy. The arena backs any
+  slice/pointer arguments. A 128-bit-integer return is a by-value struct,
+  so FFM prepends a SegmentAllocator to the downcall handle; the arena is
+  that allocator, threaded in front of the carriers."
+  [{:keys [handle ret]} ^Arena arena base-carriers copy-back!]
+  (let [carriers (if (i128-type? ret)
+                   (cons arena base-carriers)
+                   base-carriers)
+        result (.invokeWithArguments handle (object-array carriers))]
     (copy-back!)
     (from-return ret result)))
 

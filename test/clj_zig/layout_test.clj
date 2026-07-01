@@ -191,3 +191,10 @@
 (deftest rejects-a-nested-field-naming-an-undeclared-type
   (is (= :clj-zig/unknown-field
          (enum-error-code #(layout/describe 'Outer '[inner Missing] {})))))
+
+(deftest rejects-a-128-bit-integer-struct-field
+  (testing "an i128 field is not wired into the field marshaller"
+    (is (= :clj-zig/unsupported-field
+           (enum-error-code #(layout/describe 'Cell '[n :i128]))))
+    (is (= :clj-zig/unsupported-field
+           (enum-error-code #(layout/describe 'Cell '[n :u128]))))))

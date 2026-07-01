@@ -64,6 +64,10 @@
 
 (deftest carrier-vocabulary-is-sound
   (is (every? type/has-carrier? g/carrier-scalars))
-  (is (not-any? type/has-carrier? [:u128 :i128 :f16 :f80 :f128 :void :noreturn]))
+  ;; The 128-bit integers now have carriers (a 16-byte struct of two longs),
+  ;; so the generator's primitive-only matrix excludes them; f16/f80/f128
+  ;; and the void/noreturn non-values still have no carrier.
+  (is (not-any? type/has-carrier? [:f16 :f80 :f128 :void :noreturn]))
+  (is (not-any? #(some (partial = %) g/carrier-scalars) [:i128 :u128]))
   (is (seq g/int-carriers))
   (is (seq g/float-carriers)))
