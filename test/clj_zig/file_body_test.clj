@@ -136,3 +136,10 @@
                   (catch clojure.lang.ExceptionInfo e e)
                   (catch clojure.lang.Compiler$CompilerException e (.getCause e)))]
       (is (= :clj-zig/malformed-defnz (:error/code (ex-data ex)))))))
+
+(deftest a-zig-file-map-in-attribute-position-is-rejected
+  (testing "a {:zig/file ...} map where an attr-map goes is flagged, not read as a body"
+    (let [ex (try (define! `(core/defnz ~'amb {:zig/file "x.zig"}))
+                  (catch clojure.lang.ExceptionInfo e e)
+                  (catch clojure.lang.Compiler$CompilerException e (.getCause e)))]
+      (is (= :clj-zig/ambiguous-body-form (:error/code (ex-data ex)))))))

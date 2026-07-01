@@ -482,6 +482,11 @@
         file-body? (and (map? body) (contains? body :zig/file))
         bodyless?  (and (nil? body) (vector? signature))
         infer?     (and (nil? body) (nil? signature))]
+    (when (and (map? attr-map) (contains? attr-map :zig/file))
+      (throw (ex-info (str "defnz " fn-name " has a {:zig/file ...} map where an"
+                           " attribute map goes; a file body must follow a signature.")
+                      {:level :error :error/code :clj-zig/ambiguous-body-form
+                       :var fn-name})))
     (when (seq trailing)
       (throw (ex-info (str "defnz " fn-name " has " (count trailing)
                            " form(s) after the body; nothing may follow the Zig body.")
