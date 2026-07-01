@@ -557,7 +557,13 @@
 
       (defrecordz Point
         [x :f64
-         y :f64])"
+         y :f64])
+
+  Unlike `deftypez`/`defenumz`, the optional docstring does NOT land on
+  the type symbol: `defrecord` interns the type as a Class, and a class
+  symbol has no Var to carry `:doc`. The docstring is attached to the
+  `map->Type` factory Var instead -- the interned Var closest to the type
+  and the one the FFM return path resolves when rebuilding a record."
   [type-name & tail]
   (let [[docstring fields] (if (string? (first tail))
                              [(first tail) (second tail)]
@@ -569,6 +575,10 @@
     `(do
        (defrecord ~type-name ~field-syms)
        (register-type! '~the-ns '~descriptor)
+       ;; `type-name` is a defrecord class, not a Var, so its doc cannot
+       ;; attach the way `deftypez`/`defenumz` attach `:doc` to the type
+       ;; Var. The map-factory Var is the closest interned Var; it is also
+       ;; the one FFM resolves to rebuild a record return.
        ~@(when docstring
            [`(alter-meta! (var ~factory) assoc :doc ~docstring)])
        ~type-name)))
