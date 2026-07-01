@@ -805,6 +805,27 @@
     (let [m (read-struct out desc)]
       (if record-factory (record-factory m) m))))
 
+(defn- invoke-optional-struct
+  "Run an optional-over-struct downcall. The body returns null or a
+  c_allocator pointer to the nice struct; the FFM reads the struct through
+  the returned address, rebuilds it as a map (or record via the factory),
+  and frees in a finally: buffer fields first, then the struct allocation.
+  A null return yields nil with no free."
+  [{:keys [handle ret record-factory free-handle]} ^Arena arena base-carriers copy-back!]
+  (let [result (.invokeWithArguments handle (object-array (vec base-carriers)))
+        addr   (.address ^MemorySegment result)]
+    (if (zero? addr)
+      (do (copy-back!) nil)
+      (let [layout (:layout (:of ret))
+            sized  (.reinterpret ^MemorySegment result (long (:size layout)))]
+        (try
+          (copy-back!)
+          (let [m (read-struct sized layout)]
+            (if record-factory (record-factory m) m))
+          (finally
+            (when free-handle
+              (.invokeWithArguments free-handle (object-array [addr])))))))))
+
 (defn- invoke-scalar
   "Run a plain scalar, enum, or void downcall: invoke, copy mutable args
   back, and read the return with the unsigned policy. The arena backs any
@@ -853,7 +874,7 @@
         ;; names the value type directly on ret. Unwrapping consistently is
         ;; safe: the record-factory lookup below returns nil for any
         ;; non-named or enum-named value.
-        ret-value    (if (contains? #{:owned :borrowed :error-union} (:kind ret))
+        ret-value    (if (contains? #{:owned :borrowed :error-union :optional} (:kind ret))
                        (:of ret)
                        ret)
         ;; A record return names the map-factory that rebuilds it; a plain
@@ -867,6 +888,9 @@
                           (= :named (get-in ret [:of :kind])))
         owned-slice? (and (contains? #{:owned :borrowed :bytes :string} (:kind ret))
                           (not owned-rec?))
+        opt-struct?   (and (= :optional (:kind ret))
+                           (= :named (get-in ret [:of :kind]))
+                           (not (enum-type? (:of ret))))
         struct-return? (and (= :named (:kind ret)) (not (enum-type? ret)))
         ;; An owned slice (or :bytes buffer, or :string) return carries a
         ;; free shim taking the slice's pointer and length; an owned record
@@ -877,6 +901,12 @@
         ;; decoded on read).
         struct-free? (or eu-struct? (and owned-rec? (= :owned (:kind ret))))
         free-handle (cond
+                      opt-struct?
+                      (.downcallHandle linker
+                                       (foreign/find-symbol lookup (str (:symbol spec) "__free"))
+                                       (FunctionDescriptor/ofVoid
+                                        (into-array MemoryLayout [ValueLayout/JAVA_LONG]))
+                                       (into-array Linker$Option []))
                       struct-free?
                       (.downcallHandle linker
                                        (foreign/find-symbol lookup (str (:symbol spec) "__free"))
@@ -934,6 +964,7 @@
               (= :error-union (:kind ret)) (invoke-error-union invoke-ctx arena base-carriers copy-back!)
               owned-rec?                   (invoke-owned-record invoke-ctx arena base-carriers copy-back!)
               owned-slice?                 (invoke-owned-slice  invoke-ctx arena base-carriers copy-back!)
+              opt-struct?                  (invoke-optional-struct invoke-ctx arena base-carriers copy-back!)
               struct-return?               (invoke-struct-return invoke-ctx arena base-carriers copy-back!)
               :else                        (invoke-scalar       invoke-ctx arena base-carriers copy-back!))))))))
 

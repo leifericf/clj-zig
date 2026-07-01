@@ -179,15 +179,18 @@
 
 (defn- optional-inner-ok?
   "True when `t` is a shape an `:optional` argument may wrap: a single or
-  many-item pointer, or a carrier scalar (which lowers to a nullable
-  pointer-to-const-scalar, `?*const T`, reusing the optional-pointer wire
-  shape). A slice, array, named type, a carrierless scalar, or a 128-bit
-  integer (whose 16-byte struct has no optional cell path) is rejected."
+  many-item pointer, a carrier scalar (which lowers to a nullable pointer-
+  to-const-scalar, `?*const T`), or a named struct (which lowers to a
+  nullable pointer-to-const-struct, `?*const Type`). A slice, array, an
+  enum, a carrierless scalar, or a 128-bit integer is rejected."
   [t]
   (or (contains? #{:ptr :manyptr} (:kind t))
       (and (= :scalar (:kind t))
            (type/has-carrier? (:name t))
-           (not (type/i128-type? (:name t))))))
+           (not (type/i128-type? (:name t))))
+      (and (= :named (:kind t))
+           (get-in t [:layout])
+           (not (get-in t [:layout :enum])))))
 
 (defn- element-description
   "A short human label for a non-scalar element, for the diagnostic
@@ -273,9 +276,13 @@
   (when (and (= :optional (:kind ret))
              (not (or (= :ptr (:kind (:of ret)))
                       (and (= :scalar (:kind (:of ret)))
-                           (type/has-carrier? (:name (:of ret)))))))
+                           (type/has-carrier? (:name (:of ret)))
+                           (not (type/i128-type? (:name (:of ret)))))
+                      (and (= :named (:kind (:of ret)))
+                           (get-in (:of ret) [:layout])
+                           (not (get-in (:of ret) [:layout :enum]))))))
     (fail spec :clj-zig/unsupported-optional
-          "An :optional return must wrap a single-item :ptr or a carrier scalar." {}))
+          "An :optional return must wrap a :ptr, carrier scalar, or named struct." {}))
   (when (and (= :error-union (:kind ret))
              (not (or (type/void-type? (:of ret))
                       (= :scalar (:kind (:of ret)))

@@ -216,3 +216,38 @@
 (deftest a-const-slice-of-buffer-structs-reads-scalar-fields
   (is (= 2 (count-labels [{:tag "a" :n 0} {:tag "b" :n 1} {:tag "c" :n 2}])))
   (is (= 0 (count-labels [{:tag "x" :n 0}]))))
+
+;; --- Optional over a named struct (nil-or-struct) -----------------------
+;; [:optional Point] lowers to ?*const Point: nil is NULL, a present value is a
+;; c_allocator pointer the FFM reads through and frees in a finally.
+
+(defnz maybe-point
+  "Return a Point only when the flag is set; otherwise null."
+  [found :bool
+   :ret  [:optional Point]]
+  "return if (found) blk: {
+    const p = std.heap.c_allocator.create(Point) catch @panic(\"oom\");
+    p.* = .{ .x = 3.0, .y = 4.0 };
+    break :blk p;
+} else null;")
+
+(deftest an-optional-struct-return-round-trips
+  (testing "a present value returns a Point map"
+    (is (= {:x 3.0 :y 4.0} (maybe-point true))))
+  (testing "nil returns nil"
+    (is (nil? (maybe-point false))))
+  (testing "the struct is freed each call (volume leak lane)"
+    (is (every? #(= {:x 3.0 :y 4.0} %)
+                (repeatedly 200 #(maybe-point true))))))
+
+(defnz use-maybe-point
+  "Deref an optional Point argument: return its distance from origin or -1."
+  [p [:optional Point]
+   :ret :f64]
+  "return if (p) |q| @sqrt(q.x * q.x + q.y * q.y) else -1.0;")
+
+(deftest an-optional-struct-argument-round-trips
+  (testing "a present value dereferences to the Point fields"
+    (is (= 5.0 (use-maybe-point {:x 3.0 :y 4.0}))))
+  (testing "nil dereferences to the default"
+    (is (= -1.0 (use-maybe-point nil)))))

@@ -111,24 +111,26 @@
          buffer-element wire-struct-name wire-struct
          file-owned-buffer-slice file-simple-slice-ownership
          generate-owned-buffer-slice wire-to-nice-copy-stmts
-         buffer-wire-decls buffer-carrying-slice-element?)
+         buffer-wire-decls buffer-carrying-slice-element?
+         opt-struct-return? file-plain)
 
 (defn- zig-type
   "The Zig type name for a normalized boundary type. Handles scalars,
   named types, and optional pointers; `param-decls` lowers slices.
 
-  An `:optional` over a carrier scalar lowers to a nullable pointer to a
-  const one-element cell (`?*const T`), the same wire shape as
-  `[:optional [:ptr :const T]]`: nil crosses as NULL, a present value as a
-  one-element native cell the callee dereferences."
+  An `:optional` over a carrier scalar or a named struct lowers to a
+  nullable pointer to a const value (`?*const T`), the same wire shape
+  as `[:optional [:ptr :const T]]`: nil crosses as NULL, a present value
+  as a native cell the callee dereferences."
   [t]
   (case (:kind t)
     :scalar   (name (:name t))
     :named    (str (:name t))
     :optional (let [pointed (:of t)]
-                (if (= :scalar (:kind pointed))
-                  (str "?*const " (zig-type pointed))
-                  (str "?" (pointer-type pointed))))
+                (cond
+                  (= :scalar (:kind pointed)) (str "?*const " (zig-type pointed))
+                  (= :named  (:kind pointed)) (str "?*const " (zig-type pointed))
+                  :else                       (str "?" (pointer-type pointed))))
     :handle   (str "*" (zig-type (:of t)))
     (throw (ex-info "Source generation does not yet support this boundary type."
                     {:level :error
@@ -460,6 +462,7 @@
   [{:keys [params ret]}]
   (or (contains? #{:owned :bytes :string} (:kind ret))
       (error-union-struct-return? ret)
+      (opt-struct-return? ret)
       (= :handle (:kind ret))
       (some #(= :handle (:kind (:type %))) params)
       (some #(and (contains? #{:slice :array} (:kind (:type %)))
@@ -473,6 +476,16 @@
   [ret]
   (and (contains? #{:owned :borrowed} (:kind ret))
        (= :named (get-in ret [:of :kind]))))
+
+(defn- opt-struct-return?
+  "True when a return is an `:optional` wrapper around a named struct (not
+  an enum). The body returns null or a c_allocator pointer to the struct;
+  the wrapper is a plain return plus a free shim that frees buffer fields
+  then destroys the allocation."
+  [ret]
+  (and (= :optional (:kind ret))
+       (= :named (get-in ret [:of :kind]))
+       (not (enum-type? (:of ret)))))
 
 (defn- wire-struct-name
   "The C-ABI wire struct name for a result record: the nice record type with
@@ -612,6 +625,60 @@
        (= :named (get-in ret [:of :kind]))
        (not (enum-type? (:of ret)))))
 
+(defn- nice-struct-free-stmts
+  "Free statements for each buffer field of a nice struct (with real slice
+  fields), used in the optional-struct free shim. Each buffer field is freed
+  directly (the nice struct holds a real `[]T` slice, not `{ptr, len}`
+  words)."
+  [layout]
+  (for [{fname :name} (filter :target (:fields layout))]
+    (str "    std.heap.c_allocator.free(__p." fname ");")))
+
+(defn- optional-struct-free-shim
+  "The `__free` shim for an optional-struct return. The body returns null or
+  a c_allocator pointer to the nice struct; the shim null-checks, frees each
+  buffer field, then destroys the struct allocation."
+  [{:keys [ret] sym :symbol}]
+  (let [layout     (get-in ret [:of :layout])
+        type-name  (:name layout)
+        buf-fields (filter :target (:fields layout))
+        free-body  (if (seq buf-fields)
+                     (str (str/join "\n" (nice-struct-free-stmts layout)) "\n")
+                     "")]
+    (str "\nexport fn " sym "__free(__ptr: usize) void {\n"
+         "    if (__ptr == 0) return;\n"
+         "    const __p: *" type-name " = @ptrFromInt(__ptr);\n"
+         free-body
+         "    std.heap.c_allocator.destroy(__p);\n"
+         "}\n")))
+
+(defn- generate-optional-struct-return
+  "A plain `export fn` returning `?*const Type`, plus a `__free` shim that
+  null-checks, frees buffer fields, and destroys the struct allocation."
+  [spec body]
+  (str (generate-plain spec body)
+       (optional-struct-free-shim spec)))
+
+(defn- file-optional-struct-return
+  "A file-mode `export fn` returning `?*const Type`, plus a `__free` shim
+  using inline @import of std so the user file's imports are untouched."
+  [{:keys [ret] sym :symbol :as spec} entry]
+  (let [layout     (get-in ret [:of :layout])
+        type-name  (:name layout)
+        buf-fields (filter :target (:fields layout))
+        free-body  (if (seq buf-fields)
+                     (str (str/join "\n" (for [{fname :name} buf-fields]
+                                            (str "    @import(\"std\").heap.c_allocator.free(__p." fname ");")))
+                          "\n")
+                     "")]
+    (str (file-plain spec entry)
+         "\nexport fn " sym "__free(__ptr: usize) void {\n"
+         "    if (__ptr == 0) return;\n"
+         "    const __p: *" type-name " = @ptrFromInt(__ptr);\n"
+         free-body
+         "    @import(\"std\").heap.c_allocator.destroy(__p);\n"
+         "}\n")))
+
 (defn- buffer-wire-decls
   "Wire struct declarations for every struct type the spec references in
   a wire position: buffer-carrying struct elements in argument slices or
@@ -657,6 +724,7 @@
                     (= :error-union (:kind ret))                       (generate-error-union spec body)
                     (owned-record-return? ret)                         (generate-owned-struct-return spec body)
                     (contains? #{:owned :borrowed :bytes :string} (:kind ret)) (generate-ownership spec body)
+                    (opt-struct-return? ret)                           (generate-optional-struct-return spec body)
                     (and (= :named (:kind ret)) (enum-type? ret))      (generate-plain spec body)
                     (= :named (:kind ret))                             (generate-struct-return spec body)
                     :else                                              (generate-plain spec body))
@@ -893,6 +961,7 @@
                     (= :error-union (:kind ret))                       (file-error-union spec entry)
                     (owned-record-return? ret)                         (file-owned-struct-return spec entry)
                     (contains? #{:owned :borrowed :bytes :string} (:kind ret)) (file-ownership spec entry)
+                    (opt-struct-return? ret)                           (file-optional-struct-return spec entry)
                     (and (= :named (:kind ret)) (enum-type? ret))      (file-plain spec entry)
                     (= :named (:kind ret))                             (file-struct-return spec entry)
                     :else                                              (file-plain spec entry))]
