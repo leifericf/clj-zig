@@ -57,6 +57,8 @@
    {:code :clj-zig/unsupported-optional    :signature '[:ret [:optional [:slice :u8]]]}
    {:code :clj-zig/unsupported-error-union :signature '[:ret [:error-union E [:slice :i64]]]}
    {:code :clj-zig/unsupported-error-union :signature '[:ret [:error-union E [:slice :u8]]]}
+   {:code :clj-zig/malformed-error-set    :signature '[:ret [:error-union 42 :i64]]}
+   {:code :clj-zig/malformed-error-set    :signature '[:ret [:error-union [:slice :u8] :i64]]}
    {:code :clj-zig/unsupported-ownership   :signature '[:ret [:owned :i64]]}
    {:code :clj-zig/unsupported-handle      :signature '[:ret [:handle :i64]]}
    {:code :clj-zig/unsupported-carrier     :signature '[:ret :i128]}
@@ -91,10 +93,10 @@
            :clj-zig/unknown-scalar :clj-zig/malformed-compound :clj-zig/void-argument
            :clj-zig/unsupported-optional :clj-zig/unsupported-error-union
            :clj-zig/unsupported-ownership :clj-zig/unsupported-handle
-           :clj-zig/unsupported-carrier :clj-zig/unknown-field
-           :clj-zig/unknown-type-name :clj-zig/unsupported-bytes
-           :clj-zig/unsupported-element}
-         (set (map :code spec-rejections)))))
+            :clj-zig/unsupported-carrier :clj-zig/unknown-field
+            :clj-zig/unknown-type-name :clj-zig/unsupported-bytes
+            :clj-zig/unsupported-element :clj-zig/malformed-error-set}
+           (set (map :code spec-rejections)))))
 
 (deftest string-is-not-a-rejection
   ;; :string is a first-class buffer type: build-spec accepts it in argument

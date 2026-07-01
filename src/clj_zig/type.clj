@@ -140,12 +140,20 @@
           (str (name kind) " takes one wrapped type.") {})))
 
 (defn- normalize-error-union
-  "`[:error-union E T]` pairs an error set with a value type. The error
-  set is preserved as written; its precise mapping is settled by ADR
-  before the marshalling lands."
+  "`[:error-union E T]` pairs an error set with a value type. Per ADR 19,
+  `E` is a Zig error set named by symbol (including the builtin
+  `anyerror`); a non-symbol `E` is rejected here rather than emitted as
+  invalid Zig. The value type is normalized; its allowed shapes are
+  settled by `spec/validate!`."
   [v]
   (if (= 3 (count v))
-    {:kind :error-union :error (nth v 1) :of (normalize (nth v 2))}
+    (let [error-set (nth v 1)]
+      (when-not (symbol? error-set)
+        (fail v :clj-zig/malformed-error-set
+              (str "An :error-union's error set must name a Zig error set by"
+                   " symbol (including anyerror); got " (pr-str error-set) ".")
+              {:error-set error-set}))
+      {:kind :error-union :error error-set :of (normalize (nth v 2))})
     (fail v :clj-zig/malformed-compound
           "[:error-union E T] takes an error set and a value type." {})))
 
