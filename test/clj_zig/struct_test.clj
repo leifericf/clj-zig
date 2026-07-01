@@ -251,3 +251,35 @@
     (is (= 5.0 (use-maybe-point {:x 3.0 :y 4.0}))))
   (testing "nil dereferences to the default"
     (is (= -1.0 (use-maybe-point nil)))))
+
+;; --- Nested buffer-carrying structs as slice elements ------------------
+;; A slice element whose struct nests another buffer-carrying struct exercises
+;; the recursive nice-to-wire transform and the recursive walking free shim.
+
+(deftypez Inner [tag :string n :i64])
+(deftypez Outer [label :string count :i64 detail Inner])
+
+(defnz make-outers
+  "Allocate count Outers, each with a label and a nested Inner."
+  [count :usize
+   :ret  [:owned [:slice Outer]]]
+  "const out = std.heap.c_allocator.alloc(Outer, count) catch @panic(\"oom\");
+   for (out, 0..) |*o, i| {
+       const lab = std.heap.c_allocator.alloc(u8, 3) catch @panic(\"oom\");
+       @memcpy(lab, \"abc\");
+       const tg = std.heap.c_allocator.alloc(u8, 5) catch @panic(\"oom\");
+       @memcpy(tg, \"inner\");
+       o.* = .{ .label = lab, .count = @intCast(i), .detail = .{ .tag = tg, .n = @intCast(i * 2) } };
+   }
+   return out;")
+
+(deftest an-owned-slice-of-nested-buffer-structs-round-trips
+  (testing "each element's nested struct fields are copied out"
+    (is (= [{:label "abc" :count 0 :detail {:tag "inner" :n 0}}
+            {:label "abc" :count 1 :detail {:tag "inner" :n 2}}]
+           (make-outers 2))))
+  (testing "an empty owned slice returns an empty vector"
+    (is (= [] (make-outers 0))))
+  (testing "the recursive walking free shim frees every nested buffer in volume"
+    (is (every? #(= {:tag "inner" :n 18} (:detail (last %)))
+                (repeatedly 200 #(make-outers 10))))))

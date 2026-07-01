@@ -183,10 +183,12 @@
       (is (= 32 (-> scene :fields second :offset)))
       (is (= 40 (:size scene))))))
 
-(deftest rejects-a-nested-field-with-a-non-scalar-inner
+(deftest accepts-a-nested-field-with-a-buffer-carrying-inner
   (let [buf-layout (layout/describe 'Buf '[media :string] {})]
-    (is (= :clj-zig/unsupported-field
-           (enum-error-code #(layout/describe 'Outer '[inner Buf] {'Buf buf-layout}))))))
+    (testing "a nested buffer-carrying struct field is accepted as :nested"
+      (let [outer (layout/describe 'Outer '[inner Buf] {'Buf buf-layout})]
+        (is (= 1 (count (:fields outer))))
+        (is (:nested (first (:fields outer))))))))
 
 (deftest rejects-a-nested-field-naming-an-undeclared-type
   (is (= :clj-zig/unknown-field

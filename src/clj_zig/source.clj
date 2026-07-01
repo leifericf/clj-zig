@@ -183,18 +183,28 @@
     [(str binding ": " (zig-type type))]))
 
 (defn- wire-to-nice-copy-stmts
-  "The statements converting one wire element `__src` into the nice record
-  `__dst`, used inside a reconstruction loop. Inverse of
-  `buffer-slice-copy-stmts`: a scalar field is assigned directly; a buffer
-  field reinterprets the `{ptr, len}` pair as a real slice."
-  [layout]
-  (mapcat (fn [{:keys [name type] :as f}]
-            (if (:target f)
-              (let [elem (buffer-element type)]
-                [(str "    __dst." name " = @as([*]" elem
-                      ", @ptrFromInt(__src." name "_ptr))[0..__src." name "_len];")])
-              [(str "    __dst." name " = __src." name ";")]))
-          (:fields layout)))
+  "The statements converting one wire element into a nice record, used
+  inside a reconstruction loop. Inverse of `buffer-slice-copy-stmts`:
+  a scalar field is assigned directly; a buffer field reinterprets the
+  `{ptr, len}` pair as a real slice; a nested buffer-carrying struct
+  field recurses into the inner layout."
+  ([layout] (wire-to-nice-copy-stmts layout "__dst" "__src"))
+  ([layout dst-path src-path]
+   (mapcat (fn [{:keys [name type] :as f}]
+             (cond
+               (:target f)
+               (let [elem (buffer-element type)]
+                 [(str "    " dst-path "." name " = @as([*]" elem
+                       ", @ptrFromInt(" src-path "." name "_ptr))[0.." src-path "." name "_len];")])
+
+               (and (:nested f) (some :target (get-in type [:layout :fields])))
+               (wire-to-nice-copy-stmts (get-in type [:layout])
+                                        (str dst-path "." name)
+                                        (str src-path "." name))
+
+               :else
+               [(str "    " dst-path "." name " = " src-path "." name ";")]))
+           (:fields layout))))
 
 (defn- reconstruction
   "The statement that rebuilds a binding the body uses by name: a slice or
@@ -380,26 +390,46 @@
                 "}\n")))))
 
 (defn- buffer-slice-copy-stmts
-  "The statements copying one nice record `__src` into the wire element
-  `__wire[__i]`, used inside the transform loop. A scalar or enum field
-  is assigned directly; a buffer field decomposes into its pointer and
-  length."
-  [layout]
-  (mapcat (fn [{:keys [name] :as f}]
-            (if (:target f)
-              [(str "        __wire[__i]." name "_ptr = @intFromPtr(__src." name ".ptr);")
-               (str "        __wire[__i]." name "_len = __src." name ".len;")]
-              [(str "        __wire[__i]." name " = __src." name ";")]))
-          (:fields layout)))
+  "The statements copying one nice record into a wire element, used
+  inside the transform loop. A scalar or enum field is assigned directly;
+  a buffer field decomposes into its pointer and length; a nested
+  buffer-carrying struct field recurses into the inner layout."
+  ([layout] (buffer-slice-copy-stmts layout "__wire[__i]" "__src"))
+  ([layout wire-path src-path]
+   (mapcat (fn [{:keys [name type] :as f}]
+             (cond
+               (:target f)
+               [(str "        " wire-path "." name "_ptr = @intFromPtr(" src-path "." name ".ptr);")
+                (str "        " wire-path "." name "_len = " src-path "." name ".len;")]
+
+               (and (:nested f) (some :target (get-in type [:layout :fields])))
+               (buffer-slice-copy-stmts (get-in type [:layout])
+                                        (str wire-path "." name)
+                                        (str src-path "." name))
+
+               :else
+               [(str "        " wire-path "." name " = " src-path "." name ";")]))
+           (:fields layout))))
 
 (defn- buffer-slice-free-stmts
   "The statements freeing one wire element's buffer fields, used inside
-  the walking free shim's loop body over the wire slab."
-  [layout]
-  (for [{fname :name t :type} (filter :target (:fields layout))]
-    (let [elem (buffer-element t)]
-      (str "        std.heap.c_allocator.free(@as([*]" elem
-           ", @ptrFromInt(__e." fname "_ptr))[0..__e." fname "_len]);"))))
+  the walking free shim's loop body. Recurses into nested buffer-carrying
+  struct fields."
+  ([layout] (buffer-slice-free-stmts layout "__e"))
+  ([layout elem-path]
+   (mapcat (fn [{:keys [name type] :as f}]
+             (cond
+               (:target f)
+               (let [elem (buffer-element type)]
+                 [(str "        std.heap.c_allocator.free(@as([*]" elem
+                       ", @ptrFromInt(" elem-path "." name "_ptr))[0.." elem-path "." name "_len]);")])
+
+               (and (:nested f) (some :target (get-in type [:layout :fields])))
+               (buffer-slice-free-stmts (get-in type [:layout])
+                                        (str elem-path "." name))
+
+               :else nil))
+           (:fields layout))))
 
 (defn- generate-owned-buffer-slice
   "An owned slice whose element is a buffer-carrying struct. The body
@@ -687,7 +717,15 @@
   buffer-carrying structs. Deduplicated by name and emitted once at the
   top level."
   [spec]
-  (let [param-layouts (keep (fn [p]
+  (let [collect-wire (fn collect-wire [layout]
+                       (let [nested (->> (:fields layout)
+                                         (keep (fn [{:keys [type nested]}]
+                                                 (when (and nested
+                                                            (some :target (get-in type [:layout :fields])))
+                                                   (collect-wire (get-in type [:layout])))))
+                                         (apply concat))]
+                         (distinct (concat nested [layout]))))
+        param-layouts (keep (fn [p]
                               (let [t (:type p)]
                                 (when (contains? #{:slice :array} (:kind t))
                                   (when (buffer-carrying-slice-element? (:of t))
@@ -711,7 +749,7 @@
                          [(get-in ret [:of :layout])]
 
                          :else [])
-        all-layouts    (distinct (concat param-layouts ret-layouts))]
+        all-layouts    (distinct (mapcat collect-wire (concat param-layouts ret-layouts)))]
     (str/join "\n" (map wire-struct all-layouts))))
 
 (defn- generate-inline
@@ -844,13 +882,24 @@
                 "}\n")))))
 
 (defn- file-buffer-slice-free-stmts
-  "The file-mode free statements for one wire element's buffer fields:
-  `std` is imported inline so a user file's own imports never collide."
-  [layout]
-  (for [{fname :name t :type} (filter :target (:fields layout))]
-    (let [elem (buffer-element t)]
-      (str "        @import(\"std\").heap.c_allocator.free(@as([*]" elem
-           ", @ptrFromInt(__e." fname "_ptr))[0..__e." fname "_len]);"))))
+  "The file-mode free statements for one wire element's buffer fields,
+  recursing into nested buffer-carrying struct fields. `std` is imported
+  inline so a user file's own imports never collide."
+  ([layout] (file-buffer-slice-free-stmts layout "__e"))
+  ([layout elem-path]
+   (mapcat (fn [{:keys [name type] :as f}]
+             (cond
+               (:target f)
+               (let [elem (buffer-element type)]
+                 [(str "        @import(\"std\").heap.c_allocator.free(@as([*]" elem
+                       ", @ptrFromInt(" elem-path "." name "_ptr))[0.." elem-path "." name "_len]);")])
+
+               (and (:nested f) (some :target (get-in type [:layout :fields])))
+               (file-buffer-slice-free-stmts (get-in type [:layout])
+                                             (str elem-path "." name))
+
+               :else nil))
+           (:fields layout))))
 
 (defn- file-owned-buffer-slice
   "File-mode owned slice of buffer-carrying structs: calls the user's

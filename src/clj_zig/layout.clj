@@ -113,13 +113,13 @@
 (defn slice-element-layout?
   "True when a struct layout can serve as a slice or array element that
   carries its own buffer fields: every field is a carrier scalar (not a
-  128-bit integer), an enum, a nested scalar-only struct, or a buffer
-  field (string, bytes, or a slice of a carrier scalar). Broader than
-  `scalar-only-layout?`: the wrapper transforms the body's nice-record
-  slice into a wire (extern) slab the marshaller reads, and the free shim
-  walks each element freeing its buffers. A nested struct inside an
-  element must still be scalar-only (a buffer nested inside an element
-  would need a recursive free walk, out of scope)."
+  128-bit integer), an enum, a nested struct that is itself slice-element-
+  capable (recursively, so a nested buffer-carrying struct is accepted),
+  or a buffer field (string, bytes, or a slice of a carrier scalar).
+  Broader than `scalar-only-layout?`: the wrapper transforms the body's
+  nice-record slice into a wire (extern) slab the marshaller reads, and
+  the free shim walks each element freeing its buffers (recursing into
+  nested buffer-carrying structs)."
   [layout]
   (and (not (:enum layout))
        (seq (:fields layout))
@@ -131,7 +131,7 @@
                        (and (= :named (:kind t))
                             (get-in t [:layout])
                             (not (get-in t [:layout :enum]))
-                            (scalar-only-layout? (get-in t [:layout])))
+                            (slice-element-layout? (get-in t [:layout])))
                        (:target f))))
                (:fields layout))))
 
@@ -192,12 +192,13 @@
                        :type type-name :field fname :clj-zig/type-form ftype}))
       (get-in t [:layout :enum])
       {:wire :scalar}
-      (scalar-only-layout? (get-in t [:layout]))
+      (or (scalar-only-layout? (get-in t [:layout]))
+          (slice-element-layout? (get-in t [:layout])))
       {:wire :nested}
       :else
       (throw (ex-info (str "Field " fname " of " type-name
                            " nests " (:name t) ", whose fields are not all"
-                           " carrier scalars; a nested struct must be scalar-only.")
+                           " carrier scalars or supported buffer fields.")
                       {:level :error :error/code :clj-zig/unsupported-field
                        :type type-name :field fname :clj-zig/type-form ftype})))
 
@@ -370,12 +371,20 @@
   "The Zig declaration line(s) for one layout field. A scalar field is
   one line of its carrier type; a buffer field expands to a `<name>_ptr`
   and a `<name>_len`, both `usize` (the C-ABI `{ptr, len}` pair a slice
-  parameter already lowers to, applied to a struct field)."
+  parameter already lowers to, applied to a struct field). A nested
+  buffer-carrying struct field uses the wire type name (`Type__wire`) so
+  the extern struct embeds the inner wire form, not the nice form."
   [{fname :name t :type :keys [target]}]
   (if target
     [(str "    " fname "_ptr: usize,")
      (str "    " fname "_len: usize,")]
-    [(str "    " fname ": " (name (:name t)) ",")]))
+    (let [type-name (if (and (= :named (:kind t))
+                             (get-in t [:layout])
+                             (not (get-in t [:layout :enum]))
+                             (some :target (get-in t [:layout :fields])))
+                      (str (:name t) "__wire")
+                      (name (:name t)))]
+      [(str "    " fname ": " type-name ",")])))
 
 (defn zig-struct
   "The `extern struct` declaration the generated Zig uses for a layout.
