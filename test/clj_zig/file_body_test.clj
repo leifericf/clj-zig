@@ -129,3 +129,10 @@
                     (catch clojure.lang.ExceptionInfo e e)
                     (catch clojure.lang.Compiler$CompilerException e (.getCause e)))]
       (is (= :clj-zig/entry-name-needed (:error/code (ex-data ex)))))))
+
+(deftest trailing-forms-after-the-body-are-rejected
+  (testing "stray forms after the Zig body are not silently dropped"
+    (let [ex (try (define! `(core/defnz ~'junk [~'x :i64 :ret :i64] "return x;" :extra))
+                  (catch clojure.lang.ExceptionInfo e e)
+                  (catch clojure.lang.Compiler$CompilerException e (.getCause e)))]
+      (is (= :clj-zig/malformed-defnz (:error/code (ex-data ex)))))))

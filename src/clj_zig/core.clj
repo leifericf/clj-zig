@@ -432,15 +432,18 @@
         (conj :ret (resolve-form ret)))))
 
 (defn- parse-defnz
-  "Split a `defnz` tail into `{:docstring :attr-map :signature :body}`,
-  mirroring the optional docstring and attr-map of `defn`."
+  "Split a `defnz` tail into `{:docstring :attr-map :signature :body
+  :trailing}`, mirroring the optional docstring and attr-map of `defn`.
+  `:trailing` is whatever sits after the body, normally nil; the macro
+  rejects a non-empty tail so stray forms after the body are not dropped."
   [tail]
   (let [[docstring tail] (if (string? (first tail)) [(first tail) (next tail)] [nil tail])
         [attr-map tail]  (if (map? (first tail)) [(first tail) (next tail)] [nil tail])]
     {:docstring docstring
      :attr-map  attr-map
      :signature (first tail)
-     :body      (second tail)}))
+     :body      (second tail)
+     :trailing  (nnext tail)}))
 
 (defmacro defnz
   "Define a Clojure function whose body is Zig. The signature vector is
@@ -475,10 +478,15 @@
   escape hatch (`:zig/raw`, `:zig/symbol`). Redefining recompiles; a failed
   recompile keeps the last good binding."
   [fn-name & tail]
-  (let [{:keys [docstring attr-map signature body]} (parse-defnz tail)
+  (let [{:keys [docstring attr-map signature body trailing]} (parse-defnz tail)
         file-body? (and (map? body) (contains? body :zig/file))
         bodyless?  (and (nil? body) (vector? signature))
         infer?     (and (nil? body) (nil? signature))]
+    (when (seq trailing)
+      (throw (ex-info (str "defnz " fn-name " has " (count trailing)
+                           " form(s) after the body; nothing may follow the Zig body.")
+                      {:level :error :error/code :clj-zig/malformed-defnz
+                       :var fn-name})))
     (when-not (or (string? body) file-body? bodyless? infer?)
       (throw (ex-info "defnz needs a Zig body: a string, a {:zig/file ...} descriptor, or a signature with the body in the namespace's .zig."
                       {:level :error :error/code :clj-zig/malformed-defnz
