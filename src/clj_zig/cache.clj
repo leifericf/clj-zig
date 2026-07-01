@@ -41,6 +41,20 @@
                         (.getBytes ^String s "UTF-8"))]
     (apply str (map #(format "%02x" (bit-and % 0xff)) digest))))
 
+(def ^:private fingerprint-width
+  "The hex digits retained from the SHA-256 digest for a content-address
+  fingerprint, shared by `cache-key`, `content-fingerprint`, and
+  `git-fingerprint`. Sixteen hex digits is 64 bits, comfortably past the
+  birthday bound for the number of artifacts this cache will ever hold."
+  16)
+
+(defn- fingerprint
+  "The truncated SHA-256 digest of `x`'s canonical form: the single
+  content-address primitive every cache fingerprint shares. `dir-signature`
+  alone keeps the full digest, since it is compared, not stored in a path."
+  [x]
+  (subs (sha256-hex (canonical x)) 0 fingerprint-width))
+
 (defn cache-key
   "The content hash for these build inputs. The generated `source` enters
   the hash directly, so a change to the source generator yields a new key
@@ -51,12 +65,11 @@
   Zig modules enter as `:modules`, a name-to-fingerprint map, so a changed
   module relinks its dependents while leaving every other key untouched."
   [{:keys [spec body source deps options zig-version target aux-files modules]}]
-  (subs (sha256-hex (canonical (cond-> {:spec spec :body body :source source :deps deps
-                                        :options options :zig-version zig-version
-                                        :target target}
-                                 (seq aux-files) (assoc :aux aux-files)
-                                 (seq modules)   (assoc :modules modules))))
-        0 12))
+  (fingerprint (cond-> {:spec spec :body body :source source :deps deps
+                        :options options :zig-version zig-version
+                        :target target}
+                 (seq aux-files) (assoc :aux aux-files)
+                 (seq modules)   (assoc :modules modules))))
 
 ;; --- Pure: external-module fingerprint (ADR 34) -------------------------
 
@@ -69,15 +82,14 @@
   (sha256-hex (canonical (set (map (juxt :path :size :mtime) stats)))))
 
 (defn content-fingerprint
-  "The twelve-char content fingerprint of a module's file closure: each
-  file's path paired with the hash of its contents. Order-independent, so it
-  depends only on the set of files and their contents. `contents` is a seq
-  of `{:path :content}` read by the shell."
+  "The content fingerprint of a module's file closure: each file's path
+  paired with the hash of its contents. Order-independent, so it depends
+  only on the set of files and their contents. `contents` is a seq of
+  `{:path :content}` read by the shell."
   [contents]
-  (subs (sha256-hex (canonical (into {} (map (fn [{:keys [path content]}]
-                                               [path (sha256-hex content)]))
-                                     contents)))
-        0 12))
+  (fingerprint (into {} (map (fn [{:keys [path content]}]
+                               [path (sha256-hex content)]))
+                     contents)))
 
 (defn memoized-fingerprint
   "Resolve a module's fingerprint against a prior memo `entry` (`{:signature
@@ -179,11 +191,11 @@
         (closure-files root-path)))
 
 (defn- git-fingerprint
-  "The twelve-char fingerprint of a pinned `:git/sha` module reference,
-  derived from the sha and root alone: a pinned ref is already
-  content-addressed, so no file is read."
+  "The fingerprint of a pinned `:git/sha` module reference, derived from
+  the sha and root alone: a pinned ref is already content-addressed, so no
+  file is read."
   [{:keys [git/sha root]}]
-  (subs (sha256-hex (canonical {:git/sha sha :root root})) 0 12))
+  (fingerprint {:git/sha sha :root root}))
 
 (defonce ^:private module-fingerprint-cache
   ;; Per module-root path, the last seen `{:signature :fingerprint}`, so an
@@ -197,8 +209,8 @@
   {:stat stat-closure :read read-closure})
 
 (defn module-fingerprint
-  "The twelve-char fingerprint for one external module reference, the single
-  value it contributes to a dependent function's content hash (ADR 34). A
+  "The fingerprint for one external module reference, the single value it
+  contributes to a dependent function's content hash (ADR 34). A
   pinned `:git/sha` ref fingerprints from the sha and root, with no
   filesystem read; a dev `:path` ref fingerprints its file closure, memoized
   behind the cheap `dir-signature` so an unchanged tree reuses the

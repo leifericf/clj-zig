@@ -54,7 +54,7 @@
           in1  (core/build-inputs spec "return a;")
           in2  (core/build-inputs spec "return a + 1.0;")]
       (testing "the namespace's module contributes a fingerprint to the inputs"
-        (is (re-matches #"[0-9a-f]{12}" (get (:modules in1) "pkg"))))
+        (is (re-matches #"[0-9a-f]{16}" (get (:modules in1) "pkg"))))
       (testing "a wrapper-body edit leaves the module fingerprint untouched"
         (is (= (:modules in1) (:modules in2))))
       (testing "the module fingerprint enters the content-hashed key"

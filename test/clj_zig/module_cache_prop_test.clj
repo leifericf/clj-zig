@@ -25,12 +25,12 @@
       (not= (cache/dir-signature stats)
             (cache/dir-signature (update-in stats [0 :size] inc))))))
 
-;; --- Content fingerprint: twelve hex, order-independent, content-sensitive ---
+;; --- Content fingerprint: sixteen hex, order-independent, content-sensitive ---
 
-(defspec content-fingerprint-is-twelve-hex-and-order-independent 200
+(defspec content-fingerprint-is-sixteen-hex-and-order-independent 200
   (prop/for-all [tree g/gen-module-tree]
     (let [contents (g/tree->contents tree)]
-      (and (re-matches #"[0-9a-f]{12}" (cache/content-fingerprint contents))
+      (and (re-matches #"[0-9a-f]{16}" (cache/content-fingerprint contents))
            (= (cache/content-fingerprint contents)
               (cache/content-fingerprint (shuffle contents)))))))
 
@@ -66,7 +66,7 @@
 ;; --- Cache-key participation: the fingerprint enters the key ------------
 
 (def ^:private gen-fingerprint
-  (gen/fmap #(apply str %) (gen/vector gen/char-alphanumeric 12 12)))
+  (gen/fmap #(apply str %) (gen/vector gen/char-alphanumeric 16 16)))
 
 (def ^:private gen-modules-map
   (gen/map (gen/fmap #(str "m" %) (gen/choose 0 20)) gen-fingerprint {:max-elements 4}))

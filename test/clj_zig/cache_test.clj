@@ -32,7 +32,7 @@
   (is (= (cache/cache-key (inputs nil "return x + y;"))
          (cache/cache-key (inputs nil "return x + y;"))))
   (testing "the key is a stable-length hex digest"
-    (is (re-matches #"[0-9a-f]{12}" (cache/cache-key (inputs nil "return x + y;"))))))
+    (is (re-matches #"[0-9a-f]{16}" (cache/cache-key (inputs nil "return x + y;"))))))
 
 (deftest cache-key-is-change-sensitive
   (let [base (cache/cache-key (inputs nil "return x + y;"))]
@@ -69,7 +69,7 @@
         ref   {:path (str "mod-" (System/nanoTime) ".zig")}]
     (testing "the first call reads the closure and fingerprints it"
       (let [fp (cache/module-fingerprint ref io)]
-        (is (re-matches #"[0-9a-f]{12}" fp))
+        (is (re-matches #"[0-9a-f]{16}" fp))
         (is (= 1 @reads))))
     (testing "an unchanged tree reuses the fingerprint without rereading"
       (let [fp1 (cache/module-fingerprint ref io)
@@ -87,7 +87,7 @@
               :read (fn [_] (throw (AssertionError. "read must not run")))}
         fp   (cache/module-fingerprint {:git/sha "abc123" :root "src/root.zig"} boom)]
     (testing "a :git/sha ref hashes from the sha and root alone"
-      (is (re-matches #"[0-9a-f]{12}" fp))
+      (is (re-matches #"[0-9a-f]{16}" fp))
       (is (= fp (cache/module-fingerprint {:git/sha "abc123" :root "src/root.zig"} boom))))
     (testing "a different sha or root yields a different fingerprint"
       (is (not= fp (cache/module-fingerprint {:git/sha "def456" :root "src/root.zig"} boom)))

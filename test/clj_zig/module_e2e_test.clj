@@ -41,7 +41,7 @@
       (testing "the build records the module it linked, with its fingerprint"
         (is (= [{:name "mymod" :status :local}]
                (mapv #(dissoc % :fingerprint) (:modules a1))))
-        (is (re-matches #"[0-9a-f]{12}" (:fingerprint (first (:modules a1))))))
+        (is (re-matches #"[0-9a-f]{16}" (:fingerprint (first (:modules a1))))))
       (testing "Zig's persistent global cache is populated (ADR 35)"
         (let [g (io/file (compile/global-cache-dir))]
           (is (.exists g))
@@ -63,7 +63,7 @@
         (let [m (first (zig/modules v))]
           (is (= "mymod" (:name m)))
           (is (= :local (:status m)))
-          (is (re-matches #"[0-9a-f]{12}" (:fingerprint m))))))))
+          (is (re-matches #"[0-9a-f]{16}" (:fingerprint m))))))))
 
 (deftest a-module-compile-error-is-attributed-to-the-module
   (let [pkg   (temp-dir)
