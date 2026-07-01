@@ -264,20 +264,36 @@
                64 (.set seg ValueLayout/JAVA_DOUBLE off (double cv)))
       :bool  (.set seg ValueLayout/JAVA_BOOLEAN off (boolean cv)))))
 
+(declare marshal-struct-into!)
+
 (defn- marshal-struct
   "Write the fields of Clojure map `m` into a fresh native segment for the
-  struct `descriptor`, each at its C-ABI offset."
+  struct `descriptor`, each at its C-ABI offset. A scalar field is
+  written directly; a nested struct field recurses into a sub-segment at
+  the field's offset (the inner extern struct is embedded by value)."
   [arena descriptor m]
   (let [seg ^MemorySegment (.allocate ^Arena arena (long (:size descriptor))
                                       (long (:align descriptor)))]
-    (doseq [{:keys [name type offset]} (:fields descriptor)]
-      (let [v (get m (keyword name))]
-        (when (nil? v)
-          (throw (ex-info (str "Struct " (:name descriptor) " is missing field " name ".")
-                          {:level :error :error/code :clj-zig/missing-field
-                           :type (:name descriptor) :field name})))
-        (write-scalar seg type offset (to-carrier {:type type} v))))
+    (marshal-struct-into! seg descriptor m)
     seg))
+
+(defn- marshal-struct-into!
+  "Write the fields of Clojure map `m` into the existing segment `seg`
+  for the struct `descriptor`, each at its C-ABI offset. Used both by
+  `marshal-struct` (for a top-level struct argument) and by the nested-
+  field recursion (writing into a sub-slice of the outer struct)."
+  [^MemorySegment seg descriptor m]
+  (doseq [{:keys [name type offset nested]} (:fields descriptor)]
+    (let [v (get m (keyword name))]
+      (when (nil? v)
+        (throw (ex-info (str "Struct " (:name descriptor) " is missing field " name ".")
+                        {:level :error :error/code :clj-zig/missing-field
+                         :type (:name descriptor) :field name})))
+      (if nested
+        (let [inner (:layout type)
+              sub   (.asSlice seg (long offset) (long (:size inner)))]
+          (marshal-struct-into! sub inner v))
+        (write-scalar seg type offset (to-carrier {:type type} v))))))
 
 (defn- buffer-field-element
   "The scalar element a `:vector` buffer field carries, for the bulk copy.
@@ -308,9 +324,10 @@
 (defn- read-struct-field
   "Read one field of a wire struct segment. Dispatches on the field's
   shape: a buffer field (it carries a `:target`) reads `{ptr, len}` and
-  copies out; an enum field reads its `i32` backing and maps to keyword;
-  a scalar field reads its carrier."
-  [^MemorySegment seg {:keys [type offset target len-offset]}]
+  copies out; a nested struct field recurses into a sub-segment at the
+  field's offset; an enum field reads its integer backing and maps to
+  keyword; a scalar field reads its carrier."
+  [^MemorySegment seg {:keys [type offset target len-offset nested]}]
   (cond
     target
     (let [ptr (.get seg ValueLayout/JAVA_LONG (long offset))
@@ -321,6 +338,10 @@
         :string             (read-utf8-string ptr len)
         (keyword "byte[]")  (read-bytes ptr len)
         :vector             (read-slice-values ptr len (buffer-field-element type))))
+
+    nested
+    (let [inner (:layout type)]
+      (read-struct (.asSlice seg (long offset) (long (:size inner))) inner))
 
     (get-in type [:layout :enum])
     (enum-value->member (:layout type)

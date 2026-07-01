@@ -55,3 +55,32 @@
     (let [p {:x 1.0 :y 2.0}]
       (norm p)
       (is (= {:x 1.0 :y 2.0} p)))))
+
+;; --- Nested struct fields ------------------------------------------------
+
+(deftypez Rect
+  [origin Point
+   size   Point])
+
+(defnz make-rect
+  [x :f64 y :f64 w :f64 h :f64
+   :ret Rect]
+  "return .{ .origin = .{ .x = x, .y = y }, .size = .{ .x = w, .y = h } };")
+
+(defnz rect-area
+  [r Rect
+   :ret :f64]
+  "return r.size.x * r.size.y;")
+
+(deftest a-nested-struct-return-is-a-nested-map
+  (testing "a struct with struct fields comes back as a map of maps"
+    (is (= {:origin {:x 1.0 :y 2.0} :size {:x 4.0 :y 6.0}}
+           (make-rect 1.0 2.0 4.0 6.0)))))
+
+(deftest a-nested-struct-argument-reads-its-inner-fields
+  (testing "the body reads inner fields of a struct-valued argument"
+    (is (= 24.0 (rect-area {:origin {:x 0.0 :y 0.0} :size {:x 4.0 :y 6.0}}))))
+  (testing "a nested struct argument is copied, not aliased"
+    (let [r {:origin {:x 0.0 :y 0.0} :size {:x 4.0 :y 6.0}}]
+      (rect-area r)
+      (is (= {:origin {:x 0.0 :y 0.0} :size {:x 4.0 :y 6.0}} r)))))

@@ -85,8 +85,8 @@
          (:error/code (ex-data e)))))
 
 (deftest rejects-unsupported-field-types
-  (testing "a nested struct or enum named field is rejected"
-    (is (= :clj-zig/unsupported-field (rejection-code '[p Point]))))
+  (testing "a nested struct naming an undeclared type is rejected"
+    (is (= :clj-zig/unknown-field (rejection-code '[p Point]))))
   (testing "an unbounded pointer field is rejected"
     (is (= :clj-zig/unsupported-field (rejection-code '[p [:ptr :i64]])))
     (is (= :clj-zig/unsupported-field (rejection-code '[p [:manyptr :i64]]))))
@@ -155,3 +155,39 @@
   (testing "a value within range is accepted"
     (is (= 255 (-> (layout/describe-enum 'Ok '[a 255] {:backing :u8})
                    :values first :value)))))
+
+(def point-layout
+  (layout/describe 'Point '[x :f64 y :f64]))
+
+(deftest lays-out-a-nested-struct-field
+  (let [rect (layout/describe 'Rect '[origin Point size Point] {'Point point-layout})]
+    (testing "each nested struct field takes the inner type's size and alignment"
+      (is (= 0 (-> rect :fields first :offset)))
+      (is (= 16 (-> rect :fields second :offset)))
+      (is (= 32 (:size rect)))
+      (is (= 8 (:align rect))))
+    (testing "a nested field carries the inner struct's layout"
+      (is (= 'Point (-> rect :fields first :type :name)))
+      (is (true? (-> rect :fields first :nested))))
+    (testing "the wire extern struct embeds the inner type by name"
+      (is (str/includes? (layout/zig-struct rect) "origin: Point,"))
+      (is (str/includes? (layout/zig-struct rect) "size: Point,")))))
+
+(deftest lays-out-recursive-nesting
+  (testing "a three-level nesting chain computes offsets through the middle struct"
+    (let [rect-layout (layout/describe 'Rect '[origin Point size Point] {'Point point-layout})
+          scene  (layout/describe 'Scene '[bounds Rect depth :u8]
+                                  {'Point point-layout 'Rect rect-layout})]
+      ;; bounds (Rect = 32 bytes, align 8) at offset 0; depth (u8) at offset 32.
+      (is (= 0 (-> scene :fields first :offset)))
+      (is (= 32 (-> scene :fields second :offset)))
+      (is (= 40 (:size scene))))))
+
+(deftest rejects-a-nested-field-with-a-non-scalar-inner
+  (let [buf-layout (layout/describe 'Buf '[media :string] {})]
+    (is (= :clj-zig/unsupported-field
+           (enum-error-code #(layout/describe 'Outer '[inner Buf] {'Buf buf-layout}))))))
+
+(deftest rejects-a-nested-field-naming-an-undeclared-type
+  (is (= :clj-zig/unknown-field
+         (enum-error-code #(layout/describe 'Outer '[inner Missing] {})))))

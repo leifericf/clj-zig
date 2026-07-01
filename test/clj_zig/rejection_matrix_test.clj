@@ -132,10 +132,11 @@
 (deftest layout-rejection-matrix
   (is (= :clj-zig/malformed-fields    (code-from #(layout/describe 'T '[a :i64 b]))))
   ;; A slice is a valid buffer field now (it expands to a {ptr, len} pair),
-  ;; so the rejection rows name the field types the wire struct still cannot
-  ;; carry: a named type (a nested struct or enum), an unbounded pointer,
-  ;; and a carrierless scalar.
-  (is (= :clj-zig/unsupported-field   (code-from #(layout/describe 'T '[p Point]))))
+  ;; and a nested struct is a valid by-value field when its inner type is
+  ;; declared and scalar-only, so the rejection rows name the field types
+  ;; the wire struct still cannot carry: an undeclared named type, an
+  ;; unbounded pointer, and a carrierless scalar.
+  (is (= :clj-zig/unknown-field       (code-from #(layout/describe 'T '[p Point]))))
   (is (= :clj-zig/unsupported-field   (code-from #(layout/describe 'T '[p [:ptr :i64]]))))
   (is (= :clj-zig/unsupported-field   (code-from #(layout/describe 'T '[p [:manyptr :i64]]))))
   (is (= :clj-zig/unsupported-field   (code-from #(layout/describe 'T '[n :u128]))))
