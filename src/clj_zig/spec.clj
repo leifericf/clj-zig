@@ -226,7 +226,20 @@
             "A :bytes type is supported in return position only." {}))
     (when (and (= :handle (:kind type)) (not= :named (:kind (:of type))))
       (fail spec :clj-zig/unsupported-handle "A :handle must wrap a named type." {}))
-    (check-element! spec type))
+    (check-element! spec type)
+    (when (and (= :slice (:kind type))
+               (not (:const? type))
+               (= :named (:kind (:of type))))
+      ;; A struct-element slice cannot propagate the body's in-place edits back
+      ;; to the caller's immutable maps (a scalar slice can: the caller passes
+      ;; a mutable primitive array). Require :const so the contract is honest.
+      ;; Runs after check-element! so an invalid element (a buffer-carrying
+      ;; struct) still reports :unsupported-element, not this.
+      (fail spec :clj-zig/mutable-struct-slice
+            (str "A struct-element slice argument must be :const; in-place "
+                 "mutations the body makes cannot propagate back to Clojure's "
+                 "immutable maps. Declare it [:slice :const " (:name (:of type)) "].")
+            {:element (select-keys (:of type) [:kind :name])})))
   (when (and (= :optional (:kind ret))
              (not (or (= :ptr (:kind (:of ret)))
                       (and (= :scalar (:kind (:of ret)))

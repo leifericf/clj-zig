@@ -47,10 +47,15 @@ scalar-only gate keeps the bulk path single-allocator: the slab is one
 buffers to walk. Nested scalar structs compose: a slice of a `Rect`
 whose fields are `Point`s round-trips through the same element reader.
 
-The cost is that a mutable struct slice is effectively read-only at the
-Clojure boundary (edits the body makes are not copied back into the
-caller's maps), and a slice element may not carry a buffer field. Both
-are deliberate scope limits; the motivating cases (vertices, tokens,
+The cost is that a struct-element slice must be declared `:const`. A
+scalar slice propagates the body's in-place edits back to the caller's
+mutable primitive array; a struct slice cannot, because the caller
+supplies immutable maps. Rather than silently drop the edits, the spec
+rejects a non-const struct-element slice with
+`:clj-zig/mutable-struct-slice`. (An `:array` of structs is unaffected:
+arrays never copy back, for scalar elements either, so the behavior is
+uniform.) A slice element may not carry a buffer field. Both are
+deliberate scope limits; the motivating cases (vertices, tokens,
 entities, particles) fit the scalar interior.
 
 ## Alternatives

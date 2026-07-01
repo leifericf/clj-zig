@@ -147,6 +147,21 @@
                                   :signature '[:ret [:owned [:slice Point]]]
                                   :types types}))))))
 
+(deftest rejects-a-mutable-struct-element-slice
+  (let [types {'Point (layout/describe 'Point '[x :f64 y :f64])}]
+    (testing "a non-const struct-element slice cannot propagate mutations to maps"
+      (is (= :clj-zig/mutable-struct-slice
+             (error-code #(spec/build-spec {:ns 'app.core :name 'f
+                                            :signature '[xs [:slice Point] :ret :i64]
+                                            :types types})))))
+    (testing "the const variant is accepted"
+      (is (map? (spec/build-spec {:ns 'app.core :name 'f
+                                  :signature '[xs [:slice :const Point] :ret :i64]
+                                  :types types}))))
+    (testing "a mutable scalar slice still propagates (no over-rejection)"
+      (is (map? (spec/build-spec '{:ns app.core :name f
+                                   :signature [xs [:slice :i64] :ret :i64]}))))))
+
 (deftest rejects-a-slice-of-a-non-scalar-struct
   (testing "a buffer-carrying struct element is rejected"
     (let [types {'Buf (layout/describe 'Buf '[media :string] {})
