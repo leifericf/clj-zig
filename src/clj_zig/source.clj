@@ -546,14 +546,26 @@
     :slice (name (get-in t [:of :name]))))
 
 (defn- wire-write-stmts
-  "The wrapper statement(s) writing one field of the nice record `__r` into
-  the wire out-struct `__ret`. A scalar or enum field is assigned directly;
-  a buffer field writes its pointer and length into the two wire slots."
-  [{fname :name :keys [target]}]
-  (if target
-    [(str "    __ret.*." fname "_ptr = @intFromPtr(__r." fname ".ptr);")
-     (str "    __ret.*." fname "_len = __r." fname ".len;")]
-    [(str "    __ret.*." fname " = __r." fname ";")]))
+  "The wrapper statements writing the nice record `__r` into the wire
+  out-struct `__ret`. A scalar or enum field is assigned directly; a buffer
+  field writes its pointer and length into the two wire slots; a nested
+  buffer-carrying struct field recurses into the inner layout."
+  ([layout] (wire-write-stmts layout "__ret.*" "__r"))
+  ([layout wire-path src-path]
+   (mapcat (fn [{:keys [name type] :as f}]
+             (cond
+               (:target f)
+               [(str "    " wire-path "." name "_ptr = @intFromPtr(" src-path "." name ".ptr);")
+                (str "    " wire-path "." name "_len = " src-path "." name ".len;")]
+
+               (and (:nested f) (some :target (get-in type [:layout :fields])))
+               (wire-write-stmts (get-in type [:layout])
+                                 (str wire-path "." name)
+                                 (str src-path "." name))
+
+               :else
+               [(str "    " wire-path "." name " = " src-path "." name ";")]))
+           (:fields layout))))
 
 (defn- owned-buffer-field?
   "True when a field is a buffer field the free shim should free: it has
@@ -562,22 +574,53 @@
   (and (:target f)
        (not (= :borrowed (:kind (:type f))))))
 
-(defn- free-field-stmt
-  "The free-shim statement freeing one owned buffer field, reading its
-  pointer and length back out of the wire struct and reinterpreting the
-  pointer to a slice of the field's element type."
-  [{fname :name t :type}]
-  (let [elem (buffer-element t)]
-    (str "    std.heap.c_allocator.free(@as([*]" elem
-         ", @ptrFromInt(__ret." fname "_ptr))[0..__ret." fname "_len]);")))
+(defn- wire-struct-free-stmts
+  "Recursive free statements for a wire struct, reading {ptr, len} back
+  from each owned buffer field and freeing it. Recurses into nested
+  buffer-carrying struct wire fields. Skips borrowed fields."
+  ([layout] (wire-struct-free-stmts layout "__ret"))
+  ([layout elem-path]
+   (let [alloc "std.heap.c_allocator"]
+     (mapcat (fn [{:keys [name type] :as f}]
+               (cond
+                 (and (:target f) (= :borrowed (:kind type)))
+                 nil
 
-(defn- file-free-field-stmt
-  "The file-mode free-shim statement: imports `std` inline so a user file's
-  own imports never collide, then frees one owned buffer field."
-  [{fname :name t :type}]
-  (let [elem (buffer-element t)]
-    (str "    @import(\"std\").heap.c_allocator.free(@as([*]" elem
-         ", @ptrFromInt(__ret." fname "_ptr))[0..__ret." fname "_len]);")))
+                 (:target f)
+                 (let [elem (buffer-element type)]
+                   [(str "    " alloc ".free(@as([*]" elem
+                         ", @ptrFromInt(" elem-path "." name "_ptr))[0.." elem-path "." name "_len]);")])
+
+                 (and (:nested f) (some :target (get-in type [:layout :fields])))
+                 (wire-struct-free-stmts (get-in type [:layout])
+                                         (str elem-path "." name))
+
+                 :else nil))
+             (:fields layout)))))
+
+(defn- file-wire-struct-free-stmts
+  "File-mode recursive free statements for a wire struct. Imports std
+  inline so a user file's own imports never collide. Recurses into nested
+  buffer-carrying struct wire fields. Skips borrowed fields."
+  ([layout] (file-wire-struct-free-stmts layout "__ret"))
+  ([layout elem-path]
+   (let [alloc "@import(\"std\").heap.c_allocator"]
+     (mapcat (fn [{:keys [name type] :as f}]
+               (cond
+                 (and (:target f) (= :borrowed (:kind type)))
+                 nil
+
+                 (:target f)
+                 (let [elem (buffer-element type)]
+                   [(str "    " alloc ".free(@as([*]" elem
+                         ", @ptrFromInt(" elem-path "." name "_ptr))[0.." elem-path "." name "_len]);")])
+
+                 (and (:nested f) (some :target (get-in type [:layout :fields])))
+                 (file-wire-struct-free-stmts (get-in type [:layout])
+                                              (str elem-path "." name))
+
+                 :else nil))
+             (:fields layout)))))
 
 (defn- generate-owned-struct-return
   "An inner impl fn holding the user body returns the nice record by value;
@@ -595,11 +638,11 @@
         params-str (str/join ", " (mapcat param-decls params))
         args-str   (str/join ", " (mapcat param-args params))
         out-params (str (when (seq params-str) ", ") "__ret: *" wire-t)
-        writes     (mapcat wire-write-stmts (:fields layout))
+        writes     (wire-write-stmts layout)
         owned?     (= :owned (:kind ret))
-        buf-fields (filter owned-buffer-field? (:fields layout))
-        free-body  (if (seq buf-fields)
-                     (str/join "\n" (map free-field-stmt buf-fields))
+        free-stmts (wire-struct-free-stmts layout)
+        free-body  (if (seq free-stmts)
+                     (str/join "\n" free-stmts)
                      "    _ = __ret;")]
     (str "fn " sym "__impl(" params-str ") " type-name " {\n"
          (indent-body (impl-body params body)) "\n"
@@ -632,10 +675,10 @@
         err-set    (str (:error ret))
         out-params (str (when (seq params-str) ", ")
                         "__err: [*]u8, __errlen: *usize, __ret: *" wire-t)
-        writes     (mapcat wire-write-stmts (:fields layout))
-        buf-fields (filter owned-buffer-field? (:fields layout))
-        free-body  (if (seq buf-fields)
-                     (str/join "\n" (map free-field-stmt buf-fields))
+        writes     (wire-write-stmts layout)
+        free-stmts (wire-struct-free-stmts layout)
+        free-body  (if (seq free-stmts)
+                     (str/join "\n" free-stmts)
                      "    _ = __ret;")
         on-error   (str "catch |__err_value| {\n"
                         "        const __name = @errorName(__err_value);\n"
@@ -666,13 +709,45 @@
        (not (enum-type? (:of ret)))))
 
 (defn- nice-struct-free-stmts
-  "Free statements for each buffer field of a nice struct (with real slice
-  fields), used in the optional-struct free shim. Each buffer field is freed
-  directly (the nice struct holds a real `[]T` slice, not `{ptr, len}`
-  words)."
-  [layout]
-  (for [{fname :name} (filter owned-buffer-field? (:fields layout))]
-    (str "    std.heap.c_allocator.free(__p." fname ");")))
+  "Recursive free statements for a nice struct (with real slice fields),
+  used in the optional-struct free shim. Each owned buffer field is freed
+  directly; nested buffer-carrying struct fields are recursed into."
+  ([layout] (nice-struct-free-stmts layout "__p"))
+  ([layout ptr-path]
+   (mapcat (fn [{:keys [name type] :as f}]
+             (cond
+               (and (:target f) (= :borrowed (:kind type)))
+               nil
+
+               (:target f)
+               [(str "    std.heap.c_allocator.free(" ptr-path "." name ");")]
+
+               (and (:nested f) (some :target (get-in type [:layout :fields])))
+               (nice-struct-free-stmts (get-in type [:layout])
+                                       (str ptr-path "." name))
+
+               :else nil))
+           (:fields layout))))
+
+(defn- file-nice-struct-free-stmts
+  "File-mode recursive free for a nice struct, importing std inline."
+  ([layout] (file-nice-struct-free-stmts layout "__p"))
+  ([layout ptr-path]
+   (let [alloc "@import(\"std\").heap.c_allocator"]
+     (mapcat (fn [{:keys [name type] :as f}]
+               (cond
+                 (and (:target f) (= :borrowed (:kind type)))
+                 nil
+
+                 (:target f)
+                 [(str "    " alloc ".free(" ptr-path "." name ");")]
+
+                 (and (:nested f) (some :target (get-in type [:layout :fields])))
+                 (file-nice-struct-free-stmts (get-in type [:layout])
+                                              (str ptr-path "." name))
+
+                 :else nil))
+             (:fields layout)))))
 
 (defn- optional-struct-free-shim
   "The `__free` shim for an optional-struct return. The body returns null or
@@ -681,9 +756,9 @@
   [{:keys [ret] sym :symbol}]
   (let [layout     (get-in ret [:of :layout])
         type-name  (:name layout)
-        buf-fields (filter owned-buffer-field? (:fields layout))
-        free-body  (if (seq buf-fields)
-                     (str (str/join "\n" (nice-struct-free-stmts layout)) "\n")
+        free-stmts (nice-struct-free-stmts layout)
+        free-body  (if (seq free-stmts)
+                     (str (str/join "\n" free-stmts) "\n")
                      "")]
     (str "\nexport fn " sym "__free(__ptr: usize) void {\n"
          "    if (__ptr == 0) return;\n"
@@ -705,11 +780,9 @@
   [{:keys [ret] sym :symbol :as spec} entry]
   (let [layout     (get-in ret [:of :layout])
         type-name  (:name layout)
-        buf-fields (filter owned-buffer-field? (:fields layout))
-        free-body  (if (seq buf-fields)
-                     (str (str/join "\n" (for [{fname :name} buf-fields]
-                                            (str "    @import(\"std\").heap.c_allocator.free(__p." fname ");")))
-                          "\n")
+        free-stmts (file-nice-struct-free-stmts layout)
+        free-body  (if (seq free-stmts)
+                     (str (str/join "\n" free-stmts) "\n")
                      "")]
     (str (file-plain spec entry)
          "\nexport fn " sym "__free(__ptr: usize) void {\n"
@@ -960,11 +1033,11 @@
         wire-t     (wire-struct-name type-name)
         params-str (str/join ", " (mapcat param-decls params))
         out-params (str (when (seq params-str) ", ") "__ret: *" wire-t)
-        writes     (mapcat wire-write-stmts (:fields layout))
+        writes     (wire-write-stmts layout)
         owned?     (= :owned (:kind ret))
-        buf-fields (filter owned-buffer-field? (:fields layout))
-        free-body  (if (seq buf-fields)
-                     (str/join "\n" (map file-free-field-stmt buf-fields))
+        free-stmts (file-wire-struct-free-stmts layout)
+        free-body  (if (seq free-stmts)
+                     (str/join "\n" free-stmts)
                      "    _ = __ret;")]
     (str "export fn " sym "(" params-str out-params ") void {\n"
          (wrapper-prelude params)
@@ -990,10 +1063,10 @@
         params-str (str/join ", " (mapcat param-decls params))
         out-params (str (when (seq params-str) ", ")
                         "__err: [*]u8, __errlen: *usize, __ret: *" wire-t)
-        writes     (mapcat wire-write-stmts (:fields layout))
-        buf-fields (filter owned-buffer-field? (:fields layout))
-        free-body  (if (seq buf-fields)
-                     (str/join "\n" (map file-free-field-stmt buf-fields))
+        writes     (wire-write-stmts layout)
+        free-stmts (file-wire-struct-free-stmts layout)
+        free-body  (if (seq free-stmts)
+                     (str/join "\n" free-stmts)
                      "    _ = __ret;")
         on-error   (str "catch |__err_value| {\n"
                         "        const __name = @errorName(__err_value);\n"
