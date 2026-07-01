@@ -489,6 +489,141 @@
   (and (every? (fn [p] (= :scalar (-> p :type :kind))) params)
        (= :scalar (:kind ret))))
 
+;; --- general-path return dispatch ----------------------------------------
+;; The non-scalar return shapes each need their own downcall choreography:
+;; where to write out-params, how to read the result, and whether a free
+;; shim runs in a finally. Each helper below takes the per-bind return
+;; context (`ctx`) plus the per-call arena, marshalled carriers, and
+;; copy-back thunk, and runs exactly one shape. `bind` reduces to a
+;; dispatch table over them.
+
+(defn- invoke-eu-struct
+  "Run the error-union-over-a-struct downcall. The union combines its
+  out-params (errbuf, errlen) with a struct out-pointer (`out`). On success
+  (errlen 0) read the struct and free owned buffers in a finally so a read
+  fault cannot leak (mirror of c8a822b and the owned-record path); on
+  failure read the error keyword. The error path wrote no struct, so the
+  free shim does not run and there is nothing to free. The result rebuilds
+  as a record via its map-> factory when the named type is a defrecordz,
+  else a plain map."
+  [{:keys [handle ret record-factory free-handle error-buffer-bytes]}
+   ^Arena arena base-carriers copy-back!]
+  (let [desc   (-> ret :of :layout)
+        out    ^MemorySegment (.allocate arena (long (:size desc)) (long (:align desc)))
+        errbuf ^MemorySegment (.allocate arena error-buffer-bytes 1)
+        errlen ^MemorySegment (.allocate arena 8 8)]
+    (->> (concat base-carriers [errbuf errlen out])
+         (object-array)
+         (.invokeWithArguments handle))
+    (let [n (.get errlen ValueLayout/JAVA_LONG 0)]
+      (if (zero? n)
+        (try
+          (copy-back!)
+          (let [m (read-struct out desc)]
+            (if record-factory (record-factory m) m))
+          (finally
+            (when free-handle
+              (.invokeWithArguments free-handle (object-array [out])))))
+        (do
+          (copy-back!)
+          (read-error-name errbuf n))))))
+
+(defn- invoke-error-union
+  "Run a non-struct error-union downcall. The value type is a scalar
+  (coerced with the unsigned policy), `:void` (nil), or a named enum whose
+  backing int maps to its member keyword (an unknown int returns the raw
+  int, total per ADR 20). On failure read the error keyword."
+  [{:keys [handle ret error-buffer-bytes]} ^Arena arena base-carriers copy-back!]
+  (let [errbuf ^MemorySegment (.allocate arena error-buffer-bytes 1)
+        errlen ^MemorySegment (.allocate arena 8 8)
+        result (->> (concat base-carriers [errbuf errlen])
+                    (object-array)
+                    (.invokeWithArguments handle))
+        n      (do (copy-back!) (.get errlen ValueLayout/JAVA_LONG 0))]
+    (if (zero? n)
+      (let [value-t (:of ret)]
+        (cond
+          (type/void-type? value-t) nil
+          (enum-type? value-t)      (enum-value->member (:layout value-t) (long result))
+          :else                     (coerce-scalar value-t result)))
+      (read-error-name errbuf n))))
+
+(defn- invoke-owned-record
+  "Run an owned or borrowed record downcall. The result writes its fields
+  through a caller-allocated wire-struct out-segment; clj-zig reads each
+  field, then frees owned memory through the per-field shim. The free runs
+  in a finally so a read fault cannot leak any buffer the body allocated
+  (mirror of c8a822b). A borrowed record has no shim. The result rebuilds
+  as a record via its map-> factory when the named type is a defrecordz,
+  else a plain map."
+  [{:keys [handle ret record-factory free-handle]} ^Arena arena base-carriers copy-back!]
+  (let [desc (-> ret :of :layout)
+        out  ^MemorySegment (.allocate arena (long (:size desc)) (long (:align desc)))]
+    (->> (concat base-carriers [out])
+         (object-array)
+         (.invokeWithArguments handle))
+    (try
+      (copy-back!)
+      (let [m (read-struct out desc)]
+        (if record-factory (record-factory m) m))
+      (finally
+        (when free-handle
+          (.invokeWithArguments free-handle (object-array [out])))))))
+
+(defn- invoke-owned-slice
+  "Run an owned or borrowed slice / :bytes / :string downcall. The result
+  writes its pointer and length to two out-params; clj-zig copies the
+  elements out (a :bytes return as one byte[], a :string return decoded as
+  UTF-8 with replacement, any other slice as a vector), then frees owned
+  memory through the shim. The free runs in a finally so a read fault (a
+  wild pointer, or an OOM on a huge length) cannot leak the slice the body
+  allocated (ADR 21, mirror of c8a822b). copy-back! runs inside the same
+  try: the native call already allocated the owned slice, so a copy-back
+  fault must still free. A borrowed return has no shim."
+  [{:keys [handle ret free-handle]} ^Arena arena base-carriers copy-back!]
+  (let [pout ^MemorySegment (.allocate arena 8 8)
+        lout ^MemorySegment (.allocate arena 8 8)]
+    (->> (concat base-carriers [pout lout])
+         (object-array)
+         (.invokeWithArguments handle))
+    (let [addr (.get pout ValueLayout/JAVA_LONG 0)
+          len  (.get lout ValueLayout/JAVA_LONG 0)]
+      (try
+        (copy-back!)
+        (case (:kind ret)
+          :bytes  (read-bytes addr len)
+          :string (read-utf8-string addr len)
+          (read-slice-values addr len (-> ret :of :of)))
+        (finally
+          (when free-handle
+            (.invokeWithArguments free-handle (object-array [addr len]))))))))
+
+(defn- invoke-struct-return
+  "Run a plain struct-return downcall. The result is written through a
+  caller-allocated out-segment, then read back into a Clojure map (rebuilt
+  as a record via its map-> factory when the named type is a defrecordz).
+  An enum return crosses as its backing int and takes the scalar path, not
+  this one."
+  [{:keys [handle ret record-factory]} ^Arena arena base-carriers copy-back!]
+  (let [desc (:layout ret)
+        out  ^MemorySegment (.allocate arena (long (:size desc)) (long (:align desc)))]
+    (->> (concat base-carriers [out])
+         (object-array)
+         (.invokeWithArguments handle))
+    (copy-back!)
+    (let [m (read-struct out desc)]
+      (if record-factory (record-factory m) m))))
+
+(defn- invoke-scalar
+  "Run a plain scalar, enum, or void downcall: invoke, copy mutable args
+  back, and read the return with the unsigned policy. The arena is held by
+  the caller for slice arguments; a scalar return reads nothing through a
+  segment, so it is unused here."
+  [{:keys [handle ret]} _arena base-carriers copy-back!]
+  (let [result (->> base-carriers (object-array) (.invokeWithArguments handle))]
+    (copy-back!)
+    (from-return ret result)))
+
 (defn bind
   "Load `library-path`, look up the spec's symbol, and return a Clojure
   fn that calls it with scalar coercion. The library is held by the
@@ -537,6 +672,7 @@
                           (= :named (get-in ret [:of :kind])))
         owned-slice? (and (contains? #{:owned :borrowed :bytes :string} (:kind ret))
                           (not owned-rec?))
+        struct-return? (and (= :named (:kind ret)) (not (enum-type? ret)))
         ;; An owned slice (or :bytes buffer, or :string) return carries a
         ;; free shim taking the slice's pointer and length; an owned record
         ;; and an error-union over a struct both carry a per-field free shim
@@ -552,14 +688,19 @@
                                        (FunctionDescriptor/ofVoid
                                         (into-array MemoryLayout [ValueLayout/ADDRESS]))
                                        (into-array Linker$Option []))
-                      (contains? #{:owned :bytes :string} (:kind ret))
-                      (.downcallHandle linker
-                                       (foreign/find-symbol lookup (str (:symbol spec) "__free"))
-                                       (FunctionDescriptor/ofVoid
-                                        (into-array MemoryLayout [ValueLayout/JAVA_LONG
-                                                                  ValueLayout/JAVA_LONG]))
-                                       (into-array Linker$Option []))
-                      :else nil)
+                       (contains? #{:owned :bytes :string} (:kind ret))
+                       (.downcallHandle linker
+                                        (foreign/find-symbol lookup (str (:symbol spec) "__free"))
+                                        (FunctionDescriptor/ofVoid
+                                         (into-array MemoryLayout [ValueLayout/JAVA_LONG
+                                                                   ValueLayout/JAVA_LONG]))
+                                        (into-array Linker$Option []))
+                       :else nil)
+        ;; The per-bind return context the general-path dispatch threads into
+        ;; each `invoke-*` helper: the bound handle and the return shape's
+        ;; once-computed metadata. Built once per bind, reused every call.
+        invoke-ctx {:handle handle :ret ret :record-factory record-factory
+                    :free-handle free-handle :error-buffer-bytes error-buffer-bytes}
         var-sym (symbol (str (:ns spec)) (str (:name spec)))
         ;; The hot path for a scalar-only signature: no per-call arena, and
         ;; a thread-local carrier array reused across calls on the same
@@ -594,133 +735,12 @@
               copy-back!    #(run! (fn [m] (when-let [back (:copy-back m)] (back)))
                                    marshalled)]
            (cond
-             ;; An error-union over a struct combines the error-union
-             ;; out-params (errbuf, errlen) with the struct-return
-             ;; out-pointer (__ret). On success (errlen 0) read the struct
-             ;; and free owned buffers in a finally so a read fault cannot
-             ;; leak (mirror of c8a822b and the owned-record path); on
-             ;; failure read the error keyword. The error path wrote no
-             ;; struct, so the free shim does not run and there is nothing
-             ;; to free (no leak). The result rebuilds as a record via its
-             ;; map-> factory when the named type is a defrecordz, else a
-             ;; plain map.
-              eu-struct?
-              (let [desc   (:layout (:of ret))
-                    out    ^MemorySegment (.allocate arena (long (:size desc))
-                                                     (long (:align desc)))
-                    errbuf ^MemorySegment (.allocate arena error-buffer-bytes 1)
-                    errlen ^MemorySegment (.allocate arena 8 8)]
-                (->> (concat base-carriers [errbuf errlen out])
-                     (object-array)
-                     (.invokeWithArguments handle))
-                (let [n (.get errlen ValueLayout/JAVA_LONG 0)]
-                  (if (zero? n)
-                    (try
-                      (copy-back!)
-                      (let [m (read-struct out desc)]
-                        (if record-factory (record-factory m) m))
-                      (finally
-                        (when free-handle
-                          (.invokeWithArguments free-handle (object-array [out])))))
-                    (do
-                      (copy-back!)
-                      (read-error-name errbuf n)))))
-
-             (= :error-union (:kind ret))
-             (let [errbuf ^MemorySegment (.allocate arena error-buffer-bytes 1)
-                   errlen ^MemorySegment (.allocate arena 8 8)
-                   result (->> (concat base-carriers [errbuf errlen])
-                               (object-array)
-                               (.invokeWithArguments handle))
-                   n      (do (copy-back!) (.get errlen ValueLayout/JAVA_LONG 0))]
-               (if (zero? n)
-                 ;; The value type may be a scalar (coerced with the unsigned
-                 ;; policy), :void (nil), or a named enum whose backing int
-                 ;; maps to its member keyword (an unknown int returns the raw
-                 ;; int, total per ADR 20). An enum crosses as its i32 backing
-                 ;; in both arg and return position, so the wire shape is the
-                 ;; same as a scalar error-union.
-                 (let [value-t (:of ret)]
-                   (cond
-                     (type/void-type? value-t)               nil
-                     (enum-type? value-t)                    (enum-value->member (:layout value-t)
-                                                                                 (long result))
-                     :else                                   (coerce-scalar value-t result)))
-                 (read-error-name errbuf n)))
-
-            ;; An owned or borrowed result record writes its fields through a
-            ;; caller-allocated wire-struct out-segment. clj-zig reads each
-            ;; field (scalars/enums directly, each buffer field as its
-            ;; {ptr, len}), then frees owned memory through the per-field shim.
-            ;; The free runs in a finally so a read fault (a wild pointer, or
-            ;; an OOM on a huge length) cannot leak any buffer the body
-            ;; allocated (mirror of c8a822b for slices). A borrowed record has
-            ;; no shim. The result rebuilds as a record via its map-> factory
-            ;; when the named type is a defrecordz, else a plain map.
-             owned-rec?
-             (let [desc (:layout (:of ret))
-                   out  ^MemorySegment (.allocate arena (long (:size desc))
-                                                  (long (:align desc)))]
-               (->> (concat base-carriers [out])
-                    (object-array)
-                    (.invokeWithArguments handle))
-               (try
-                 (copy-back!)
-                 (let [m (read-struct out desc)]
-                   (if record-factory (record-factory m) m))
-                 (finally
-                   (when free-handle
-                     (.invokeWithArguments free-handle (object-array [out]))))))
-
-            ;; An owned or borrowed slice return writes its pointer and
-            ;; length to two out-params. clj-zig copies the elements out (a
-            ;; :bytes return as one byte[], a :string return decoded as UTF-8
-            ;; with replacement, any other slice as a vector), then frees
-            ;; owned memory through the shim.
-             owned-slice?
-             (let [pout ^MemorySegment (.allocate arena 8 8)
-                   lout ^MemorySegment (.allocate arena 8 8)]
-               (->> (concat base-carriers [pout lout])
-                    (object-array)
-                    (.invokeWithArguments handle))
-               (let [addr (.get pout ValueLayout/JAVA_LONG 0)
-                     len  (.get lout ValueLayout/JAVA_LONG 0)]
-                 ;; Free owned memory in a finally so a read fault (a wild
-                 ;; pointer, or an OOM on a huge length) cannot leak the slice
-                 ;; the body allocated (ADR 21, mirror of c8a822b). copy-back!
-                 ;; runs inside the same try: the native call already allocated
-                 ;; the owned slice, so a copy-back fault must still free. A
-                 ;; borrowed return has no shim. A :string read decodes UTF-8
-                 ;; with the JVM replacement action, so invalid bytes never
-                 ;; throw here.
-                 (try
-                   (copy-back!)
-                   (case (:kind ret)
-                     :bytes  (read-bytes addr len)
-                     :string (read-utf8-string addr len)
-                     (read-slice-values addr len (-> ret :of :of)))
-                   (finally
-                     (when free-handle
-                       (.invokeWithArguments free-handle (object-array [addr len])))))))
-
-            ;; A struct return is written through a caller-allocated
-            ;; out-segment, then read back into a Clojure map. An enum
-            ;; return crosses as its backing int and takes the plain path.
-            (and (= :named (:kind ret)) (not (enum-type? ret)))
-            (let [desc (:layout ret)
-                  out  ^MemorySegment (.allocate arena (long (:size desc))
-                                                 (long (:align desc)))]
-              (->> (concat base-carriers [out])
-                   (object-array)
-                   (.invokeWithArguments handle))
-              (copy-back!)
-              (let [m (read-struct out desc)]
-                (if record-factory (record-factory m) m)))
-
-            :else
-            (let [result (->> base-carriers (object-array) (.invokeWithArguments handle))]
-              (copy-back!)
-              (from-return ret result)))))))))
+              eu-struct?                   (invoke-eu-struct   invoke-ctx arena base-carriers copy-back!)
+              (= :error-union (:kind ret)) (invoke-error-union invoke-ctx arena base-carriers copy-back!)
+              owned-rec?                   (invoke-owned-record invoke-ctx arena base-carriers copy-back!)
+              owned-slice?                 (invoke-owned-slice  invoke-ctx arena base-carriers copy-back!)
+              struct-return?               (invoke-struct-return invoke-ctx arena base-carriers copy-back!)
+              :else                        (invoke-scalar       invoke-ctx arena base-carriers copy-back!))))))))
 
 (comment
   ;; A whole small pipeline: build, compile, bind, call.
