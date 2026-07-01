@@ -14,7 +14,6 @@
             [clj-zig.compile :as compile]
             [clj-zig.diagnostics :as diagnostics]
             [clj-zig.ffm :as ffm]
-            [clj-zig.fileref :as fileref]
             [clj-zig.imports :as imports]
             [clj-zig.infer :as infer]
             [clj-zig.layout :as layout]
@@ -325,7 +324,7 @@
   other than the one using it. The path binds the file to its namespace;
   the header only catches a file wired to the wrong namespace."
   [expected-ns text file]
-  (when-let [declared (fileref/declared-namespace text)]
+  (when-let [declared (source/declared-namespace text)]
     (when (not= declared (str expected-ns))
       (throw (ex-info (str "The Zig file " (pr-str file) " declares namespace "
                            declared " but is used from " expected-ns ".")
@@ -345,7 +344,7 @@
   expansion calls it at load time, so re-evaluating the form re-reads the
   file and its imports."
   [the-var spec descriptor defining-file var-meta wrap]
-  (let [{:keys [text path]} (fileref/resolve-and-read defining-file (:zig/file descriptor))
+  (let [{:keys [text path]} (source/resolve-and-read defining-file (:zig/file descriptor))
         _        (check-namespace! (:ns spec) text path)
         raw?     (boolean (:zig/raw descriptor))
         opts     (c-options descriptor)
@@ -463,8 +462,8 @@
           defining-file *file*
           signature     (if infer?
                           (infer/infer-signature
-                           (:text (fileref/resolve-and-read
-                                   defining-file (fileref/namespace-zig-file defining-file)))
+                           (:text (source/resolve-and-read
+                                   defining-file (source/namespace-zig-file defining-file)))
                            (str/replace (name fn-name) "-" "_"))
                           signature)
           signature     (prepare-signature the-ns signature)
@@ -477,7 +476,7 @@
                                {:arglists (list arglist)})
           wrap          `(fn [invoke#] (fn ~arglist (invoke# ~@call-args)))
           descriptor    (if (or bodyless? infer?)
-                          `{:zig/file (fileref/namespace-zig-file ~defining-file)}
+                          `{:zig/file (source/namespace-zig-file ~defining-file)}
                           body)]
       `(do
          (def ~fn-name)
@@ -492,7 +491,7 @@
   Public because the `defz` expansion calls it at load time."
   [decl-source defining-file]
   (if (map? decl-source)
-    (:text (fileref/resolve-and-read defining-file (:zig/file decl-source)))
+    (:text (source/resolve-and-read defining-file (:zig/file decl-source)))
     decl-source))
 
 (defmacro defz

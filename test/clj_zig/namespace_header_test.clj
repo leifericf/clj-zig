@@ -4,8 +4,8 @@
   guard that catches a file wired to the wrong namespace."
   (:require [clojure.java.io :as io]
             [clojure.test :refer [deftest is testing]]
-            [clj-zig.core :as core]
-            [clj-zig.fileref :as fileref]))
+             [clj-zig.core :as core]
+             [clj-zig.source :as source]))
 
 (defn- scratch-dir []
   (str (java.nio.file.Files/createTempDirectory
@@ -32,10 +32,10 @@
 (deftest declared-namespace-reads-the-header
   (testing "the marker line yields the declared namespace"
     (is (= "app.geometry"
-           (fileref/declared-namespace "//! clj-zig: app.geometry\npub fn f() void {}\n"))))
+           (source/declared-namespace "//! clj-zig: app.geometry\npub fn f() void {}\n"))))
   (testing "a file with no marker declares nothing"
-    (is (nil? (fileref/declared-namespace "//! a plain doc comment\npub fn f() void {}\n")))
-    (is (nil? (fileref/declared-namespace "pub fn f() void {}\n")))))
+    (is (nil? (source/declared-namespace "//! a plain doc comment\npub fn f() void {}\n")))
+    (is (nil? (source/declared-namespace "pub fn f() void {}\n")))))
 
 (deftest matching-header-passes
   (let [dir (scratch-dir)

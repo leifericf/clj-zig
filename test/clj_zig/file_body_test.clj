@@ -3,7 +3,7 @@
   descriptor loads a complete Zig `pub fn`, the generated wrapper calls it,
   and the function round-trips. Fixtures are written to a temp directory
   and referenced by absolute path, so resolution is unambiguous; relative
-  and classpath resolution are covered in fileref-test."
+  and classpath resolution are covered in source-resolve-test."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
