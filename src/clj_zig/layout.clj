@@ -195,27 +195,66 @@
    (assoc (describe type-name fields types)
           :record (symbol (str record-ns) (str "map->" type-name)))))
 
+(defn- validate-enum-backing
+  "The validated integer carrier scalar keyword for an enum's `:backing`
+  option, defaulting to `:i32`. Throws `:clj-zig/bad-enum-backing` for a
+  non-integer or carrierless scalar (an enum tag is an integer width)."
+  [type-name backing-kw]
+  (let [info (type/scalar-info backing-kw)]
+    (when-not (and info (= :int (:category info)) (type/has-carrier? backing-kw))
+      (throw (ex-info (str "The enum " type-name " backing must be an integer scalar "
+                           "with an FFM carrier; got " (pr-str backing-kw) ".")
+                      {:level :error :error/code :clj-zig/bad-enum-backing
+                       :type type-name :backing backing-kw}))))
+  backing-kw)
+
+(defn- enum-range
+  "The inclusive `[lo hi]` range of integer values that fit a signed or
+  unsigned scalar of `bits` width."
+  [signed? bits]
+  (let [half (bit-shift-left 1 (dec bits))]
+    (if signed?
+      [(- half) (dec half)]
+      [0 (dec (* 2 half))])))
+
 (defn describe-enum
-  "The descriptor for a `defenumz` type: an `i32`-backed enum whose
-  members cross as keywords. Throws for an odd member list or a member
-  with a non-integer value."
-  [type-name members]
-  (when (odd? (count members))
-    (throw (ex-info (str type-name " needs a value for every member.")
-                    {:level :error :error/code :clj-zig/malformed-members
-                     :type type-name})))
-  {:name    type-name
-   :enum    true
-   :backing {:kind :scalar :name :i32}
-   :values  (mapv (fn [[mname value]]
-                    (when-not (integer? value)
-                      (throw (ex-info (str "Member " mname " of " type-name
-                                           " needs an integer value.")
-                                      {:level :error
-                                       :error/code :clj-zig/non-integer-member
-                                       :type type-name :member mname})))
-                    {:name mname :value (long value)})
-                  (partition 2 members))})
+  "The descriptor for a `defenumz` type: an enum whose members cross as
+  keywords, backed by an integer scalar (default `:i32`). The optional
+  `opts` map may carry `:backing` to widen or narrow the tag (`:u8`,
+  `:u32`, ...). Throws for an odd member list, a non-integer member, a
+  non-integer or carrierless backing, or a member value that does not fit
+  the backing's range."
+  ([type-name members] (describe-enum type-name members nil))
+  ([type-name members opts]
+   (when (odd? (count members))
+     (throw (ex-info (str type-name " needs a value for every member.")
+                     {:level :error :error/code :clj-zig/malformed-members
+                      :type type-name})))
+   (let [backing-kw   (validate-enum-backing type-name (or (:backing opts) :i32))
+         {:keys [signed? bits]} (type/scalar-info backing-kw)
+         [lo hi]      (enum-range signed? bits)]
+     {:name    type-name
+      :enum    true
+      :backing {:kind :scalar :name backing-kw}
+      :values  (mapv (fn [[mname value]]
+                       (when-not (integer? value)
+                         (throw (ex-info (str "Member " mname " of " type-name
+                                              " needs an integer value.")
+                                         {:level :error
+                                          :error/code :clj-zig/non-integer-member
+                                          :type type-name :member mname})))
+                       (when (or (< value lo) (> value hi))
+                         (throw (ex-info (str "Member " mname " of " type-name
+                                              " has value " value " which does not fit "
+                                              "the " backing-kw " backing range "
+                                              "[" lo ", " hi "].")
+                                         {:level :error
+                                          :error/code :clj-zig/enum-value-overflow
+                                          :type type-name :member mname
+                                          :value value :backing backing-kw
+                                          :lo lo :hi hi})))
+                       {:name mname :value (long value)})
+                     (partition 2 members))})))
 
 (defn enum?
   "True when a layout descriptor describes a `defenumz` enum rather than a
@@ -276,13 +315,16 @@
        "\n};\n"))
 
 (defn zig-enum
-  "The `enum(i32)` declaration the generated Zig uses for an enum layout."
-  [{type-name :name :keys [values]}]
-  (str "const " type-name " = enum(i32) {\n"
-       (str/join "\n" (map (fn [{mname :name value :value}]
-                             (str "    " mname " = " value ","))
-                           values))
-       "\n};\n"))
+  "The `enum(<backing>)` declaration the generated Zig uses for an enum
+  layout. The backing width defaults to `i32` when a legacy descriptor
+  carries none."
+  [{type-name :name :keys [backing values]}]
+  (let [backing-name (or (some-> backing :name name) "i32")]
+    (str "const " type-name " = enum(" backing-name ") {\n"
+         (str/join "\n" (map (fn [{mname :name value :value}]
+                               (str "    " mname " = " value ","))
+                             values))
+         "\n};\n")))
 
 (defn zig-decl
   "The Zig declaration for a named type: an `enum` for a `defenumz`, a

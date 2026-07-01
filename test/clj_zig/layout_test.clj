@@ -117,3 +117,41 @@
     (testing "no buffer field name leaks through undivided"
       (is (not (str/includes? src "media:")))
       (is (not (str/includes? src "bytes:"))))))
+
+(defn- enum-error-code [f]
+  (try (f) ::no-throw
+       (catch clojure.lang.ExceptionInfo e
+         (:error/code (ex-data e)))))
+
+(deftest describes-an-enum-with-configurable-backing
+  (testing "the default backing is i32 when no options are given"
+    (is (= {:kind :scalar :name :i32}
+           (:backing (layout/describe-enum 'Tag '[a 0 b 1])))))
+  (testing "an explicit backing is stored in the descriptor"
+    (is (= {:kind :scalar :name :u8}
+           (:backing (layout/describe-enum 'Compact '[a 0 b 1] {:backing :u8})))))
+  (testing "zig-enum emits the backing width"
+    (is (str/includes? (layout/zig-enum (layout/describe-enum 'Compact '[a 0 b 1] {:backing :u8}))
+                       "enum(u8) {"))))
+
+(deftest rejects-an-invalid-enum-backing
+  (testing "a non-integer scalar is not an enum backing"
+    (is (= :clj-zig/bad-enum-backing
+           (enum-error-code #(layout/describe-enum 'Bad '[a 0] {:backing :f64})))))
+  (testing "a carrierless scalar is not an enum backing"
+    (is (= :clj-zig/bad-enum-backing
+           (enum-error-code #(layout/describe-enum 'Bad '[a 0] {:backing :i128})))))
+  (testing "a non-scalar keyword is not an enum backing"
+    (is (= :clj-zig/bad-enum-backing
+           (enum-error-code #(layout/describe-enum 'Bad '[a 0] {:backing :string}))))))
+
+(deftest rejects-a-member-value-that-does-not-fit-the-backing
+  (testing "256 does not fit a u8 backing"
+    (is (= :clj-zig/enum-value-overflow
+           (enum-error-code #(layout/describe-enum 'Ovf '[a 0 b 256] {:backing :u8})))))
+  (testing "the signed range is honored for an i8 backing"
+    (is (= :clj-zig/enum-value-overflow
+           (enum-error-code #(layout/describe-enum 'Ovf '[a -128 b 127 c 128] {:backing :i8})))))
+  (testing "a value within range is accepted"
+    (is (= 255 (-> (layout/describe-enum 'Ok '[a 255] {:backing :u8})
+                   :values first :value)))))

@@ -50,3 +50,31 @@
 (deftest the-enum-decl-appears-in-the-generated-preamble
   (is (str/includes? (zig/generated-source #'classify)
                      "const ParseStatus = enum(i32) {")))
+
+;; --- A backed enum (u8 tag) ---------------------------------------------
+
+(defenumz CompactTag
+  [red 0
+   green 1
+   blue 2]
+  {:backing :u8})
+
+(defnz flag-for
+  [c :u8
+   :ret CompactTag]
+  "return switch (c) { 0 => .red, 1 => .green, else => .blue };")
+
+(defnz tag-code
+  [t CompactTag
+   :ret :u8]
+  "return @intFromEnum(t);")
+
+(deftest a-backed-enum-round-trips-at-its-backing-width
+  (testing "a u8-backed enum returns its member keyword"
+    (is (= :red (flag-for 0)))
+    (is (= :blue (flag-for 99))))
+  (testing "a u8-backed enum crosses as an argument at byte width"
+    (is (= 1 (tag-code :green))))
+  (testing "the generated preamble declares the backing width"
+    (is (str/includes? (zig/generated-source #'flag-for)
+                       "const CompactTag = enum(u8) {"))))

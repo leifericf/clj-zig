@@ -659,19 +659,27 @@
        ~type-name)))
 
 (defmacro defenumz
-  "Define an enum boundary type backed by an `i32`. Members cross as
-  keywords named for each member; the Var holds the descriptor.
+  "Define an enum boundary type backed by an integer scalar (default
+  `:i32`). Members cross as keywords named for each member; the Var holds
+  the descriptor. The optional options map may carry `:backing` to widen
+  or narrow the tag (`:u8`, `:u32`, ...), matching the C enum widths real
+  libraries use.
 
-      (defenumz ParseStatus
-        [ok 0
-         invalid 1
-         eof 2])"
+       (defenumz ParseStatus
+         [ok 0
+          invalid 1
+          eof 2])
+
+       (defenumz CompactTag
+         [a 0 b 1 c 2]
+         {:backing :u8})"
   [type-name & tail]
-  (let [[docstring members] (if (string? (first tail))
-                              [(first tail) (second tail)]
-                              [nil (first tail)])
+  (let [head     (first tail)
+        [docstring members opts] (if (string? head)
+                                   [head (second tail) (nth tail 2 nil)]
+                                   [nil head (second tail)])
         the-ns     (ns-name *ns*)
-        descriptor (layout/describe-enum type-name members)]
+        descriptor (layout/describe-enum type-name members opts)]
     `(do
        (register-type! '~the-ns '~descriptor)
        (def ~type-name '~descriptor)

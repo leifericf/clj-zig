@@ -40,8 +40,17 @@ body keeps the enum's exhaustiveness and `switch` checking. The bridge is
 simpler than the struct path: a scalar carrier, no out-parameter. The
 cost is that the keyword set lives in the `defenumz` form rather than in
 the type system, so a member rename is a source change in two languages.
-The `i32` backing is also fixed, so an enum needing a wider or unsigned
-tag is out of reach until the form grows a backing option.
+
+The backing is configurable (amendment, 2026-07-01): an optional options
+map may carry `:backing` to widen or narrow the tag, defaulting to
+`:i32`. A C library's `u8`, `u16`, or `u32` tags now declare directly
+(`{:backing :u8}`). The carrier dispatch reads the backing width, so the
+FFM layout and the argument coercion follow: a `:u8`-backed enum crosses
+as `JAVA_BYTE`. A member value that does not fit the backing's range is
+rejected at declaration time with `:clj-zig/enum-value-overflow`; a
+non-integer or carrierless backing with `:clj-zig/bad-enum-backing`. The
+backing enters the layout descriptor and therefore the content hash, so
+redefining an enum with a different backing recompiles its callers.
 
 ## Alternatives
 
@@ -55,4 +64,3 @@ struct field. Lowering the enum to its backing int in the `export`
 signature with `@enumFromInt`/`@intFromEnum`, mirroring the
 struct-by-pointer scheme, was also considered. Raw FFM showed `enum(i32)`
 is already ABI-stable as a plain int, so the indirection is unnecessary.
-A configurable backing type was deferred as out of scope.

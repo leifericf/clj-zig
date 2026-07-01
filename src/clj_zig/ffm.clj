@@ -201,7 +201,9 @@
                                       {:level :error
                                        :error/code :clj-zig/unknown-enum-member
                                        :type (:name layout) :member arg})))
-                    {:carriers [(int value)]})
+                    ;; An enum crosses as its backing scalar, so coerce to the
+                    ;; backing's carrier width (byte for u8, int for i32, ...).
+                    {:carriers [(to-carrier {:type (:backing layout)} value)]})
                   {:carriers [(marshal-struct arena layout arg)]}))
     :handle   (let [expected (-> param :type :of :name)]
                 (when-not (and (instance? Handle arg) (= expected (:type arg)))
