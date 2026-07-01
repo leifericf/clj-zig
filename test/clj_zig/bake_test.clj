@@ -2,10 +2,12 @@
   "Baking a namespace produces loadable native libraries in the resource
   tree the classpath loader resolves from."
   (:require [clojure.java.io :as io]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [clj-zig.bake :as bake]
             [clj-zig.cache :as cache]
-            [clj-zig.ffm :as ffm]))
+            [clj-zig.ffm :as ffm]
+            [clj-zig.spec :as spec]))
 
 (defn- scratch-root []
   (str (java.nio.file.Files/createTempDirectory
@@ -18,6 +20,24 @@
     (is (false? (#'bake/third-party-c? {:link ["c" "m"]})))
     (is (true? (#'bake/third-party-c? {:link ["sqlite3"]})))
     (is (true? (#'bake/third-party-c? {:link ["m" "z"]})))))
+
+(deftest third-party-skipped-target-message-excludes-the-host-id
+  ;; The host is baked (chosen), so its id must NOT appear in the skipped
+  ;; list. Compared by :id, not by whole-map equality (the host entry carries
+  ;; a nil triple while matrix entries carry a real triple).
+  (let [out  (scratch-root)
+        spec (spec/build-spec '{:ns clj-zig.bake-test :name f
+                                :signature [n :i64 :ret :i64]})
+        info {:spec spec :body "return n;" :source-mode :inline
+              :options-extra {:link ["sqlite3"]}}
+        err  (java.io.StringWriter.)]
+    (with-redefs [bake/bake-target! (fn [_ _ t] {:target (:id t)})]
+      (binding [*err* err]
+        (#'bake/bake-function! out info bake/default-targets)))
+    (let [msg (.toString err)]
+      (is (str/includes? msg "host-only"))
+      (is (not (str/includes? msg (cache/target-triple)))
+          "the host id is baked, not listed as skipped"))))
 
 (deftest bakes-a-namespace-for-the-host
   (let [out     (scratch-root)

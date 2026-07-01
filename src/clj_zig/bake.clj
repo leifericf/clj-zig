@@ -96,12 +96,13 @@
   [out-dir info targets]
   (let [inputs (function-inputs info)
         third? (third-party-c? (:options inputs))
-        chosen (if third? [(host-target)] targets)]
+        chosen (if third? [(host-target)] targets)
+        chosen-ids (set (map :id chosen))]
     (when third?
       (binding [*out* *err*]
         (println (str "clj-zig: " (-> info :spec :ns) "/" (-> info :spec :name)
                       " links a third-party C library; baking host-only and skipping "
-                      (mapv :id (remove (set chosen) targets)) "."))))
+                      (mapv :id (remove (comp chosen-ids :id) targets)) "."))))
     (mapv #(bake-target! out-dir inputs %) chosen)))
 
 (defn bake!
