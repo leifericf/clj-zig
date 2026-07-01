@@ -305,6 +305,11 @@
                " the wrapper's wire slab has no free shim. Use :owned so each"
                " element's buffers and the slab are freed.")
           {}))
+  (when (contains? #{:slice :array :ptr :manyptr} (:kind ret))
+    (fail spec :clj-zig/unsupported-return-kind
+          (str "A :" (name (:kind ret)) " return is not supported; wrap it in"
+               " :owned or :borrowed for a slice, or use :bytes or :string.")
+          {}))
   (let [ret-value     (if (= :error-union (:kind ret)) (:of ret) ret)
         ret-scalars   (if (type/void-type? ret-value) #{} (scalar-names ret-value))
         value-scalars (apply set/union ret-scalars (map (comp scalar-names :type) params))
