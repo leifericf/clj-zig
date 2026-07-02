@@ -200,3 +200,11 @@
            (enum-error-code #(layout/describe 'Cell '[n :i128]))))
     (is (= :clj-zig/unsupported-field
            (enum-error-code #(layout/describe 'Cell '[n :u128]))))))
+
+(deftest rejects-a-field-name-that-is-not-a-valid-zig-identifier
+  (is (= :clj-zig/bad-field-name
+         (enum-error-code #(layout/describe 'T '[bad-name :i64]))))
+  (is (= :clj-zig/bad-field-name
+         (enum-error-code #(layout/describe-enum 'E '[bad-name 0]))))
+  (testing "underscores are valid"
+    (is (= ::no-throw (enum-error-code #(layout/describe 'T '[good_name :i64]))))))

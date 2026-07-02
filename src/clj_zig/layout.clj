@@ -219,8 +219,14 @@
   `:nested`. A named field's layout is attached from `types` (the
   registry of named types already declared in the namespace) so an enum
   field is recognized as a wire scalar, a nested struct is recognized,
-  and an undeclared name is rejected."
+  and an undeclared name is rejected. The field name must be a valid Zig
+  identifier (underscores, not hyphens)."
   [type-name types [fname ftype]]
+  (when-not (re-matches #"[A-Za-z_][A-Za-z0-9_]*" (str fname))
+    (throw (ex-info (str "Field " fname " of " type-name
+                         " is not a valid Zig identifier. Use underscores, not hyphens.")
+                     {:level :error :error/code :clj-zig/bad-field-name
+                      :type type-name :field fname})))
   (let [t (type/normalize ftype)
         t (if (= :named (:kind t))
             (if-let [layout (get types (:name t))]
@@ -342,6 +348,11 @@
       :enum    true
       :backing {:kind :scalar :name backing-kw}
       :values  (mapv (fn [[mname value]]
+                       (when-not (re-matches #"[A-Za-z_][A-Za-z0-9_]*" (str mname))
+                         (throw (ex-info (str "Member " mname " of " type-name
+                                              " is not a valid Zig identifier.")
+                                         {:level :error :error/code :clj-zig/bad-field-name
+                                          :type type-name :member mname})))
                        (when-not (integer? value)
                          (throw (ex-info (str "Member " mname " of " type-name
                                               " needs an integer value.")
