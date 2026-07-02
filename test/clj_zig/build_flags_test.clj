@@ -1,23 +1,24 @@
 (ns clj-zig.build-flags-test
   (:require [clojure.test :refer [deftest is testing]]
             [clj-zig.core :as core :refer [defnz zig-deps]]
+            [clj-zig.descriptor :as descriptor]
             [clj-zig.compile :as compile]))
 
 (deftest descriptor-options-lowers-zig-flags
   (testing ":zig/single-threaded lowers to an options flag"
-    (let [opts (core/descriptor-options {:zig/single-threaded true})]
+    (let [opts (descriptor/descriptor-options {:zig/single-threaded true})]
       (is (:single-threaded opts))))
   (testing ":zig/pic lowers to an options flag"
-    (let [opts (core/descriptor-options {:zig/pic true})]
+    (let [opts (descriptor/descriptor-options {:zig/pic true})]
       (is (:pic opts))))
   (testing ":zig/stack-check lowers to an options flag"
-    (let [opts (core/descriptor-options {:zig/stack-check true})]
+    (let [opts (descriptor/descriptor-options {:zig/stack-check true})]
       (is (:stack-check opts))))
   (testing ":zig/panic-fn lowers to an options string"
-    (let [opts (core/descriptor-options {:zig/panic-fn "my_panic"})]
+    (let [opts (descriptor/descriptor-options {:zig/panic-fn "my_panic"})]
       (is (= "my_panic" (:panic-fn opts)))))
   (testing "false flags are omitted"
-    (let [opts (core/descriptor-options {:zig/single-threaded false})]
+    (let [opts (descriptor/descriptor-options {:zig/single-threaded false})]
       (is (nil? (:single-threaded opts))))))
 
 (deftest build-arguments-includes-zig-flags

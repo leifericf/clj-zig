@@ -7,7 +7,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.test.check.clojure-test :refer [defspec]]
             [clojure.test.check.properties :as prop]
-            [clj-zig.core :as core]
+            [clj-zig.descriptor :as descriptor]
             [clj-zig.gen :as g]
             [clj-zig.layout :as layout]
             [clj-zig.spec :as spec]))
@@ -186,7 +186,7 @@
 ;; --- Rejections from external-module declarations -----------------------
 
 (def module-rejections
-  "Each row is a `core/zig-modules` descriptor paired with the code its
+  "Each row is a `descriptor/zig-modules` descriptor paired with the code its
   malformed `:zig/modules` declaration must raise (ADR 34)."
   [{:code :clj-zig/bad-modules                 :descriptor {:zig/modules ["phane"]}}
    {:code :clj-zig/bad-module-name             :descriptor {:zig/modules {:phane {:path "r.zig"}}}}
@@ -199,7 +199,7 @@
 (deftest module-rejection-matrix
   (doseq [{:keys [code descriptor]} module-rejections]
     (testing (pr-str descriptor)
-      (is (= code (code-from #(core/zig-modules descriptor)))))))
+      (is (= code (code-from #(descriptor/zig-modules descriptor)))))))
 
 ;; --- Generative breadth: junk in argument position is rejected ----------
 
