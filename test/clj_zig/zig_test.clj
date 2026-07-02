@@ -1,6 +1,6 @@
 (ns clj-zig.zig-test
   (:require [clojure.string :as str]
-            [clojure.test :refer [deftest is testing]]
+            [clojure.test :refer [deftest is]]
             [clj-zig.zig :as zig]))
 
 ;; --- Expression rendering ------------------------------------------------

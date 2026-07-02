@@ -10,7 +10,7 @@
 
       (defnz sum-slice [xs [:slice :const :f64] :ret :f64]
         (template/slice-fold 'xs 0.0 \"+\"))"
-  (:require [clojure.string :as str]))
+  )
 
 (defn binary-op
   "Zig source for `lhs op rhs`, returning the result. A simple wrapper

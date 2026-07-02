@@ -3,11 +3,6 @@
             [clj-zig.core :as core :refer [defnz zig-deps]]
             [clj-zig.compile :as compile]))
 
-(def ^:private recognized-zig-keys
-  "The curated :zig/* keys ADR 48 reserves."
-  #{:zig/optimize :zig/file :zig/fn :zig/raw :zig/symbol :zig/modules
-    :zig/panic-fn :zig/single-threaded :zig/pic :zig/stack-check})
-
 (deftest descriptor-options-lowers-zig-flags
   (testing ":zig/single-threaded lowers to an options flag"
     (let [opts (core/descriptor-options {:zig/single-threaded true})]

@@ -1,5 +1,5 @@
 (ns clj-zig.template-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
             [clojure.string :as str]
             [clj-zig.template :as tpl]
             [clj-zig.core :refer [defnz]]))

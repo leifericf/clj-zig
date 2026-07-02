@@ -1,9 +1,7 @@
 (ns clj-zig.spec-check-test
   (:require [clojure.test :refer [deftest is testing]]
-            [clojure.spec.alpha :as s]
             [clj-zig.core :refer [defnz]]
-            [clj-zig.spec-check :as sc]
-            [clj-zig.type :as type]))
+            [clj-zig.spec-check :as sc]))
 
 (deftest spec-for-type-maps-scalars
   (is (= 'int? (sc/spec-for-type {:kind :scalar :name :i64})))

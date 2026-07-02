@@ -1,7 +1,7 @@
 (ns clj-zig.packed-test
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.string :as str]
-            [clj-zig.core :refer [defnz deftypez]]
+            [clj-zig.core :refer [deftypez]]
             [clj-zig.layout :as layout]
             [clj-zig.zig :as zig]))
 

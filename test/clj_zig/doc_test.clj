@@ -1,5 +1,5 @@
 (ns clj-zig.doc-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
             [clojure.string :as str]
             [clj-zig.core :refer [defnz]]
             [clj-zig.doc :as doc]))

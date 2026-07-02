@@ -8,8 +8,7 @@
 
       (clj-zig.doc/emit-namespace 'my.app)
       ;; => full markdown for every defnz in the namespace"
-  (:require [clojure.string :as str]
-            [clj-zig.inspect :as inspect]))
+  (:require [clojure.string :as str]))
 
 (defn- param-table-row
   "One markdown table row for a boundary param."

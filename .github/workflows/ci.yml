@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: DeLaGuardo/setup-clj-kondo@master
         with:
-          version: "2024.11.14"
+          version: "latest"
       - run: clj-kondo --lint src test
 
   test:

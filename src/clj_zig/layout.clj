@@ -21,8 +21,7 @@
   `extern struct` the generated Zig uses and drives the field
   marshalling FFM performs; the layout matches Zig's `extern struct`
   (C ABI)."
-  (:require [clojure.string :as str]
-            [clj-zig.type :as type]
+  (:require [clj-zig.type :as type]
             [clj-zig.zig :as zig]))
 
 (defn- field-bytes
@@ -233,11 +232,11 @@
             (if-let [layout (get types (:name t))]
               (assoc t :layout layout)
               t)
-            t)]
-    (let [classified (classify-field type-name fname ftype t)]
-      (cond-> (merge {:name fname :type t}
-                     (select-keys classified [:target]))
-        (= :nested (:wire classified)) (assoc :nested true)))))
+            t)
+        classified (classify-field type-name fname ftype t)]
+    (cond-> (merge {:name fname :type t}
+                   (select-keys classified [:target]))
+      (= :nested (:wire classified)) (assoc :nested true))))
 
 (defn describe
   "Build the layout descriptor for a named type from its `fields`, a

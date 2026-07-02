@@ -815,7 +815,7 @@
   the returned address, rebuilds it as a map (or record via the factory),
   and frees in a finally: buffer fields first, then the struct allocation.
   A null return yields nil with no free."
-  [{:keys [handle ret record-factory free-handle]} ^Arena arena base-carriers copy-back!]
+  [{:keys [handle ret record-factory free-handle]} _arena base-carriers copy-back!]
   (let [result (.invokeWithArguments handle (object-array (vec base-carriers)))
         addr   (.address ^MemorySegment result)]
     (if (zero? addr)

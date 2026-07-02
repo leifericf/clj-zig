@@ -626,13 +626,6 @@
                  (zig/raw-expr (str src-path "." name)))]))
            (:fields layout))))
 
-(defn- owned-buffer-field?
-  "True when a field is a buffer field the free shim should free: it has
-  a `:target` (string, bytes, or slice) and is not `:borrowed`."
-  [f]
-  (and (:target f)
-       (not (= :borrowed (:kind (:type f))))))
-
 (defn- wire-struct-free-stmts
   "Statement nodes for freeing a wire struct's buffer fields, reading
   `{ptr, len}` back from each owned buffer field and freeing it. Recurses

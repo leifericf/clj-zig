@@ -1,14 +1,11 @@
-;; Teach clj-kondo about clj-zig's defining macros. Each defines its first
-;; symbol and carries a boundary signature or field list clj-kondo should
-;; not read as ordinary code. defrecordz also interns the record factories,
-;; so it gets a hook that recovers their field arity. defspec from
-;; test.check defines a test the way deftest does.
-{:lint-as
- {clj-zig.core/defnz                              clj-kondo.lint-as/def-catch-all
-  clj-zig.core/defz                               clj-kondo.lint-as/def-catch-all
-  clj-zig.core/deftypez                           clj-kondo.lint-as/def-catch-all
-  clj-zig.core/defenumz                           clj-kondo.lint-as/def-catch-all
-  clj-zig.composability-test/defbinaryz           clj-kondo.lint-as/def-catch-all
-  clojure.test.check.clojure-test/defspec       clojure.test/deftest}
- :hooks
- {:analyze-call {clj-zig.core/defrecordz hooks.clj-zig/defrecordz}}}
+{:lint-as {clj-zig.core/defnz        clojure.core/def
+           clj-zig.core/defz         clojure.core/def
+           clj-zig.core/deftypez     clojure.core/def
+           clj-zig.core/defrecordz   clojure.core/def
+           clj-zig.core/defenumz     clojure.core/def
+           clj-zig.zigtest/deftestz  clojure.test/deftest}
+ :config-in-comment {:linters {:unresolved-symbol {:level :off}}}
+ :ns-groups [{:pattern "clj-zig\\..*(test|fixture|prop)"
+              :name test-namespaces}]
+ :config-in-ns {test-namespaces {:linters {:unresolved-symbol {:level :off}
+                                           :unresolved-var {:level :off}}}}}
