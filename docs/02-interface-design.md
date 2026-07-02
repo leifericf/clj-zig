@@ -39,6 +39,19 @@ It should preserve the familiar `defn` rhythm:
 
 The signature vector is the full boundary contract.
 
+## Multi-arity
+
+`defnz` supports multiple arities mirroring `defn` (ADR 51):
+
+```clojure
+(defnz add
+  ([x :i64 :ret :i64] "return x;")
+  ([x :i64 y :i64 :ret :i64] "return x + y;"))
+```
+
+Each arity compiles independently and the Var dispatches by argument
+count. A failed redefinition of one arity keeps the others callable.
+
 ## Signature vector
 
 The signature vector contains argument binding/type pairs and a final return marker.
@@ -141,6 +154,16 @@ defnz  crosses the Clojure/Zig boundary
    y :f64])
 ```
 
+An optional trailing options map may carry `:packed true` to emit a Zig
+`packed struct` with no alignment padding. Packed structs support scalar
+and enum fields only.
+
+```clojure
+(deftypez RGB
+  [r :u8 g :u8 b :u8]
+  {:packed true})
+```
+
 `defrecordz` defines both a Clojure record and a Zig-compatible layout contract.
 
 ```clojure
@@ -203,3 +226,19 @@ Clojure destructuring is relevant, but should happen on the Clojure side before 
 ```
 
 This lets Clojure accept map-shaped values while Zig receives native scalar values.
+
+## Descriptor key vocabulary
+
+The attr-map and `zig-deps` accept keys under three reserved prefixes
+(ADR 48):
+
+- `:zig/*` keys configure the Zig build. Recognized: `:zig/optimize`,
+  `:zig/file`, `:zig/fn`, `:zig/raw`, `:zig/symbol`, `:zig/modules`,
+  `:zig/panic-fn`, `:zig/single-threaded`, `:zig/pic`, `:zig/stack-check`.
+  Unknown `:zig/*` keys are rejected at macro expansion time.
+- `:c/*` keys carry C-interop options (`:c/link`, `:c/include-path`,
+  `:c/system-include-path`, `:c/link-path`).
+- `:clj-zig/*` keys configure clj-zig behavior outside the Zig compiler.
+
+Keys outside all three prefixes pass through to Var metadata as
+ordinary attributes.
