@@ -57,6 +57,8 @@
 
 (defonce ^:private ns-modules (atom {}))
 
+(declare zig-build-flags)
+
 (defn c-options
   "The C-interop compile options a descriptor's `:c/*` keys carry, or nil
   when it carries none. These reach `zig build-lib` as flags and enter the
@@ -91,12 +93,52 @@
     {:optimize (name mode)}))
 
 (defn descriptor-options
-  "The compile options a descriptor carries: its C-interop flags plus its
-  optimize mode. Returns nil when it carries neither. Shared by a
-  per-function descriptor and a namespace-level `zig-deps`, so both paths
-  layer `:zig/optimize` and `:c/*` the same way."
+  "The compile options a descriptor carries: its C-interop flags, its
+  optimize mode, and its Zig build flags (`:zig/single-threaded`,
+  `:zig/pic`, `:zig/stack-check`, `:zig/panic-fn`). Returns nil when it
+  carries none. Shared by a per-function descriptor and a namespace-level
+  `zig-deps`, so both paths layer options the same way."
   [descriptor]
-  (not-empty (merge (c-options descriptor) (optimize-option descriptor))))
+  (not-empty (merge (c-options descriptor)
+                    (optimize-option descriptor)
+                    (zig-build-flags descriptor))))
+
+(def ^:private recognized-zig-keys
+  "The curated `:zig/*` keys ADR 48 reserves. Unknown `:zig/*` keys are
+  rejected at macro expansion time with `:clj-zig/unknown-zig-option`."
+  #{:zig/optimize :zig/file :zig/fn :zig/raw :zig/symbol :zig/modules
+    :zig/panic-fn :zig/single-threaded :zig/pic :zig/stack-check})
+
+(defn- zig-build-flags
+  "The Zig build flags a descriptor carries beyond optimize mode:
+  `:single-threaded`, `:pic`, `:stack-check` (all boolean, included only
+  when truthy), and `:panic-fn` (a string). These reach `zig build-lib`
+  as `-f` flags and enter the content hash."
+  [descriptor]
+  (not-empty
+   (cond-> {}
+     (:zig/single-threaded descriptor) (assoc :single-threaded true)
+     (:zig/pic descriptor)              (assoc :pic true)
+     (:zig/stack-check descriptor)      (assoc :stack-check true)
+     (:zig/panic-fn descriptor)         (assoc :panic-fn (str (:zig/panic-fn descriptor))))))
+
+(defn validate-descriptor-keys
+  "Throw when `descriptor` carries a `:zig/*` key outside the curated set
+  (ADR 48). Non-`:zig/*` keys pass through to Var metadata. Public so the
+  macro expansions call it on the attr-map, body descriptor, and
+  `zig-deps`."
+  [descriptor]
+  (doseq [k (keys descriptor)]
+    (when (and (keyword? k)
+               (= "zig" (namespace k))
+               (not (recognized-zig-keys k)))
+      (throw (ex-info (str "Unknown :" (namespace k) "/" (name k)
+                           " key; recognized :zig/* keys are: "
+                           (->> recognized-zig-keys sort (map name) (str/join ", "))
+                           ".")
+                      {:level :error
+                       :error/code :clj-zig/unknown-zig-option
+                       :key k})))))
 
 (def ^:private reserved-module-names
   "Module names Zig supplies itself; a dependency may not shadow them."
@@ -676,6 +718,7 @@
     (if (:multi-arity? parsed)
       (let [{:keys [docstring attr-map arities]} parsed
             the-ns (ns-name *ns*)
+            _ (when (map? attr-map) (validate-descriptor-keys attr-map))
             _ (when (and (map? attr-map) (contains? attr-map :zig/file))
                 (throw (ex-info (str "defnz " fn-name " has a {:zig/file ...} map where an"
                                      " attribute map goes; a file body must follow a signature.")
@@ -720,6 +763,8 @@
             file-body? (and (map? body) (contains? body :zig/file))
             bodyless?  (and (nil? body) (vector? signature))
             infer?     (and (nil? body) (nil? signature))]
+        (when (map? attr-map) (validate-descriptor-keys attr-map))
+        (when (map? body) (validate-descriptor-keys body))
         (when (and (map? attr-map) (contains? attr-map :zig/file))
           (throw (ex-info (str "defnz " fn-name " has a {:zig/file ...} map where an"
                                " attribute map goes; a file body must follow a signature.")
@@ -801,6 +846,7 @@
   function's content hash, so changing them recompiles the namespace's
   functions."
   [descriptor]
+  (validate-descriptor-keys descriptor)
   (let [the-ns (ns-name *ns*)]
     `(do
        (register-deps! '~the-ns ~descriptor)

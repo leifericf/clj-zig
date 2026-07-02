@@ -64,11 +64,19 @@
   becomes the main module and each module is declared and defined by name
   (ADR 34). `--global-cache-dir` is always present so Zig memoizes
   intermediate artifacts across compiles (ADR 35). A `:target` triple
-  cross-compiles for another platform."
+  cross-compiles for another platform. The `:options` map may carry
+  `:single-threaded`, `:pic`, `:stack-check`, and `:panic-fn` flags that
+  lower to `-f` arguments (ADR 48)."
   [zig {:keys [source-abs library-abs options target module-roots global-cache-dir]}]
   (let [link-flags (into ["-lc"] (options->flags options))
-        mode       (get options :optimize optimize-mode)]
+        mode       (get options :optimize optimize-mode)
+        zf         (cond-> []
+                     (:single-threaded options) (conj "-fsingle-threaded")
+                     (:pic options)             (conj "-fPIC")
+                     (:stack-check options)     (conj "-fstack-check")
+                     (:panic-fn options)        (conj (str "-fpanic-fn=" (:panic-fn options))))]
     (vec (concat [zig "build-lib" "-dynamic" "-O" mode]
+                 zf
                  (when target ["-target" target])
                  ["--global-cache-dir" global-cache-dir
                   (str "-femit-bin=" library-abs)]
