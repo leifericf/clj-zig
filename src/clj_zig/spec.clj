@@ -313,6 +313,24 @@
           "A :bytes return must wrap a [:slice :u8]." {}))
   (when (and (= :handle (:kind ret)) (not= :named (:kind (:of ret))))
     (fail spec :clj-zig/unsupported-handle "A :handle must wrap a named type." {}))
+  (when (= :stream (:kind ret))
+    (let [elem (:of ret)]
+      (when-not (and (= :scalar (:kind elem))
+                     (type/has-carrier? (:name elem))
+                     (not (type/i128-type? (:name elem))))
+        (fail spec :clj-zig/unsupported-stream
+              (str "A :stream return must hold a carrier scalar element (the "
+                   "read path is scalar-only, no 128-bit); got "
+                   (pr-str (:kind elem)) ".")
+              {:element (select-keys elem [:kind :name])}))
+      (let [iter (:iter-layout ret)]
+        (when-not (and iter
+                       (get-in iter [:clj-zig/iter :next])
+                       (get-in iter [:clj-zig/iter :deinit]))
+          (fail spec :clj-zig/unsupported-stream
+                (str "A :stream's iterator type " (:iter-type ret)
+                     " must be a deftypez carrying :clj-zig/iter {:next :deinit}.")
+                {:iter-type (:iter-type ret)})))))
   (check-element! spec ret)
   (when (borrowed-buffer-slice? ret)
     (fail spec :clj-zig/unsupported-borrowed-buffer-slice

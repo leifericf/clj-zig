@@ -72,8 +72,14 @@
     {:code :clj-zig/unsupported-return-kind :signature '[:ret [:slice :i64]]}
     {:code :clj-zig/unsupported-return-kind :signature '[:ret [:array 3 :i64]]}
     {:code :clj-zig/unsupported-return-kind :signature '[:ret [:ptr :i64]]}
-    {:code :clj-zig/unsupported-return-kind :signature '[:ret [:manyptr :i64]]}
-    ;; named type the registry does not declare
+     {:code :clj-zig/unsupported-return-kind :signature '[:ret [:manyptr :i64]]}
+     ;; :stream returns: the element must be a carrier scalar (the read path
+     ;; is scalar-only, no 128-bit), and the iter-type must resolve to a
+     ;; deftypez carrying :clj-zig/iter {:next :deinit}.
+     {:code :clj-zig/unsupported-stream :signature '[:ret [:stream [:slice :i64] of Iter]]}
+     {:code :clj-zig/unsupported-stream :signature '[:ret [:stream :i128 of Iter]]}
+     {:code :clj-zig/unsupported-stream :signature '[:ret [:stream :i64 of MissingIter]]}
+     ;; named type the registry does not declare
    {:code :clj-zig/unknown-type-name       :signature '[a Point :ret :i64]}
    ;; :bytes is a return-only owned u8-slice wrapper
    {:code :clj-zig/unsupported-bytes       :signature '[a [:bytes [:slice :u8]] :ret :i64]}
@@ -113,12 +119,13 @@
            :clj-zig/unknown-scalar :clj-zig/malformed-compound :clj-zig/void-argument
            :clj-zig/unsupported-optional :clj-zig/unsupported-error-union
            :clj-zig/unsupported-ownership :clj-zig/unsupported-handle
-             :clj-zig/unsupported-carrier :clj-zig/unknown-field
-             :clj-zig/unknown-type-name :clj-zig/unsupported-bytes
-              :clj-zig/unsupported-element :clj-zig/malformed-error-set
-              :clj-zig/unsupported-borrowed-buffer-slice
-              :clj-zig/unsupported-return-kind
-              :clj-zig/mutable-struct-slice}
+              :clj-zig/unsupported-carrier :clj-zig/unknown-field
+              :clj-zig/unknown-type-name :clj-zig/unsupported-bytes
+               :clj-zig/unsupported-element :clj-zig/malformed-error-set
+               :clj-zig/unsupported-borrowed-buffer-slice
+               :clj-zig/unsupported-return-kind
+               :clj-zig/unsupported-stream
+               :clj-zig/mutable-struct-slice}
            (set (map :code spec-rejections)))))
 
 (deftest string-is-not-a-rejection
