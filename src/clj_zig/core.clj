@@ -405,6 +405,74 @@
     options-extra (assoc :options-extra options-extra)
     aux-files     (assoc :aux-files aux-files)))
 
+;; --- Comptime specialization (ADR 50/R4) ---------------------------------
+
+(defn- zig-literal
+  "Render a Clojure value as a Zig source literal for the given scalar type."
+  [value type-kw]
+  (case (:category (type/scalar-info type-kw))
+    :bool  (if value "true" "false")
+    :float (str value)
+    :int   (str value)))
+
+(defn- comptime-prefix
+  "The `const` declarations prepended to the body for a set of comptime
+  values. Each `param` is `{:binding :type}`, and `values` is a parallel
+  vector of the caller's comptime arguments."
+  [params values]
+  (str/join "\n"
+            (for [[p v] (map vector params values)]
+              (str "const " (:binding p) ": " (name (:type p)) " = "
+                   (zig-literal v (:type p)) ";"))))
+
+(defn establish-comptime-binding!
+  "Bind a comptime-specialized `defnz` Var. The body is compiled once per
+  distinct set of comptime values (cached by content hash). At each call,
+  comptime values are spliced into the body as `const` declarations, the
+  modified body is compiled or reused from cache, and the non-comptime
+  arguments are passed to the invoker.
+
+  `spec` contains only the non-comptime params (the FFM boundary).
+  `comptime-params` is a vector of `{:binding :type}` for the comptime
+  params. `body` is the Zig body template."
+  [the-var spec body comptime-params var-meta wrap]
+  (let [n-comptime (count comptime-params)
+        n-regular  (count (:params spec))
+        total-arity (+ n-comptime n-regular)
+        var-sym    (symbol (str (:ns spec)) (str (:name spec)))
+        cache      (atom {})]
+    (alter-var-root
+     the-var
+     (constantly
+      (fn [& args]
+        (when (not= (count args) total-arity)
+          (throw (ex-info (str "Wrong number of arguments to " var-sym
+                               ": expected " total-arity ", got " (count args))
+                          {:level :error
+                           :error/code :clj-zig/arity
+                           :var var-sym
+                           :expected total-arity
+                           :actual (count args)})))
+        (let [all-args   (vec args)
+              reg-args   (subvec all-args 0 n-regular)
+              ct-values  (subvec all-args n-regular)
+              ct-key     (vec ct-values)
+              invoke-fn  (if-let [cached (get @cache ct-key)]
+                           cached
+                           (let [prefix  (comptime-prefix comptime-params ct-values)
+                                 full-body (if (str/blank? prefix)
+                                             body
+                                             (str prefix "\n" body))
+                                 result  (establish! spec full-body)
+                                 inv     (wrap (:invoke result))]
+                             (swap! cache assoc ct-key inv)
+                             inv))]
+          (apply invoke-fn reg-args)))))
+    (swap! rebinders assoc the-var :comptime)
+    (alter-meta! the-var #(merge % var-meta {:clj-zig/info {:spec spec :body body
+                                                             :comptime-params comptime-params}}))
+    the-var))
+
 (defn recompile!
   "Force a fresh build of `the-var`'s current spec and body, ignoring the
   cached artifact, and rebind. Returns the Var. Rebuilds in the same mode
@@ -791,24 +859,44 @@
                               signature)
               raw-norm      (signature/normalize raw-signature)
               rest-arg      (some #(when (:rest? %) %) (:args raw-norm))
-              signature     (prepare-signature the-ns raw-signature)
-              spec          (spec/build-spec {:ns the-ns :name fn-name :signature signature
+              comptime-args (vec (filter #(-> % :binding meta :comptime) (:args raw-norm)))
+              has-comptime? (and (seq comptime-args) (string? body))
+              non-ct-sig    (when has-comptime?
+                              (let [non-ct (remove #(-> % :binding meta :comptime) (:args raw-norm))]
+                                (-> (vec (mapcat (fn [{:keys [binding type]}]
+                                                   [(simple-binding binding) type])
+                                                 non-ct))
+                                    (conj :ret (:ret raw-norm)))))
+              prep-sig      (if has-comptime?
+                              (prepare-signature the-ns non-ct-sig)
+                              (prepare-signature the-ns raw-signature))
+              spec          (spec/build-spec {:ns the-ns :name fn-name :signature prep-sig
                                               :types (types-in the-ns)})
               arglist       (build-arglist raw-norm)
               call-args     (mapv :binding (:params spec))
+              wrap-arglist  (if has-comptime?
+                              (mapv #(simple-binding (:binding %))
+                                    (remove #(-> % :binding meta :comptime) (:args raw-norm)))
+                              arglist)
               var-meta      (merge (when docstring {:doc docstring})
                                    attr-map
                                    {:arglists (list arglist)})
-              wrap          (if rest-arg
-                              (rest-wrap arglist call-args rest-arg)
-                              `(fn [invoke#] (fn ~arglist (invoke# ~@call-args))))
+              wrap          `(fn [invoke#] (fn ~wrap-arglist (invoke# ~@call-args)))
+              ct-params     (when has-comptime?
+                              (mapv (fn [a] {:binding (simple-binding (:binding a))
+                                             :type (:type a)})
+                                    comptime-args))
               descriptor    (if (or bodyless? infer?)
                               `{:zig/file (source/namespace-zig-file ~defining-file)}
                               body)]
           `(do
              (def ~fn-name)
-             ~(if (string? body)
+             ~(cond
+                has-comptime?
+                `(establish-comptime-binding! (var ~fn-name) '~spec ~body '~ct-params '~var-meta ~wrap)
+                (string? body)
                 `(establish-binding! (var ~fn-name) '~spec ~body '~var-meta ~wrap)
+                :else
                 `(establish-binding-from! (var ~fn-name) '~spec ~descriptor ~defining-file
                                           '~var-meta ~wrap))
              ~@(when (:clj-zig/spec attr-map)
