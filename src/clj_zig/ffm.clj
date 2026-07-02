@@ -927,7 +927,9 @@
   invokes -- because the arena is dead weight when nothing crosses as a
   native segment. Every other signature keeps the general path, whose
   confined arena holds the native copies of slice/pointer/struct args for
-  the call (ADR 37/39)."
+  the call (ADR 37/39). With `-Dclj-zig.arena-pool=true` the arena is a
+  pooled thread-local one reused across calls (see `arena-pool`), so its
+  lifetime is logically call-bounded but physically extended."
   [spec library-path]
   (let [linker foreign/linker
         ;; Loading a native library is a restricted operation; a JVM that
@@ -956,7 +958,7 @@
         ;; struct return has none and stays a map.
         record-factory (when (and (= :named (:kind ret-value)) (:record (:layout ret-value)))
                          (requiring-resolve (:record (:layout ret-value))))
-        {:keys [eu-struct? owned-rec? owned-slice? opt-struct? struct-ret?]}
+        {:keys [eu-struct? owned-rec? owned-slice? opt-struct? struct-ret? stream?]}
         (classify-return ret)
         ;; An owned slice (or :bytes buffer, or :string) return carries a
         ;; free shim taking the slice's pointer and length; an owned record
@@ -992,7 +994,6 @@
         ;; once-computed metadata. Built once per bind, reused every call.
         invoke-ctx {:handle handle :ret ret :record-factory record-factory
                     :free-handle free-handle :error-buffer-bytes error-buffer-bytes}
-        stream?     (= :stream (:kind ret))
         next-h      (when stream?
                       (.downcallHandle linker
                         (foreign/find-symbol lookup (str (:symbol spec) "__next"))
