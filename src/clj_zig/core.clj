@@ -498,8 +498,8 @@
         (establish-multi-binding! the-var arity-specs {}))
 
       (= :comptime wrap)
-      (let [{:keys [spec body comptime-params var-meta wrap-fn]} (get @comptime-rebinders the-var)]
-        (establish-comptime-binding! the-var spec body comptime-params var-meta wrap-fn))
+      (let [{:keys [spec body comptime-params var-meta wrap]} (get @comptime-rebinders the-var)]
+        (establish-comptime-binding! the-var spec body comptime-params var-meta wrap))
 
       (some? wrap)
       (let [{:keys [spec body] :as info} (:clj-zig/info (meta the-var))
