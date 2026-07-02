@@ -22,7 +22,8 @@
   marshalling FFM performs; the layout matches Zig's `extern struct`
   (C ABI)."
   (:require [clojure.string :as str]
-            [clj-zig.type :as type]))
+            [clj-zig.type :as type]
+            [clj-zig.zig :as zig]))
 
 (defn- field-bytes
   "The size and alignment in bytes of a scalar field. Primitive scalars
@@ -408,35 +409,41 @@
   [descriptor]
   (boolean (:enum descriptor)))
 
-(defn- zig-field-decls
-  "The Zig declaration line(s) for one layout field. A scalar field is
-  one line of its carrier type; a buffer field expands to a `<name>_ptr`
-  and a `<name>_len`, both `usize` (the C-ABI `{ptr, len}` pair a slice
-  parameter already lowers to, applied to a struct field). A nested
+(defn- wire-field-type-name
+  "The Zig type name for one field in the wire (extern) struct. A nested
   buffer-carrying struct field uses the wire type name (`Type__wire`) so
-  the extern struct embeds the inner wire form, not the nice form."
-  [{fname :name t :type :keys [target]}]
-  (if target
-    [(str "    " fname "_ptr: usize,")
-     (str "    " fname "_len: usize,")]
-    (let [type-name (if (and (= :named (:kind t))
-                             (get-in t [:layout])
-                             (not (get-in t [:layout :enum]))
-                             (some :target (get-in t [:layout :fields])))
-                      (str (:name t) "__wire")
-                      (name (:name t)))]
-      [(str "    " fname ": " type-name ",")])))
+  the extern struct embeds the inner wire form. Other named types use
+  their own name; an enum field uses its enum type name."
+  [t]
+  (if (and (= :named (:kind t))
+           (get-in t [:layout])
+           (not (get-in t [:layout :enum]))
+           (some :target (get-in t [:layout :fields])))
+    (str (:name t) "__wire")
+    (name (:name t))))
+
+(defn- wire-fields
+  "The field data for the wire (extern) struct: each scalar field keeps
+  its carrier type; each buffer field expands to a `usize` pointer and
+  length pair. Returns a flat vector of `{:name :type}` maps."
+  [fields]
+  (mapcat (fn [{fname :name t :type :keys [target]}]
+            (if target
+              [(zig/field-data (str fname "_ptr") "usize")
+               (zig/field-data (str fname "_len") "usize")]
+              [(zig/field-data fname (wire-field-type-name t))]))
+          fields))
 
 (defn zig-struct
-  "The `extern struct` (or `packed struct` when `:packed` is true)
-  declaration the generated Zig uses for a layout. Each scalar field is
-  declared by its carrier; each buffer field expands to a `usize`
-  pointer and length pair, the wire form a slice parameter already
-  takes."
+  "The `extern struct` (or `packed struct`) declaration node for a
+  layout. Each scalar field is declared by its carrier; each buffer
+  field expands to a `usize` pointer and length pair, the wire form a
+  slice parameter already takes."
   [{type-name :name :keys [fields packed]}]
-  (str "const " type-name " = " (if packed "packed" "extern") " struct {\n"
-       (str/join "\n" (mapcat zig-field-decls fields))
-       "\n};\n"))
+  (let [field-data (wire-fields fields)]
+    (if packed
+      (zig/packed-struct-decl type-name field-data)
+      (zig/extern-struct-decl type-name field-data))))
 
 (defn- nice-field-type
   "The Zig type name for one field in the nice record the body constructs.
@@ -456,33 +463,29 @@
       (str "[]" (name (:name elem))))))
 
 (defn zig-nice-struct
-  "The nice record struct the body constructs and returns: a regular
-  `struct` (not `extern`) whose buffer fields are real Zig slices, not
-  the `usize` ptr/len words of the wire struct. Emitted for a
-  buffer-carrying record so the body can build the nice type the wrapper
-  then decomposes field by field into the wire `extern struct`. A
-  scalar-only record keeps its `extern struct` (the nice and wire
-  layouts coincide, and the body builds it directly)."
+  "The nice record struct declaration node: a regular `struct` (not
+  `extern`) whose buffer fields are real Zig slices, not the `usize`
+  ptr/len words of the wire struct. Emitted for a buffer-carrying record
+  so the body can build the nice type the wrapper then decomposes field
+  by field into the wire `extern struct`. A scalar-only record keeps its
+  `extern struct` (the nice and wire layouts coincide)."
   [{type-name :name :keys [fields]}]
-  (str "const " type-name " = struct {\n"
-       (str/join "\n" (map (fn [f] (str "    " (:name f) ": " (nice-field-type f) ","))
-                           fields))
-       "\n};\n"))
+  (zig/struct-decl type-name
+                   (map (fn [f] (zig/field-data (:name f) (nice-field-type f)))
+                        fields)))
 
 (defn zig-enum
-  "The `enum(<backing>)` declaration the generated Zig uses for an enum
-  layout. The backing width defaults to `i32` when a legacy descriptor
-  carries none."
+  "The `enum(<backing>)` declaration node for an enum layout. The backing
+  width defaults to `i32` when a legacy descriptor carries none."
   [{type-name :name :keys [backing values]}]
   (let [backing-name (or (some-> backing :name name) "i32")]
-    (str "const " type-name " = enum(" backing-name ") {\n"
-         (str/join "\n" (map (fn [{mname :name value :value}]
-                               (str "    " mname " = " value ","))
-                             values))
-         "\n};\n")))
+    (zig/enum-decl type-name backing-name
+                   (map (fn [{mname :name value :value}]
+                          {:name mname :value value})
+                        values))))
 
 (defn zig-decl
-  "The Zig declaration for a named type: an `enum` for a `defenumz`, a
+  "The declaration node for a named type: an `enum` for a `defenumz`, a
   regular `struct` (the nice record the body constructs) for a
   buffer-carrying `deftypez`/`defrecordz`, and an `extern struct` (the
   wire layout, which is also the nice layout) for a scalar-only struct."
@@ -495,4 +498,4 @@
 (comment
   (describe 'Point '[x :f64 y :f64])
   (describe 'Pixel '[r :u8 g :u8 b :u8])
-  (print (zig-struct (describe 'Point '[x :f64 y :f64]))))
+  (zig/render [(zig-struct (describe 'Point '[x :f64 y :f64]))]))

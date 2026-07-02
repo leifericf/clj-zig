@@ -21,7 +21,8 @@
             [clj-zig.source :as source]
             [clj-zig.spec :as spec]
             [clj-zig.compiler :as compiler]
-            [clj-zig.type :as type]))
+            [clj-zig.type :as type]
+            [clj-zig.zig :as zig]))
 
 ;; --- Namespace-scoped Zig declarations ----------------------------------
 
@@ -227,22 +228,20 @@
   [ns-sym]
   (get @ns-modules ns-sym))
 
-(defn- preamble
-  "The Zig declarations registered in `ns-sym`: the named-type structs,
-  then the `defz` declarations, joined for splicing ahead of a wrapper."
+(defn- preamble-nodes
+  "The declaration nodes for this namespace: the named-type structs and
+  enums, then the `defz` declarations. Returns a vector of declaration
+  nodes."
   [ns-sym]
   (let [structs (->> (vals (types-in ns-sym))
                      (sort-by (comp str :name))
                      (map layout/zig-decl))
-        decls   (map :source (get @zig-decls ns-sym))]
-    (str/join "\n\n" (concat structs decls))))
+        decls   (->> (get @zig-decls ns-sym)
+                     (map :source)
+                     (map zig/raw-decl))]
+    (vec (concat structs decls))))
 
 ;; --- Establishing a native function -------------------------------------
-
-(defn- join-sources
-  "Join non-blank Zig sections with a blank line between them."
-  [sections]
-  (str/join "\n\n" (remove str/blank? sections)))
 
 (defn build-inputs
   "The cache/compile inputs for `spec` and `body`: the generated source,
@@ -261,22 +260,28 @@
   beside the source."
   ([spec body] (build-inputs spec body {:mode :inline}))
   ([spec body {:keys [mode entry options-extra aux-files] :or {mode :inline}}]
-   (let [decls (preamble (:ns spec))
-         mods  (modules-in (:ns spec))
-         src   (case mode
-                 :raw  (join-sources [decls body])
-                 :file (join-sources [decls body (source/generate spec body {:mode :file :entry entry})])
-                 (join-sources [decls (source/generate spec body)]))]
+   (let [preamble    (preamble-nodes (:ns spec))
+         mods        (modules-in (:ns spec))
+         body-nodes  (case mode
+                       :raw  (if (str/blank? body) [] [(zig/raw-decl body)])
+                       :file (if (str/blank? body) [] [(zig/raw-decl body)])
+                       [])
+         wrapper-nodes (case mode
+                         :raw  []
+                         :file (source/file-nodes spec entry)
+                         (source/inline-nodes spec body))
+         all-nodes   (vec (concat preamble body-nodes wrapper-nodes))
+         src         (str (zig/render all-nodes) "\n")]
      (cond-> {:spec        spec
               :body        body
               :source      src
-              :deps        decls
+              :deps        (zig/render preamble)
               :options     (merge {:optimize "ReleaseSafe"} (deps-in (:ns spec)) options-extra)
-               :zig-version compiler/pinned-version
-                :target      (cache/target-triple)}
-        aux-files (assoc :aux-files aux-files)
-        mods      (assoc :modules      (cache/modules-fingerprint mods)
-                        :module-roots (cache/module-roots mods))))))
+                :zig-version compiler/pinned-version
+                 :target      (cache/target-triple)}
+       aux-files (assoc :aux-files aux-files)
+       mods      (assoc :modules      (cache/modules-fingerprint mods)
+                       :module-roots (cache/module-roots mods))))))
 
 (defn- module-info
   "The external modules a build linked, for inspection (ADR 34): each

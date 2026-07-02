@@ -2,7 +2,8 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [clj-zig.layout :as layout]
-            [clj-zig.type :as type]))
+            [clj-zig.type :as type]
+            [clj-zig.zig :as zig]))
 
 (deftest describes-fields-in-order-with-offsets
   (let [d (layout/describe 'Point '[x :f64 y :f64])]
@@ -96,17 +97,18 @@
     (is (= :clj-zig/unsupported-field (rejection-code '[xs [:slice :u128]])))))
 
 (deftest emits-an-extern-struct
-  (let [src (layout/zig-struct (layout/describe 'Point '[x :f64 y :f64]))]
+  (let [src (zig/render [(layout/zig-struct (layout/describe 'Point '[x :f64 y :f64]))])]
     (is (str/includes? src "const Point = extern struct {"))
     (is (str/includes? src "x: f64,"))
     (is (str/includes? src "y: f64,"))))
 
 (deftest emits-a-wire-extern-struct-expanding-buffer-fields
-  (let [src (layout/zig-struct
-              (layout/describe 'RenderResult
-                               '[status :i32
-                                 media  :string
-                                 bytes  [:bytes [:slice :u8]]]))]
+  (let [src (zig/render
+              [(layout/zig-struct
+                (layout/describe 'RenderResult
+                                 '[status :i32
+                                   media  :string
+                                   bytes  [:bytes [:slice :u8]]]))])]
     (testing "scalar fields keep their carrier declarations"
       (is (str/includes? src "status: i32,")))
     (testing "each buffer field expands to a usize ptr and len"
@@ -131,7 +133,7 @@
     (is (= {:kind :scalar :name :u8}
            (:backing (layout/describe-enum 'Compact '[a 0 b 1] {:backing :u8})))))
   (testing "zig-enum emits the backing width"
-    (is (str/includes? (layout/zig-enum (layout/describe-enum 'Compact '[a 0 b 1] {:backing :u8}))
+    (is (str/includes? (zig/render [(layout/zig-enum (layout/describe-enum 'Compact '[a 0 b 1] {:backing :u8}))])
                        "enum(u8) {"))))
 
 (deftest rejects-an-invalid-enum-backing
@@ -170,8 +172,8 @@
       (is (= 'Point (-> rect :fields first :type :name)))
       (is (true? (-> rect :fields first :nested))))
     (testing "the wire extern struct embeds the inner type by name"
-      (is (str/includes? (layout/zig-struct rect) "origin: Point,"))
-      (is (str/includes? (layout/zig-struct rect) "size: Point,")))))
+      (is (str/includes? (zig/render [(layout/zig-struct rect)]) "origin: Point,"))
+      (is (str/includes? (zig/render [(layout/zig-struct rect)]) "size: Point,")))))
 
 (deftest lays-out-recursive-nesting
   (testing "a three-level nesting chain computes offsets through the middle struct"

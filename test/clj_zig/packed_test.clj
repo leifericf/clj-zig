@@ -2,7 +2,8 @@
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.string :as str]
             [clj-zig.core :refer [defnz deftypez]]
-            [clj-zig.layout :as layout]))
+            [clj-zig.layout :as layout]
+            [clj-zig.zig :as zig]))
 
 (deftypez RGB
   [r :u8 g :u8 b :u8]
@@ -26,10 +27,10 @@
 
 (deftest packed-struct-emits-packed-zig
   (testing "the Zig declaration uses packed struct, not extern struct"
-    (is (str/includes? (layout/zig-decl RGB) "packed struct")))
+    (is (str/includes? (zig/render [(layout/zig-decl RGB)]) "packed struct")))
   (testing "a non-packed struct still uses extern struct"
     (let [desc (layout/describe 'P2 ['x :f64 'y :f64])]
-      (is (str/includes? (layout/zig-decl desc) "extern struct")))))
+      (is (str/includes? (zig/render [(layout/zig-decl desc)]) "extern struct")))))
 
 (deftest packed-struct-crosses-the-boundary
   (let [desc (layout/describe 'Px ['a :u8 'b :u8 'c :u8] {} {:packed true})]
