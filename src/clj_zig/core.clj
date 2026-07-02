@@ -866,7 +866,7 @@
                 `{:spec '~spec :body ~body :wrap ~wrap :arity-count ~arity-count})]
            '~var-meta)
           ~@(when (:clj-zig/spec attr-map)
-              `(((requiring-resolve 'clj-zig.spec-check/register!) (var ~fn-name))))))
+              `((clj-zig.spec/register! (var ~fn-name))))))
       (let [{:keys [docstring attr-map signature body trailing]} parsed
             file-body? (and (map? body) (contains? body :zig/file))
             bodyless?  (and (nil? body) (vector? signature))
@@ -940,7 +940,7 @@
                 `(establish-binding-from! (var ~fn-name) '~spec ~descriptor ~defining-file
                                           '~var-meta ~wrap))
              ~@(when (:clj-zig/spec attr-map)
-                 `(((requiring-resolve 'clj-zig.spec-check/register!) (var ~fn-name))))))))))
+                 `((clj-zig.spec/register! (var ~fn-name))))))))))
 
 (defn resolve-decl-source
   "The Zig text for a `defz` declaration: a string as-is, or the contents
