@@ -62,7 +62,7 @@ Rules:
 - `:ret` is required.
 - `:ret` must be at the end.
 - Nothing appears after the return type.
-- `&` remains reserved for Clojure-style rest args if a future version supports them.
+- `&` introduces rest arguments, lowering to a trailing const slice (ADR 42).
 - Types are data, not resolved symbols.
 
 The `:ret` marker deliberately resembles keyword markers in Clojure binding forms, such as `:as` in destructuring.

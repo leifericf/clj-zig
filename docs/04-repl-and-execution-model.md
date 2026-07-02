@@ -145,9 +145,9 @@ Zig error:
   source.zig:7:12: error: expected type 'i64', found '[]const u8'
 ```
 
-## Proof-of-concept implementation mode
+## Implementation mode
 
-The proof-of-concept mode should be:
+The default mode is:
 
 ```clojure
 {:compile :on-eval

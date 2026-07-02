@@ -1,5 +1,5 @@
 (ns clj-zig.result-record-e2e-test
-  "End-to-end round-trips for owned and borrowed result records (doc 10
+  "End-to-end round-trips for owned and borrowed result records (ADR 21
   Phase 3). A `defnz` returning `[:owned RecordType]` hands back a
   Clojure map (or a record, for a `defrecordz`) with every field decoded:
   scalars as numbers, an enum as a keyword, a `:string` as a `String`, and

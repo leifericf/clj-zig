@@ -77,7 +77,7 @@
           (is (not (str/includes? out "__impl")) "no inner impl fn in file mode")
           (is (str/includes? out (str "export fn " (:symbol s) "("))))))))
 
-;; --- Owned/borrowed result records in file mode (doc 10 Phase 2) ---------
+;; --- Owned/borrowed result records in file mode (ADR 21) ---------
 
 (defn- scratch-dir []
   (str (java.nio.file.Files/createTempDirectory

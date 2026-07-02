@@ -107,7 +107,7 @@
    @memcpy(out, s);
    return out;")
 
-;; --- Result records (doc 10 Phase 3): owned/borrowed record returns -----
+;; --- Result records (ADR 21): owned/borrowed record returns -----
 
 ;; A result record carries scalars, an enum, and owned buffer fields. The
 ;; nice record is a regular Zig struct the body constructs; the wrapper

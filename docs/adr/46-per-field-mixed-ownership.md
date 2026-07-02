@@ -6,7 +6,7 @@ Date: 2026-07-02
 
 Every buffer field in a record was treated uniformly: the free shim
 freed them all. A record with one owned buffer beside one borrowed
-buffer could not express "free this one, leave that one" (doc 10
+buffer could not express "free this one, leave that one" (ADR 21
 non-goal). Real records mix ownership: a result carries owned payload
 beside a borrowed reference to caller-owned data.
 
@@ -44,7 +44,7 @@ all buffer fields are borrowed, the free body is a no-op `_ = __ret;`
 (owned-record) or just the slab free (owned-slice), and the borrowed
 data is left for the caller to manage.
 
-This supersedes the doc 10 non-goal "per-field ownership is not
+This supersedes the ADR 21 non-goal "per-field ownership is not
 supported." The `:borrowed` wrapper, introduced for record returns,
 now serves double duty as a per-field marker.
 

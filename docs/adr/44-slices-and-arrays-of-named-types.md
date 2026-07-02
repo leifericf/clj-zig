@@ -65,7 +65,7 @@ entities, particles) fit the scalar interior.
 
 Pack a collection of structs into one owned `[]u8` and unpack on the
 Clojure side. Rejected: it duplicates the byte-framing tax ADR 17 and
-doc 10 were written to remove, on both sides of the boundary, and the
+ADR 21 were written to remove, on both sides of the boundary, and the
 two sides can silently disagree on the layout.
 
 Lift the scalar-only gate to allow per-element buffer fields now.
@@ -102,7 +102,7 @@ body's `[]Buf` into a wire (extern) slab:
    its element type), then frees the slab itself.
 
 The FFM reader reads the wire slab at the C-ABI offsets the layout
-descriptor computes, the same path the owned-record return (doc 10)
+descriptor computes, the same path the owned-record return (ADR 21)
 uses for a single record. The cost is a transient double allocation
 (the nice slab plus the wire slab) during the call; the nice slab is
 freed before the call returns, so only the wire slab and its element

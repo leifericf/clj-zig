@@ -518,7 +518,7 @@
 
 (defn- owned-record-return?
   "True when a return is an `:owned` or `:borrowed` wrapper around a named
-  record, the doc 10 result-record shape. Distinguished from an owned or
+  record, the ADR 21 result-record shape. Distinguished from an owned or
   borrowed slice return, which the existing `generate-ownership` path owns."
   [ret]
   (and (contains? #{:owned :borrowed} (:kind ret))
@@ -545,7 +545,7 @@
 (defn- wire-struct
   "The wire `extern struct` declaration for a record layout, named with the
   `__wire` suffix. Reuses `layout/zig-struct`, which expands each buffer
-  field to a `usize` pointer and length (doc 10 section 4)."
+  field to a `usize` pointer and length (ADR 21 section 4)."
   [record-layout]
   (layout/zig-struct (assoc record-layout :name (wire-struct-name (:name record-layout)))))
 
@@ -644,7 +644,7 @@
   shim that frees every buffer field, reading each pointer and length back
   out of the wire struct; a `:borrowed` result emits no shim. The wire
   struct is emitted here under its `__wire` name; the nice record type is
-  declared alongside the body, not by the wrapper (doc 10 section 5)."
+  declared alongside the body, not by the wrapper (ADR 21)."
   [{:keys [params ret] sym :symbol} body]
   (let [layout     (get-in ret [:of :layout])
         type-name  (:name layout)
@@ -1048,7 +1048,7 @@
   out-pointer. An `:owned` result also emits a per-field `__free` shim that
   imports `std` inline (so a user file's own imports never collide) and
   frees every buffer field; a `:borrowed` result emits no shim. The wire
-  struct is emitted here under its `__wire` name (doc 10 section 5)."
+  struct is emitted here under its `__wire` name (ADR 21)."
   [{:keys [params ret] sym :symbol} entry]
   (let [layout     (get-in ret [:of :layout])
         type-name  (:name layout)

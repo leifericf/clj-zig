@@ -167,7 +167,7 @@
   (is (= :clj-zig/non-integer-member  (code-from #(layout/describe-enum 'E '[ok :zero])))))
 
 (deftest layout-buffer-fields-are-not-a-rejection
-  ;; The buffer field kinds doc 10 §3 introduces are accepted by the layout
+  ;; The buffer field kinds ADR 21 introduces are accepted by the layout
   ;; describer and yield no diagnostic: a :string, a [:bytes [:slice :u8]],
   ;; and a bare, owned, or borrowed slice of a carrier scalar.
   (is (nil? (code-from #(layout/describe 'T '[s :string]))))

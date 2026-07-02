@@ -71,7 +71,7 @@
     (let [s (spec/build-spec '{:ns app.core :name noop :signature [:ret :void]})]
       (is (zig-fmt-clean? (source/generate s "return;"))))))
 
-;; --- Owned/borrowed result records (doc 10 Phase 2) ---------------------
+;; --- Owned/borrowed result records (ADR 21) ---------------------
 
 (defn- scratch-dir []
   (str (java.nio.file.Files/createTempDirectory

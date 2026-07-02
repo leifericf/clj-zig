@@ -103,4 +103,4 @@ while the project is a proof of concept. The git coordinate is
 - Java 22 or newer, for the finalized FFM API. The only JVM flag is
   `--enable-native-access=ALL-UNNAMED`.
 - The Clojure CLI and `deps.edn`.
-- Zig 0.16 for an author. A consumer of a baked library needs no Zig.
+- Zig 0.16.0 for an author. A consumer of a baked library needs no Zig.

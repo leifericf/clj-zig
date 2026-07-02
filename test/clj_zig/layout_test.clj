@@ -27,7 +27,7 @@
 (deftest lays-out-a-mixed-scalar-buffer-and-string-record
   ;; A record carrying two scalars, a :string, and a [:bytes [:slice :u8]]
   ;; field. Each buffer field expands to two usize words aligned to the word
-  ;; width, so the layout is the C-ABI layout of the wire struct doc 10
+  ;; width, so the layout is the C-ABI layout of the wire struct (ADR 21
   ;; section 4 specifies (ptr then len), not the nice record.
   (let [d (layout/describe 'RenderResult
                            '[status :i32

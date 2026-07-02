@@ -24,11 +24,14 @@ Built-in Zig types use exact Zig names as Clojure keywords.
 :i8 :i16 :i32 :i64 :i128
 :u8 :u16 :u32 :u64 :u128
 :isize :usize
-:f16 :f32 :f64 :f80 :f128
+:f32 :f64
 :bool
 :void
-:noreturn
 ```
+
+`:f16`, `:f80`, and `:f128` are rejected (`:clj-zig/unsupported-carrier`)
+because the finalized FFM has no carrier for half, 80-bit, or 128-bit
+floats. `:noreturn` is not a valid argument or return type.
 
 This avoids ambiguity with JVM/Clojure names such as `long`, `double`, `boolean`, or `nil`.
 
@@ -86,7 +89,7 @@ means Zig receives a mutable slice and may mutate elements during the call.
 
 ## Lifetime rules
 
-Proof-of-concept lifetime rules should be conservative:
+Lifetime rules:
 
 - scalars are copied;
 - slices are valid only during the call;

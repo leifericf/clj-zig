@@ -1,4 +1,4 @@
-# 08 - Test Strategy
+# 07 - Test Strategy
 
 ## Goal
 
