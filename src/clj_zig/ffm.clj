@@ -9,7 +9,6 @@
   beyond it is promoted to `BigInteger`, never truncated to a negative. A
   `:void` return is `nil`."
   (:require [clj-zig.foreign :as foreign]
-            [clj-zig.arena-pool :as arena-pool]
             [clj-zig.type :as type])
   (:import (java.lang IllegalCallerException)
            (java.lang.foreign Arena FunctionDescriptor Linker$Option
@@ -1011,6 +1010,51 @@
                      (reify java.util.function.Supplier
                        (get [_] (object-array arity)))))}))
 
+;; --- Thread-local arena pooling for the call path ------------------------
+;; With -Dclj-zig.arena-pool=true, a thread-local confined arena is reused
+;; across calls instead of creating and closing one per call. The arena is
+;; refreshed (closed and replaced) every refresh-interval calls to bound its
+;; growth. Disabled by default; enable for latency-sensitive workloads where
+;; the per-call arena overhead dominates.
+
+(def ^:private pool-enabled
+  (Boolean/getBoolean "clj-zig.arena-pool"))
+
+(def ^:private refresh-interval 1024)
+
+(def ^:private ^ThreadLocal tl-arena
+  (ThreadLocal/withInitial
+   (reify java.util.function.Supplier
+     (get [_] {:arena (Arena/ofConfined) :count 0}))))
+
+(defn- refresh-if-needed []
+  (let [entry (.get tl-arena)]
+    (if (>= (:count entry) refresh-interval)
+      (let [old   (:arena entry)
+            fresh {:arena (Arena/ofConfined) :count 0}]
+        ;; Install the fresh arena before closing the old one, so a close
+        ;; failure cannot orphan the new arena: the next call retries on the
+        ;; installed entry, and the close is swallowed teardown.
+        (.set tl-arena fresh)
+        (try (.close ^Arena old) (catch Throwable _ nil))
+        fresh)
+      entry)))
+
+(defn- with-pooled-arena
+  "Run `f` with an Arena. When pooling is enabled, reuses a thread-local
+  confined arena, incrementing its call counter (the arena is refreshed
+  every `refresh-interval` calls to bound memory growth). When disabled,
+  allocates a fresh confined arena per call (the default, matching the
+  existing `with-open` pattern)."
+  [f]
+  (if pool-enabled
+    (let [entry (refresh-if-needed)
+          arena (:arena entry)]
+      (.set tl-arena (assoc entry :count (inc (:count entry))))
+      (f arena))
+    (with-open [arena (Arena/ofConfined)]
+      (f arena))))
+
 (defn bind
   "Load `library-path`, look up the spec's symbol, and return a Clojure
   fn that calls it with scalar coercion. The library is held by the
@@ -1024,7 +1068,7 @@
   native segment. Every other signature keeps the general path, whose
   confined arena holds the native copies of slice/pointer/struct args for
   the call (ADR 37/39). With `-Dclj-zig.arena-pool=true` the arena is a
-  pooled thread-local one reused across calls (see `arena-pool`), so its
+  pooled thread-local one reused across calls (`with-pooled-arena`), so its
   lifetime is logically call-bounded but physically extended."
   [spec library-path]
   (let [{:keys [handle params ret arity invoke-ctx next-h free-h elem-lay var-sym
@@ -1047,7 +1091,7 @@
         ;; A confined arena holds the native copies of any slice arguments
         ;; for exactly the duration of the call. Mutable slices are copied
         ;; back before it closes, keeping the lifetime to the call.
-        (arena-pool/with-pooled-arena
+        (with-pooled-arena
          (fn [^Arena arena]
            (let [marshalled    (mapv #(marshal-arg arena %1 %2) params args)
                  base-carriers (mapcat :carriers marshalled)
