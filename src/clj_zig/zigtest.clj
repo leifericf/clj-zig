@@ -15,7 +15,7 @@
             [clojure.java.io :as io]
             [clojure.java.shell :as sh]
             [clojure.string :as str]
-            [clj-zig.compiler :as compiler]
+            [clj-zig.toolchain :as toolchain]
             [clj-zig.fs :as fs])
   (:import [java.nio.file Files]
            [java.nio.file.attribute FileAttribute]))
@@ -25,7 +25,7 @@
   `{:pass true}` on exit code 0, or `{:pass false :output stderr}` on
   failure."
   [source]
-  (let [zig (compiler/zig-exe)
+  (let [zig (toolchain/zig-exe)
         tmp (str (Files/createTempDirectory
                   "clj-zig-test" (make-array FileAttribute 0)))
         src (io/file tmp "test.zig")]
@@ -42,7 +42,7 @@
 (defmacro deftestz
   "Define a Clojure test that runs Zig `test` blocks. The `body` is a
   string of Zig source containing `test` blocks. The test passes when
-  `zig test` exits zero; on failure, the compiler/test-runner output is
+  `zig test` exits zero; on failure, the toolchain/test-runner output is
   included in the assertion message."
   ([name body]
    `(deftest ~name

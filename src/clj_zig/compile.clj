@@ -10,7 +10,7 @@
   (:require [clojure.java.io :as io]
             [clojure.java.shell :as sh]
             [clojure.string :as str]
-            [clj-zig.compiler :as compiler]))
+            [clj-zig.toolchain :as toolchain]))
 
 (def default-optimize-mode
   "The default optimize mode when a descriptor or `zig-deps` declares none.
@@ -112,7 +112,7 @@
   `target` is a Zig target triple to cross-compile for (e.g.
   `x86_64-linux-musl`); omit it to build for the host."
   [{:keys [source source-path library-path ctx options aux-files target module-roots]}]
-  (let [zig      (compiler/zig-exe)
+  (let [zig      (toolchain/zig-exe)
         src-file (io/file source-path)
         lib-file (io/file library-path)
         src-abs  (.getAbsolutePath src-file)

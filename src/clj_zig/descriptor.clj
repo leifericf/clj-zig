@@ -6,7 +6,7 @@
   content hash consume. Pure: a descriptor map goes in, a validated
   option or module map comes out, or a diagnostic is thrown."
   (:require [clojure.string :as str]
-            [clj-zig.compiler :as compiler]))
+            [clj-zig.toolchain :as toolchain]))
 
 (declare zig-build-flags)
 
@@ -118,13 +118,13 @@
                     {:level :error :error/code :clj-zig/bad-module-ref
                      :module module-name})))
   (when-let [v (:zig/version descriptor)]
-    (when (not= v compiler/pinned-version)
+    (when (not= v toolchain/pinned-version)
       (throw (ex-info (str "The Zig module " (pr-str module-name) " pins Zig "
-                           v " but clj-zig pins " compiler/pinned-version ".")
+                           v " but clj-zig pins " toolchain/pinned-version ".")
                       {:level :error :error/code :clj-zig/module-zig-version-mismatch
                        :module module-name
                        :requested v
-                       :pinned compiler/pinned-version}))))
+                       :pinned toolchain/pinned-version}))))
   (cond
     ;; A pinned reference fingerprints from sha and root; an optional :path is
     ;; a local checkout bake and the dev loop compile from (ADR 36).

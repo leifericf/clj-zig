@@ -1,4 +1,4 @@
-(ns clj-zig.compiler
+(ns clj-zig.toolchain
   "Resolve the `zig` executable and report its version (imperative shell).
   One seam decides which compiler every other namespace runs, in order: an
   explicit override, a `zig` on PATH, then a pinned hermetic Zig under

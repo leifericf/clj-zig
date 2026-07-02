@@ -6,7 +6,7 @@
   normalized modules per namespace alongside the C-interop options."
   (:require [clojure.test :refer [deftest is testing]]
             [clj-zig.core :as core]
-            [clj-zig.compiler :as compiler]
+            [clj-zig.toolchain :as toolchain]
             [clj-zig.descriptor :as descriptor]))
 
 (defn- code-from
@@ -39,7 +39,7 @@
   (testing "a matching :zig/version is accepted"
     (is (= {"phane" {:path "root.zig"}}
            (descriptor/zig-modules {:zig/modules {"phane" {:path "root.zig"
-                                                     :zig/version compiler/pinned-version}}})))))
+                                                     :zig/version toolchain/pinned-version}}})))))
 
 (deftest rejects-malformed-module-declarations
   (testing ":zig/modules that is not a map"

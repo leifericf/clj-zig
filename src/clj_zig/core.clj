@@ -20,7 +20,7 @@
             [clj-zig.signature :as signature]
             [clj-zig.source :as source]
             [clj-zig.spec :as spec]
-            [clj-zig.compiler :as compiler]
+            [clj-zig.toolchain :as toolchain]
             [clj-zig.type :as type]
             [clj-zig.zig :as zig]))
 
@@ -128,7 +128,7 @@
                :deps        (zig/render preamble)
                :options     (merge {:optimize compile/default-optimize-mode}
                                    (deps-in (:ns spec)) options-extra)
-               :zig-version compiler/pinned-version
+               :zig-version toolchain/pinned-version
                :target      (cache/target-triple)}
        aux-files (assoc :aux-files aux-files)
        mods      (assoc :modules      (cache/modules-fingerprint mods)
