@@ -380,12 +380,26 @@
 
 (defn- extract-bundled!
   "Copy a baked library resource into the filesystem cache at
-  `library-path`, so a bundled artifact loads like a locally built one."
+  `library-path`, so a bundled artifact loads like a locally built one.
+  Writes a process-unique `.tmp` sibling and moves it into place
+  atomically, so two JVMs bootstrapping the same missing artifact cannot
+  interleave writes on the shared path (mirror of `install-pinned!`'s
+  staging)."
   [resource library-path]
-  (let [out (io/file library-path)]
+  (let [out (io/file library-path)
+        tmp (io/file (str library-path ".tmp-"
+                          (.pid (java.lang.ProcessHandle/current))))]
     (io/make-parents out)
-    (with-open [in (io/input-stream resource)]
-      (io/copy in out))))
+    (try
+      (with-open [in (io/input-stream resource)]
+        (io/copy in tmp))
+      (java.nio.file.Files/move
+       (.toPath tmp) (.toPath out)
+       (into-array java.nio.file.StandardCopyOption
+                   [java.nio.file.StandardCopyOption/REPLACE_EXISTING
+                    java.nio.file.StandardCopyOption/ATOMIC_MOVE]))
+      (finally
+        (when (.exists tmp) (.delete tmp))))))
 
 (defn ensure-library!
   "Return the cached artifact paths for these `inputs`, resolving a library

@@ -170,14 +170,33 @@
                        :clj-zig/expected expected :clj-zig/actual actual})))))
 
 (defn- extract-tar!
-  "Unpack an xz tarball into `dest-dir` using the system `tar`."
+  "Unpack an xz tarball into `dest-dir` using the system `tar`. Each entry
+  is validated to stay within `dest-dir` before extraction (mirror of
+  `extract-zip!`), so a crafted `../` entry cannot write outside the install
+  root. The download is checksum-verified first; this is defense in depth."
   [archive dest-dir]
-  (let [{:keys [exit err]} (sh/sh "tar" "-xf" (.getAbsolutePath archive)
-                                  "-C" (.getAbsolutePath dest-dir))]
+  (let [dest-canonical (.getCanonicalPath dest-dir)
+        archive-abs    (.getAbsolutePath archive)
+        {:keys [exit out err]}
+        (sh/sh "tar" "-tf" archive-abs)]
     (when-not (zero? exit)
-      (throw (ex-info (str "Could not extract the Zig archive: " (str/trim err))
+      (throw (ex-info (str "Could not list the Zig archive for validation: "
+                           (str/trim err))
                       {:level :error :error/code :clj-zig/zig-extract-failed
-                       :clj-zig/stderr err})))))
+                       :clj-zig/stderr err})))
+    (doseq [entry (remove str/blank? (str/split-lines out))]
+      (let [target (.getCanonicalPath (io/file dest-dir entry))]
+        (when-not (str/starts-with? target dest-canonical)
+          (throw (ex-info (str "Refusing to extract a tar entry outside the"
+                               " install dir: " entry)
+                          {:level :error :error/code :clj-zig/zig-extract-failed
+                           :clj-zig/entry entry})))))
+    (let [{:keys [exit err]} (sh/sh "tar" "-xf" archive-abs
+                                    "-C" (.getAbsolutePath dest-dir))]
+      (when-not (zero? exit)
+        (throw (ex-info (str "Could not extract the Zig archive: " (str/trim err))
+                        {:level :error :error/code :clj-zig/zig-extract-failed
+                         :clj-zig/stderr err}))))))
 
 (defn- extract-zip!
   "Unpack a zip archive into `dest-dir`. Each entry is validated to stay
