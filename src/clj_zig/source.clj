@@ -179,7 +179,9 @@
                        [(str binding "_ptr: *const [" (:length type) "]" (zig-type (:of type)))])
     :named           (if (enum-type? type)
                        [(str binding ": " (zig-type type))]
-                       [(str binding "_ptr: *const " (zig-type type))])
+                       (if (some :target (get-in type [:layout :fields]))
+                         [(str binding "_ptr: *const " (wire-struct-name (:name (:layout type))))]
+                         [(str binding "_ptr: *const " (zig-type type))]))
     [(str binding ": " (zig-type type))]))
 
 (defn- wire-to-nice-copy-stmts
@@ -245,8 +247,20 @@
                      "}\n"
                      "const " binding " = __nice_" binding ";"))
               (str "const " binding " = " binding "_ptr.*;"))
-    :named  (when-not (enum-type? type)
-              (str "const " binding " = " binding "_ptr.*;"))
+    :named  (cond
+              (enum-type? type) nil
+              (some :target (get-in type [:layout :fields]))
+              (let [layout    (:layout type)
+                    type-name (:name layout)
+                    copies    (->> (wire-to-nice-copy-stmts layout
+                                                            (str "__nice_" binding)
+                                                            (str "__src_" binding))
+                                   (map str/trim))]
+                (str "const __src_" binding " = " binding "_ptr.*;\n"
+                     "var __nice_" binding ": " type-name " = undefined;\n"
+                     (str/join "\n" copies) "\n"
+                     "const " binding " = __nice_" binding ";"))
+              :else (str "const " binding " = " binding "_ptr.*;"))
     nil))))
 
 (defn- param-args
@@ -810,9 +824,17 @@
                          (distinct (concat nested [layout]))))
         param-layouts (keep (fn [p]
                               (let [t (:type p)]
-                                (when (contains? #{:slice :array} (:kind t))
-                                  (when (buffer-carrying-slice-element? (:of t))
-                                    (:layout (:of t))))))
+                                (cond
+                                  (and (contains? #{:slice :array} (:kind t))
+                                       (buffer-carrying-slice-element? (:of t)))
+                                  (:layout (:of t))
+
+                                  (and (= :named (:kind t))
+                                       (not (enum-type? t))
+                                       (some :target (get-in t [:layout :fields])))
+                                  (:layout t)
+
+                                  :else nil)))
                             (:params spec))
         ret            (:ret spec)
         ret-layouts    (cond

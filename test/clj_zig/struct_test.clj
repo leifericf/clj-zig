@@ -363,3 +363,26 @@
   (testing "nested buffers are freed in volume"
     (is (every? #(= "tag" (get-in % [:detail :tag]))
                 (repeatedly 200 #(maybe-outer true))))))
+
+;; --- Single buffer-carrying struct argument (wire-to-nice) -------------
+;; A single struct argument with buffer fields arrives as a *const Type__wire
+;; pointer; the reconstruction converts it to a nice Type before the body.
+
+(defnz label-info
+  "Return the length of a Label's tag and its n field as a struct."
+  [label Label
+   :ret Point]
+  "return .{ .x = @floatFromInt(label.tag.len), .y = @floatFromInt(label.n) };")
+
+(deftest a-single-buffer-struct-argument-round-trips
+  (is (= {:x 5.0 :y 42.0} (label-info {:tag "hello" :n 42})))
+  (is (= {:x 0.0 :y 0.0} (label-info {:tag "" :n 0}))))
+
+(defnz label-inner-tag
+  "Read the nested Inner's tag from a single Outer argument."
+  [outer Outer
+   :ret :i64]
+  "return @intCast(outer.detail.tag.len);")
+
+(deftest a-single-nested-buffer-struct-argument-round-trips
+  (is (= 5 (label-inner-tag {:label "ab" :count 1 :detail {:tag "inner" :n 3}}))))
