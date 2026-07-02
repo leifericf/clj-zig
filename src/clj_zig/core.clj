@@ -811,15 +811,26 @@
   signatures in this namespace may name it as an argument or return type;
   the Var holds the layout descriptor.
 
+  An optional trailing options map may carry `:packed true` to emit a
+  Zig `packed struct` with no alignment padding. Packed structs support
+  scalar and enum fields only.
+
       (deftypez Point
         [x :f64
-         y :f64])"
+         y :f64])
+
+      (deftypez RGB
+        [r :u8 g :u8 b :u8]
+        {:packed true})"
   [type-name & tail]
-  (let [[docstring fields] (if (string? (first tail))
-                             [(first tail) (second tail)]
-                             [nil (first tail)])
+  (let [has-doc?   (string? (first tail))
+        docstring  (when has-doc? (first tail))
+        after-doc  (if has-doc? (next tail) tail)
+        fields     (first after-doc)
+        opts       (when (and (next after-doc) (map? (second after-doc)))
+                     (second after-doc))
         the-ns     (ns-name *ns*)
-        descriptor (layout/describe type-name fields (types-in the-ns))]
+        descriptor (layout/describe type-name fields (types-in the-ns) opts)]
     `(do
        (register-type! '~the-ns '~descriptor)
        (def ~type-name '~descriptor)
