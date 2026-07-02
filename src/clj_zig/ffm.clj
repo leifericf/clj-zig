@@ -129,6 +129,7 @@
         owned-slice? (and (contains? #{:owned :borrowed :bytes :string} (:kind ret))
                           (not owned-rec?))
         struct-ret?  (and (= :named (:kind ret)) (not (enum-type? ret)))
+        stream?      (= :stream (:kind ret))
         extra        (cond eu-struct?                     [ValueLayout/ADDRESS ValueLayout/ADDRESS ValueLayout/ADDRESS]
                            eu?                            [ValueLayout/ADDRESS ValueLayout/ADDRESS]
                            owned-slice?                   [ValueLayout/ADDRESS ValueLayout/ADDRESS]
@@ -137,9 +138,11 @@
         arg-layouts  (into-array MemoryLayout (concat (mapcat param-layouts (:params spec))
                                                       extra))
         ret-value    (if eu? (:of ret) ret)]
-    (if (or eu-struct? struct-ret? owned-rec? owned-slice? (type/void-type? ret-value))
+    (cond
+      stream?    (FunctionDescriptor/of ValueLayout/JAVA_LONG arg-layouts)
+      (or eu-struct? struct-ret? owned-rec? owned-slice? (type/void-type? ret-value))
       (FunctionDescriptor/ofVoid arg-layouts)
-      (FunctionDescriptor/of (return-layout ret-value) arg-layouts))))
+      :else      (FunctionDescriptor/of (return-layout ret-value) arg-layouts))))
 
 (defn- to-carrier
   "Coerce a Clojure value to the param's native carrier. Integers cross
@@ -840,6 +843,33 @@
     (copy-back!)
     (from-return ret result)))
 
+(defn- make-stream-reducible
+  "Return an `IReduceInit` that drives the iteration from `iter-addr`,
+  calling `next-handle` in a loop (writing the element to an
+  out-pointer and returning a bool), applying the reduction, and
+  calling `free-handle` in a finally so a fault cannot leak the
+  iterator (ADR 50)."
+  [iter-addr next-handle free-handle ret elem-layout]
+  (let [elem-type (:of ret)]
+    (reify
+      clojure.lang.IReduceInit
+      (reduce [_ f init-val]
+        (try
+          (with-open [arena (Arena/ofConfined)]
+            (let [out-seg (.allocate arena ^MemoryLayout elem-layout)]
+              (loop [acc init-val]
+                (let [has-val (.invokeWithArguments ^MethodHandle next-handle
+                                                     (object-array [iter-addr out-seg]))]
+                  (if has-val
+                    (let [elem (coerce-scalar elem-type (read-scalar out-seg elem-type 0))
+                          result (f acc elem)]
+                      (if (reduced? result)
+                        @result
+                        (recur result)))
+                    acc)))))
+          (finally
+            (.invokeWithArguments ^MethodHandle free-handle (object-array [iter-addr]))))))))
+
 (defn bind
   "Load `library-path`, look up the spec's symbol, and return a Clojure
   fn that calls it with scalar coercion. The library is held by the
@@ -924,8 +954,22 @@
         ;; The per-bind return context the general-path dispatch threads into
         ;; each `invoke-*` helper: the bound handle and the return shape's
         ;; once-computed metadata. Built once per bind, reused every call.
-        invoke-ctx {:handle handle :ret ret :record-factory record-factory
-                    :free-handle free-handle :error-buffer-bytes error-buffer-bytes}
+         invoke-ctx {:handle handle :ret ret :record-factory record-factory
+                     :free-handle free-handle :error-buffer-bytes error-buffer-bytes}
+        stream?     (= :stream (:kind ret))
+        next-h      (when stream?
+                      (.downcallHandle linker
+                        (foreign/find-symbol lookup (str (:symbol spec) "__next"))
+                        (FunctionDescriptor/of ValueLayout/JAVA_BOOLEAN
+                          (into-array MemoryLayout [ValueLayout/JAVA_LONG ValueLayout/ADDRESS]))
+                        (into-array Linker$Option [])))
+        free-h      (when stream?
+                      (.downcallHandle linker
+                        (foreign/find-symbol lookup (str (:symbol spec) "__free"))
+                        (FunctionDescriptor/ofVoid
+                          (into-array MemoryLayout [ValueLayout/JAVA_LONG]))
+                        (into-array Linker$Option [])))
+        elem-lay    (when stream? (value-layout (:of ret)))
         var-sym (symbol (str (:ns spec)) (str (:name spec)))
         ;; The hot path for a scalar-only signature: no per-call arena, and
         ;; a thread-local carrier array reused across calls on the same
@@ -959,8 +1003,12 @@
               base-carriers (mapcat :carriers marshalled)
               copy-back!    #(run! (fn [m] (when-let [back (:copy-back m)] (back)))
                                    marshalled)]
-           (cond
-              eu-struct?                   (invoke-eu-struct   invoke-ctx arena base-carriers copy-back!)
+            (cond
+               stream?                      (let [iter-addr (.invokeWithArguments ^MethodHandle handle
+                                                                 (object-array (vec base-carriers)))]
+                                              (copy-back!)
+                                              (make-stream-reducible iter-addr next-h free-h ret elem-lay))
+               eu-struct?                   (invoke-eu-struct   invoke-ctx arena base-carriers copy-back!)
               (= :error-union (:kind ret)) (invoke-error-union invoke-ctx arena base-carriers copy-back!)
               owned-rec?                   (invoke-owned-record invoke-ctx arena base-carriers copy-back!)
               owned-slice?                 (invoke-owned-slice  invoke-ctx arena base-carriers copy-back!)

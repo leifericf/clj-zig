@@ -18,7 +18,8 @@
   rejection of carriers FFM cannot express (`:i128`/`:u128`).")
 
 (declare normalize normalize-scalar normalize-compound normalize-indirection
-         normalize-array normalize-wrapper normalize-error-union fail)
+         normalize-array normalize-wrapper normalize-error-union normalize-stream
+         fail)
 
 (def scalars
   "The scalar boundary types and their classification.
@@ -116,6 +117,7 @@
       :array                                (normalize-array v)
       (:optional :owned :borrowed :handle :bytes)  (normalize-wrapper head v)
       :error-union                          (normalize-error-union v)
+      :stream                               (normalize-stream v)
       (fail v :clj-zig/malformed-compound
             (str "Unknown compound type head " (pr-str head) ".") {}))
     (fail v :clj-zig/malformed-compound "A compound type vector cannot be empty." {})))
@@ -165,6 +167,17 @@
       {:kind :error-union :error error-set :of (normalize (nth v 2))})
     (fail v :clj-zig/malformed-compound
           "[:error-union E T] takes an error set and a value type." {})))
+
+(defn- normalize-stream
+  "`[:stream T of IterType]` declares a streaming return (ADR 50). The
+  element type `T` is normalized; `IterType` is a symbol naming a
+  `deftypez` carrying `:clj-zig/iter` metadata. The separator must be
+  the bare symbol `of`."
+  [v]
+  (if (and (= 4 (count v)) (= 'of (nth v 2)))
+    {:kind :stream :of (normalize (nth v 1)) :iter-type (nth v 3)}
+    (fail v :clj-zig/malformed-compound
+          "[:stream T of IterType] takes an element type, the symbol 'of', and an iterator type name." {})))
 
 (defn- fail
   "Throw a structured diagnostic carrying the offending type form."

@@ -880,7 +880,10 @@
         opts       (when (and (next after-doc) (map? (second after-doc)))
                      (second after-doc))
         the-ns     (ns-name *ns*)
-        descriptor (layout/describe type-name fields (types-in the-ns) opts)]
+        descriptor (layout/describe type-name fields (types-in the-ns) opts)
+        descriptor (if-let [iter (:clj-zig/iter opts)]
+                     (assoc descriptor :clj-zig/iter iter)
+                     descriptor)]
     `(do
        (register-type! '~the-ns '~descriptor)
        (def ~type-name '~descriptor)

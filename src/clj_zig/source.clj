@@ -508,6 +508,7 @@
   `c_allocator` in its reconstruction."
   [{:keys [params ret]}]
   (or (contains? #{:owned :bytes :string} (:kind ret))
+      (= :stream (:kind ret))
       (error-union-struct-return? ret)
       (opt-struct-return? ret)
       (= :handle (:kind ret))
@@ -857,12 +858,47 @@
         all-layouts    (distinct (mapcat collect-wire (concat param-layouts ret-layouts)))]
     (str/join "\n" (map wire-struct all-layouts))))
 
+(defn- generate-stream-return
+  "A streaming return (ADR 50). The body initializes and returns a
+  `*IterType`; three exported symbols drive the iteration from Clojure:
+  the init fn wraps the body in an inner impl that returns the pointer,
+  then converts it to usize; the next fn calls the iterator's `:next`
+  function directly and writes the element to an out-pointer, returning
+  true when present and false when exhausted; the free fn calls the
+  iterator's `:deinit` function directly."
+  [{:keys [params ret] sym :symbol} body]
+  (let [elem-t    (zig-type (:of ret))
+        iter-name (str (:iter-type ret))
+        next-fn   (get-in ret [:iter-layout :clj-zig/iter :next])
+        deinit-fn (get-in ret [:iter-layout :clj-zig/iter :deinit])
+        params-str (str/join ", " (mapcat param-decls params))
+        args-str   (str/join ", " (mapcat param-args params))]
+    (str "fn " sym "__impl(" params-str ") *" iter-name " {\n"
+         (indent-body (impl-body params body)) "\n"
+         "}\n\n"
+         "export fn " sym "(" params-str ") usize {\n"
+         "    return @intFromPtr(" sym "__impl(" args-str "));\n"
+         "}\n\n"
+         "export fn " sym "__next(__iter: usize, __out: *" elem-t ") bool {\n"
+         "    const __self: *" iter-name " = @ptrFromInt(__iter);\n"
+         "    if (" next-fn "(__self)) |__val| {\n"
+         "        __out.* = __val;\n"
+         "        return true;\n"
+         "    }\n"
+         "    return false;\n"
+         "}\n\n"
+         "export fn " sym "__free(__iter: usize) void {\n"
+         "    const __self: *" iter-name " = @ptrFromInt(__iter);\n"
+         "    " deinit-fn "(__self);\n"
+         "}\n")))
+
 (defn- generate-inline
   "The inline-mode wrapper: the user's body string is spliced into the
   exported function (or its inner impl fn). Wire struct declarations and
   the std import are emitted at the top level."
   [{:keys [ret] :as spec} body]
   (let [core      (cond
+                    (= :stream (:kind ret))                        (generate-stream-return spec body)
                     (error-union-struct-return? ret)                 (generate-error-union-struct-return spec body)
                     (= :error-union (:kind ret))                       (generate-error-union spec body)
                     (owned-record-return? ret)                         (generate-owned-struct-return spec body)

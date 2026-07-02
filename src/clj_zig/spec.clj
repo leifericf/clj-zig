@@ -64,6 +64,11 @@
                  " which no deftypez/defrecordz/defenumz declares.")
             {:type-name (:name t)}))
 
+    (= :stream (:kind t))
+    (-> t
+        (update :of (partial resolve-named ident types))
+        (assoc :iter-layout (when-let [layout (get types (:iter-type t))] layout)))
+
     (:of t)
     ;; :handle wraps an opaque defz resource that is NOT in the named-type
     ;; registry, so it is left unresolved; every other :of-bearing wrapper
@@ -122,6 +127,7 @@
     :scalar #{(:name t)}
     :named  #{}
     :string #{}
+    :stream (scalar-names (:of t))
     (if-let [of (:of t)] (scalar-names of) #{})))
 
 (defn- find-non-scalar-element
@@ -244,6 +250,9 @@
     (when (= :error-union (:kind type))
       (fail spec :clj-zig/unsupported-error-union
             "An :error-union is supported in return position only." {}))
+    (when (= :stream (:kind type))
+      (fail spec :clj-zig/unsupported-stream-argument
+            "A :stream type is supported in return position only." {}))
     (when (contains? #{:owned :borrowed} (:kind type))
       (fail spec :clj-zig/unsupported-ownership
             "An :owned or :borrowed type is supported in return position only." {}))
