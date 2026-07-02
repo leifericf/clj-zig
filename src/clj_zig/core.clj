@@ -18,7 +18,6 @@
             [clj-zig.layout :as layout]
             [clj-zig.signature :as signature]
             [clj-zig.source :as source]
-            [clj-zig.source-file :as source-file]
             [clj-zig.spec :as spec]
             [clj-zig.compiler :as compiler]
             [clj-zig.type :as type]
@@ -629,7 +628,7 @@
   other than the one using it. The path binds the file to its namespace;
   the header only catches a file wired to the wrong namespace."
   [expected-ns text file]
-  (when-let [declared (source-file/declared-namespace text)]
+  (when-let [declared (source/declared-namespace text)]
     (when (not= declared (str expected-ns))
       (throw (ex-info (str "The Zig file " (pr-str file) " declares namespace "
                            declared " but is used from " expected-ns ".")
@@ -649,7 +648,7 @@
   expansion calls it at load time, so re-evaluating the form re-reads the
   file and its imports."
   [the-var spec descriptor defining-file var-meta wrap]
-  (let [{:keys [text path]} (source-file/resolve-and-read defining-file (:zig/file descriptor))
+  (let [{:keys [text path]} (source/resolve-and-read defining-file (:zig/file descriptor))
         _        (check-namespace! (:ns spec) text path)
         raw?     (boolean (:zig/raw descriptor))
         opts     (descriptor-options descriptor)
@@ -658,7 +657,7 @@
                    (:zig/symbol descriptor) (assoc :symbol (:zig/symbol descriptor)))
         gen      (cond-> {:mode (if raw? :raw :file) :source-file path}
                    opts        (assoc :options-extra opts)
-                   (not raw?)  (assoc :entry (source-file/entry-name spec descriptor))
+                   (not raw?)  (assoc :entry (source/entry-name spec descriptor))
                    (seq files) (assoc :aux-files files))]
     (establish-binding! the-var the-spec text var-meta wrap gen)))
 
@@ -887,9 +886,9 @@
         (let [the-ns        (ns-name *ns*)
               defining-file *file*
               raw-signature (if infer?
-                              (infer/infer-signature
-                               (:text (source-file/resolve-and-read
-                                       defining-file (source-file/namespace-zig-file defining-file)))
+                               (infer/infer-signature
+                                (:text (source/resolve-and-read
+                                        defining-file (source/namespace-zig-file defining-file)))
                                (str/replace (name fn-name) "-" "_"))
                               signature)
               raw-norm      (signature/normalize raw-signature)
@@ -928,7 +927,7 @@
                                              :type (:type a)})
                                     comptime-args))
               descriptor    (if (or bodyless? infer?)
-                              `{:zig/file (source-file/namespace-zig-file ~defining-file)}
+                               `{:zig/file (source/namespace-zig-file ~defining-file)}
                               body)]
           `(do
              (def ~fn-name)
@@ -949,7 +948,7 @@
   Public because the `defz` expansion calls it at load time."
   [decl-source defining-file]
   (if (map? decl-source)
-    (:text (source-file/resolve-and-read defining-file (:zig/file decl-source)))
+    (:text (source/resolve-and-read defining-file (:zig/file decl-source)))
     decl-source))
 
 (defmacro defz

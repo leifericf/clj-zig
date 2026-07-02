@@ -5,7 +5,7 @@
   (:require [clojure.java.io :as io]
             [clojure.test :refer [deftest is testing]]
              [clj-zig.core :as core]
-             [clj-zig.source-file :as source-file]))
+             [clj-zig.source :as source]))
 
 (defn- scratch-dir []
   (str (java.nio.file.Files/createTempDirectory
@@ -32,10 +32,10 @@
 (deftest declared-namespace-reads-the-header
   (testing "the marker line yields the declared namespace"
     (is (= "app.geometry"
-           (source-file/declared-namespace "//! clj-zig: app.geometry\npub fn f() void {}\n"))))
+           (source/declared-namespace "//! clj-zig: app.geometry\npub fn f() void {}\n"))))
   (testing "a file with no marker declares nothing"
-    (is (nil? (source-file/declared-namespace "//! a plain doc comment\npub fn f() void {}\n")))
-    (is (nil? (source-file/declared-namespace "pub fn f() void {}\n")))))
+    (is (nil? (source/declared-namespace "//! a plain doc comment\npub fn f() void {}\n")))
+    (is (nil? (source/declared-namespace "pub fn f() void {}\n")))))
 
 (deftest matching-header-passes
   (let [dir (scratch-dir)
