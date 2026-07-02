@@ -9,6 +9,7 @@
   beyond it is promoted to `BigInteger`, never truncated to a negative. A
   `:void` return is `nil`."
   (:require [clj-zig.foreign :as foreign]
+            [clj-zig.arena-pool :as arena-pool]
             [clj-zig.type :as type])
   (:import (java.lang IllegalCallerException)
            (java.lang.foreign Arena FunctionDescriptor Linker Linker$Option
@@ -998,7 +999,8 @@
        ;; A confined arena holds the native copies of any slice arguments
        ;; for exactly the duration of the call. Mutable slices are copied
        ;; back before it closes, keeping the lifetime to the call.
-       (with-open [arena (Arena/ofConfined)]
+       (arena-pool/with-pooled-arena
+        (fn [^Arena arena]
         (let [marshalled    (mapv #(marshal-arg arena %1 %2) params args)
               base-carriers (mapcat :carriers marshalled)
               copy-back!    #(run! (fn [m] (when-let [back (:copy-back m)] (back)))
@@ -1014,7 +1016,7 @@
               owned-slice?                 (invoke-owned-slice  invoke-ctx arena base-carriers copy-back!)
               opt-struct?                  (invoke-optional-struct invoke-ctx arena base-carriers copy-back!)
               struct-return?               (invoke-struct-return invoke-ctx arena base-carriers copy-back!)
-              :else                        (invoke-scalar       invoke-ctx arena base-carriers copy-back!))))))))
+              :else                        (invoke-scalar       invoke-ctx arena base-carriers copy-back!)))))))))
 
 (comment
   ;; A whole small pipeline: build, compile, bind, call.
