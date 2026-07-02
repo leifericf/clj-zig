@@ -364,7 +364,7 @@
   `.shiftLeft` method, since `bit-shift-left` is Long-only) so a 64-bit
   backing's `2^63` half does not overflow Clojure's checked `long` math."
   [signed? bits]
-  (let [half (.shiftLeft (BigInteger/ONE) (dec bits))]
+  (let [half (.shiftLeft BigInteger/ONE (dec bits))]
     (if signed?
       [(- half) (dec half)]
       [0 (dec (* 2 half))])))

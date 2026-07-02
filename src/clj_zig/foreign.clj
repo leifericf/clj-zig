@@ -258,10 +258,12 @@
 
 (defn join-then-close-arena
   "The teardown tail for a native resource driven on a worker thread: join
-  `worker` up to `timeout-ms`, then close `arena` only once the worker is
-  dead. The ordering is load-bearing -- closing a shared `Arena` while a
-  native frame is still live on the worker faults the VM -- so the close is
-  gated on the worker no longer being alive. The caller performs any
+  `worker` up to `timeout-ms`, then close `arena` once the worker is no
+  longer alive. The ordering is load-bearing -- closing a shared `Arena`
+  while a native frame is still live on the worker faults the VM -- so the
+  close is gated on the worker no longer being alive. A nil `worker` (no
+  thread was started, or it is already gone) still closes `arena`, so a
+  caller cannot leak the arena by passing nil. The caller performs any
   resource-specific signal step (flip a running flag, close a handle to
   unblock a blocking call) BEFORE calling this. Both steps swallow their
   exceptions: teardown must not throw."

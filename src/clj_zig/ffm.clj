@@ -111,8 +111,34 @@
     (i128-type? ret)                         i128-layout
     :else                                    (value-layout ret)))
 
+(defn- classify-return
+  "The return-shape classification shared by `descriptor` (the ABI layout)
+  and `bind` (the call choreography): a tagged map of the shape predicates
+  over `ret`. Computing it once here keeps the ABI and the dispatch in
+  sync -- a shape added or adjusted in one but not the other would silently
+  break the native boundary."
+  [ret]
+  (let [eu?           (= :error-union (:kind ret))
+        owned-rec?    (and (contains? #{:owned :borrowed} (:kind ret))
+                           (= :named (get-in ret [:of :kind])))
+        struct-ret?   (and (= :named (:kind ret)) (not (enum-type? ret)))]
+    {:eu?          eu?
+     :eu-struct?   (and eu?
+                        (= :named (get-in ret [:of :kind]))
+                        (not (enum-type? (:of ret))))
+     :owned-rec?   owned-rec?
+     :owned-slice? (and (contains? #{:owned :borrowed :bytes :string} (:kind ret))
+                        (not owned-rec?))
+     :struct-ret?  struct-ret?
+     :opt-struct?  (and (= :optional (:kind ret))
+                        (= :named (get-in ret [:of :kind]))
+                        (not (enum-type? (:of ret))))
+     :stream?      (= :stream (:kind ret))}))
+
 (defn- descriptor ^FunctionDescriptor [spec]
-  (let [ret         (:ret spec)
+  (let [ret (:ret spec)
+        {:keys [eu? eu-struct? owned-rec? owned-slice? struct-ret? stream?]}
+        (classify-return ret)
         ;; An error-union wrapper carries two trailing out-params, the
         ;; error-name buffer and its length; a struct return carries one
         ;; out-pointer the result is written through; an owned-slice,
@@ -121,16 +147,6 @@
         ;; out-pointer to its wire struct. An error-union over a struct
         ;; combines all three: the error-name buffer, its length, AND the
         ;; struct out-pointer. All four export `void`.
-        eu?          (= :error-union (:kind ret))
-        eu-struct?   (and eu?
-                          (= :named (get-in ret [:of :kind]))
-                          (not (enum-type? (:of ret))))
-        owned-rec?   (and (contains? #{:owned :borrowed} (:kind ret))
-                          (= :named (get-in ret [:of :kind])))
-        owned-slice? (and (contains? #{:owned :borrowed :bytes :string} (:kind ret))
-                          (not owned-rec?))
-        struct-ret?  (and (= :named (:kind ret)) (not (enum-type? ret)))
-        stream?      (= :stream (:kind ret))
         extra        (cond eu-struct?                     [ValueLayout/ADDRESS ValueLayout/ADDRESS ValueLayout/ADDRESS]
                            eu?                            [ValueLayout/ADDRESS ValueLayout/ADDRESS]
                            owned-slice?                   [ValueLayout/ADDRESS ValueLayout/ADDRESS]
@@ -576,20 +592,36 @@
   ^String [addr len]
   (String. (read-bytes addr len) StandardCharsets/UTF_8))
 
+(def ^:private enum-index-cache
+  ;; Per enum `:values`, the `{kw->value value->kw}` lookup maps, so repeated
+  ;; marshal/unmarshal of the same enum is O(1) rather than an O(n) scan per
+  ;; element. Keyed by the `:values` vector (structural equality); growth is
+  ;; bounded by the number of distinct enum definitions.
+  (atom {}))
+
+(defn- enum-index
+  "The `{:kw->value :value->kw}` lookup maps for an enum layout's members."
+  [descriptor]
+  (let [values (:values descriptor)]
+    (or (get @enum-index-cache values)
+        (let [idx {:kw->value (into {} (map (fn [{:keys [name value]}]
+                                              [(keyword (str name)) value])) values)
+                   :value->kw (into {} (map (fn [{:keys [name value]}]
+                                              [value (keyword (str name))])) values)}]
+          (swap! enum-index-cache assoc values idx)
+          idx))))
+
 (defn- enum-member->value
   "The backing integer for an enum member keyword, or nil when no member
   of `descriptor` carries that name."
   [descriptor kw]
-  (some (fn [{:keys [name value]}] (when (= kw (keyword (str name))) value))
-        (:values descriptor)))
+  (get (:kw->value (enum-index descriptor)) kw))
 
 (defn- enum-value->member
   "The member keyword for an enum backing integer, or the raw integer when
   no member of `descriptor` carries that value."
   [descriptor v]
-  (or (some (fn [{:keys [name value]}] (when (= value v) (keyword (str name))))
-            (:values descriptor))
-      v))
+  (or (get (:value->kw (enum-index descriptor)) v) v))
 
 (defn- deref-optional
   "Read the pointee of an `:optional` return: nil when the address is null,
@@ -924,17 +956,8 @@
         ;; struct return has none and stays a map.
         record-factory (when (and (= :named (:kind ret-value)) (:record (:layout ret-value)))
                          (requiring-resolve (:record (:layout ret-value))))
-        eu-struct?   (and (= :error-union (:kind ret))
-                          (= :named (get-in ret [:of :kind]))
-                          (not (enum-type? (:of ret))))
-        owned-rec?   (and (contains? #{:owned :borrowed} (:kind ret))
-                          (= :named (get-in ret [:of :kind])))
-        owned-slice? (and (contains? #{:owned :borrowed :bytes :string} (:kind ret))
-                          (not owned-rec?))
-        opt-struct?   (and (= :optional (:kind ret))
-                           (= :named (get-in ret [:of :kind]))
-                           (not (enum-type? (:of ret))))
-        struct-return? (and (= :named (:kind ret)) (not (enum-type? ret)))
+        {:keys [eu-struct? owned-rec? owned-slice? opt-struct? struct-ret?]}
+        (classify-return ret)
         ;; An owned slice (or :bytes buffer, or :string) return carries a
         ;; free shim taking the slice's pointer and length; an owned record
         ;; and an error-union over a struct both carry a per-field free shim
@@ -1027,7 +1050,7 @@
               owned-rec?                   (invoke-owned-record invoke-ctx arena base-carriers copy-back!)
               owned-slice?                 (invoke-owned-slice  invoke-ctx arena base-carriers copy-back!)
               opt-struct?                  (invoke-optional-struct invoke-ctx arena base-carriers copy-back!)
-              struct-return?               (invoke-struct-return invoke-ctx arena base-carriers copy-back!)
+               struct-ret?                   (invoke-struct-return invoke-ctx arena base-carriers copy-back!)
               :else                        (invoke-scalar       invoke-ctx arena base-carriers copy-back!)))))))))
 
 (comment

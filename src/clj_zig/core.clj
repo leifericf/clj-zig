@@ -271,13 +271,14 @@
                          (source/inline-nodes spec body))
          all-nodes   (vec (concat preamble body-nodes wrapper-nodes))
          src         (str (zig/render all-nodes) "\n")]
-     (cond-> {:spec        spec
-              :body        body
-              :source      src
-              :deps        (zig/render preamble)
-               :options     (merge {:optimize compile/default-optimize-mode} (deps-in (:ns spec)) options-extra)
-              :zig-version compiler/pinned-version
-              :target      (cache/target-triple)}
+      (cond-> {:spec        spec
+               :body        body
+               :source      src
+               :deps        (zig/render preamble)
+               :options     (merge {:optimize compile/default-optimize-mode}
+                                   (deps-in (:ns spec)) options-extra)
+               :zig-version compiler/pinned-version
+               :target      (cache/target-triple)}
        aux-files (assoc :aux-files aux-files)
        mods      (assoc :modules      (cache/modules-fingerprint mods)
                        :module-roots (cache/module-roots mods))))))
