@@ -130,43 +130,39 @@
   carry, or nil when every element is carryable. A scalar element is
   always carryable; a named enum element is carryable (it crosses as its
   backing integer); a named struct element is carryable when its layout
-  is scalar-only (it crosses by value, like a nested struct field in ADR
-  43). When `broad-elements?` is true (return position), a struct that
-  carries buffer fields is also a carryable slice element: the wrapper
-  transforms the body's nice-record slice into a wire slab and the free
-  shim walks each element's buffers. A pointer or many-pointer must still
-  hold a scalar; a slice or array of a buffer-carrying struct element
-  (in argument position), a pointer, an optional, or a wrapper element
-  is rejected. The walk descends through single-element wrappers so an
-  indirection nested under ownership is caught."
-  ([t] (find-non-scalar-element t false))
-  ([t broad-elements?]
-   (when (map? t)
-     (let [k (:kind t)]
-       (cond
-          (contains? #{:slice :array} k)
-          (let [elem (:of t)]
-            (if (or (and (map? elem) (= :scalar (:kind elem))
-                         (not (type/i128-type? (:name elem)))
-                         (type/has-carrier? (:name elem)))
-                    (and (map? elem) (= :named (:kind elem))
-                         (get-in elem [:layout])
-                         (get-in elem [:layout :enum]))
-                    (and (map? elem) (= :named (:kind elem))
-                         (get-in elem [:layout])
-                         (not (get-in elem [:layout :enum]))
-                         (layout/slice-element-layout? (get-in elem [:layout]))))
-              nil
-              t))
+  is `slice-element-layout?` (scalar-only or buffer-carrying; the wrapper
+  transforms the body's nice records into a wire slab in both argument
+  and return positions). A pointer or many-pointer must still hold a
+  scalar; a slice or array of any other element is rejected. The walk
+  descends through single-element wrappers so an indirection nested
+  under ownership is caught."
+  [t]
+  (when (map? t)
+    (let [k (:kind t)]
+      (cond
+        (contains? #{:slice :array} k)
+        (let [elem (:of t)]
+          (if (or (and (map? elem) (= :scalar (:kind elem))
+                       (not (type/i128-type? (:name elem)))
+                       (type/has-carrier? (:name elem)))
+                  (and (map? elem) (= :named (:kind elem))
+                       (get-in elem [:layout])
+                       (get-in elem [:layout :enum]))
+                  (and (map? elem) (= :named (:kind elem))
+                       (get-in elem [:layout])
+                       (not (get-in elem [:layout :enum]))
+                       (layout/slice-element-layout? (get-in elem [:layout]))))
+            nil
+            t))
 
-         (contains? #{:ptr :manyptr} k)
-         (let [elem (:of t)]
-           (if (and (map? elem) (= :scalar (:kind elem))) nil t))
+        (contains? #{:ptr :manyptr} k)
+        (let [elem (:of t)]
+          (if (and (map? elem) (= :scalar (:kind elem))) nil t))
 
-         (contains? #{:optional :owned :borrowed :bytes :handle :error-union} k)
-         (find-non-scalar-element (:of t) broad-elements?)
+        (contains? #{:optional :owned :borrowed :bytes :handle :error-union} k)
+        (find-non-scalar-element (:of t))
 
-         :else nil)))))
+        :else nil))))
 
 (defn- article
   "`A` or `An` for a kind keyword, by the first letter of its name. The
@@ -201,21 +197,18 @@
     (str "an element of kind " (name (:kind elem)))))
 
 (defn- check-element!
-  "Reject any indirection in `t` whose element is not a scalar. The
+  "Reject any indirection in `t` whose element is not carryable. The
   offending indirection kind and element are attached to the diagnostic
-  so the caller can point at the bad element. When `broad-elements?` is
-  true (return position), a buffer-carrying struct is a carryable slice
-  element (the wrapper transforms it into a wire slab)."
-  ([spec t] (check-element! spec t false))
-  ([spec t broad-elements?]
-   (when-let [bad (find-non-scalar-element t broad-elements?)]
-     (let [elem (:of bad)]
-       (fail spec :clj-zig/unsupported-element
-             (str (article (:kind bad)) " :" (name (:kind bad))
-                  " must hold a scalar element; "
-                  (element-description elem) " is not supported as an element.")
-             {:indirection (:kind bad)
-              :element     (select-keys elem [:kind :name])})))))
+  so the caller can point at the bad element."
+  [spec t]
+  (when-let [bad (find-non-scalar-element t)]
+    (let [elem (:of bad)]
+      (fail spec :clj-zig/unsupported-element
+            (str (article (:kind bad)) " :" (name (:kind bad))
+                 " must hold a scalar element; "
+                 (element-description elem) " is not supported as an element.")
+            {:indirection (:kind bad)
+             :element     (select-keys elem [:kind :name])}))))
 
 (defn- borrowed-buffer-slice?
   "True when `ret` is a `:borrowed` wrapper around a slice whose named
@@ -266,8 +259,6 @@
       ;; A struct-element slice cannot propagate the body's in-place edits back
       ;; to the caller's immutable maps (a scalar slice can: the caller passes
       ;; a mutable primitive array). Require :const so the contract is honest.
-      ;; Runs after check-element! so an invalid element (a buffer-carrying
-      ;; struct) still reports :unsupported-element, not this.
       (fail spec :clj-zig/mutable-struct-slice
             (str "A struct-element slice argument must be :const; in-place "
                  "mutations the body makes cannot propagate back to Clojure's "
@@ -302,12 +293,7 @@
           "A :bytes return must wrap a [:slice :u8]." {}))
   (when (and (= :handle (:kind ret)) (not= :named (:kind (:of ret))))
     (fail spec :clj-zig/unsupported-handle "A :handle must wrap a named type." {}))
-  ;; Return position broadens the element gate: an owned slice of a buffer-
-  ;; carrying struct is a valid return (the wrapper transforms the body's
-  ;; nice-record slice into a wire slab and the free shim walks each
-  ;; element's buffers). A borrowed slice of one is rejected because the
-  ;; wrapper-allocated wire slab would leak with no free shim to release it.
-  (check-element! spec ret true)
+  (check-element! spec ret)
   (when (borrowed-buffer-slice? ret)
     (fail spec :clj-zig/unsupported-borrowed-buffer-slice
           (str "A :borrowed slice of a buffer-carrying struct is not supported;"
