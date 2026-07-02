@@ -881,7 +881,13 @@
               var-meta      (merge (when docstring {:doc docstring})
                                    attr-map
                                    {:arglists (list arglist)})
-              wrap          `(fn [invoke#] (fn ~wrap-arglist (invoke# ~@call-args)))
+              wrap          (cond
+                              has-comptime?
+                              `(fn [invoke#] (fn ~wrap-arglist (invoke# ~@call-args)))
+                              rest-arg
+                              (rest-wrap arglist call-args rest-arg)
+                              :else
+                              `(fn [invoke#] (fn ~arglist (invoke# ~@call-args))))
               ct-params     (when has-comptime?
                               (mapv (fn [a] {:binding (simple-binding (:binding a))
                                              :type (:type a)})
