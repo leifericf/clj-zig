@@ -53,7 +53,7 @@
   (str (render-expr base) ".*"))
 (defmethod render-expr :call [{:keys [fn args]}]
   (str fn "(" (str/join ", " (map render-expr args)) ")"))
-(defmethod render-expr :lit [{:keys [value]}] value)
+(defmethod render-expr :lit [{:keys [value]}] (str value))
 (defmethod render-expr :as [{:keys [type value]}]
   (str "@as(" type ", " (render-expr value) ")"))
 (defmethod render-expr :slice [{:keys [base from to]}]
@@ -284,7 +284,10 @@
 (defn call [fn-name args]
   {:expr :call :fn fn-name :args args})
 
-(defn lit [value]
+(defn lit
+  "A literal expression node. `value` is Zig source text rendered verbatim
+  (a number, a boolean, a string of source)."
+  [value]
   {:expr :lit :value value})
 
 (defn as [type value]

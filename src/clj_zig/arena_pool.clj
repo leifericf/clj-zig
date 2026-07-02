@@ -20,9 +20,13 @@
 (defn- refresh-if-needed []
   (let [entry (.get tl-arena)]
     (if (>= (:count entry) refresh-interval)
-      (let [fresh {:arena (Arena/ofConfined) :count 0}]
-        (.close ^Arena (:arena entry))
+      (let [old   (:arena entry)
+            fresh {:arena (Arena/ofConfined) :count 0}]
+        ;; Install the fresh arena before closing the old one, so a close
+        ;; failure cannot orphan the new arena: the next call retries on the
+        ;; installed entry, and the close is swallowed teardown.
         (.set tl-arena fresh)
+        (try (.close ^Arena old) (catch Throwable _ nil))
         fresh)
       entry)))
 

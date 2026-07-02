@@ -12,7 +12,7 @@
             [clj-zig.arena-pool :as arena-pool]
             [clj-zig.type :as type])
   (:import (java.lang IllegalCallerException)
-           (java.lang.foreign Arena FunctionDescriptor Linker Linker$Option
+           (java.lang.foreign Arena FunctionDescriptor Linker$Option
                               MemoryLayout MemorySegment ValueLayout)
            (java.lang.invoke MethodHandle)
            (java.lang.reflect Array)
@@ -626,10 +626,13 @@
   256)
 
 (defn- read-error-name
-  "Read `n` bytes of an error name from `buf` and return them as a keyword."
+  "Read an error name from `buf` and return it as a keyword. `n` is the
+  native-written byte count, clamped to the buffer size and floored at zero
+  so a corrupt length cannot drive the copy past the buffer."
   [^MemorySegment buf n]
-  (let [bytes (byte-array n)]
-    (MemorySegment/copy buf ValueLayout/JAVA_BYTE 0 bytes (int 0) (int n))
+  (let [len   (long (max 0 (min n error-buffer-bytes)))
+        bytes (byte-array len)]
+    (MemorySegment/copy buf ValueLayout/JAVA_BYTE 0 bytes (int 0) (int len))
     (keyword (String. bytes StandardCharsets/UTF_8))))
 
 (defn- native-access-disabled
@@ -684,6 +687,17 @@
        (= :scalar (:kind ret))
        (not (i128-type? ret))))
 
+(defn- safe-free
+  "Invoke the free shim with `args`, swallowing a fault so a failure in the
+  body's `__free` cannot mask the primary result or exception. Teardown must
+  not throw; the primary error (if any) stays visible. A nil `free-handle`
+  (no shim, or a borrowed return) is a no-op, mirroring the arena-close
+  discipline in `foreign/join-then-close-arena`."
+  [free-handle args]
+  (when free-handle
+    (try (.invokeWithArguments ^MethodHandle free-handle (object-array args))
+         (catch Throwable _ nil))))
+
 ;; --- general-path return dispatch ----------------------------------------
 ;; The non-scalar return shapes each need their own downcall choreography:
 ;; where to write out-params, how to read the result, and whether a free
@@ -696,7 +710,7 @@
   "Run the error-union-over-a-struct downcall. The union combines its
   out-params (errbuf, errlen) with a struct out-pointer (`out`). On success
   (errlen 0) read the struct and free owned buffers in a finally so a read
-  fault cannot leak (mirror of c8a822b and the owned-record path); on
+  fault cannot leak (the owned-record free-in-finally discipline); on
   failure read the error keyword. The error path wrote no struct, so the
   free shim does not run and there is nothing to free. The result rebuilds
   as a record via its map-> factory when the named type is a defrecordz,
@@ -717,8 +731,7 @@
           (let [m (read-struct out desc)]
             (if record-factory (record-factory m) m))
           (finally
-            (when free-handle
-              (.invokeWithArguments free-handle (object-array [out])))))
+            (safe-free free-handle [out])))
         (do
           (copy-back!)
           (read-error-name errbuf n))))))
@@ -748,7 +761,7 @@
   through a caller-allocated wire-struct out-segment; clj-zig reads each
   field, then frees owned memory through the per-field shim. The free runs
   in a finally so a read fault cannot leak any buffer the body allocated
-  (mirror of c8a822b). A borrowed record has no shim. The result rebuilds
+  (mirror of the owned-record free-in-finally discipline). A borrowed record has no shim. The result rebuilds
   as a record via its map-> factory when the named type is a defrecordz,
   else a plain map."
   [{:keys [handle ret record-factory free-handle]} ^Arena arena base-carriers copy-back!]
@@ -762,8 +775,7 @@
       (let [m (read-struct out desc)]
         (if record-factory (record-factory m) m))
       (finally
-        (when free-handle
-          (.invokeWithArguments free-handle (object-array [out])))))))
+        (safe-free free-handle [out])))))
 
 (defn- invoke-owned-slice
   "Run an owned or borrowed slice / :bytes / :string downcall. The result
@@ -772,7 +784,7 @@
   UTF-8 with replacement, any other slice as a vector), then frees owned
   memory through the shim. The free runs in a finally so a read fault (a
   wild pointer, or an OOM on a huge length) cannot leak the slice the body
-  allocated (ADR 21, mirror of c8a822b). copy-back! runs inside the same
+  allocated (ADR 21, mirror of the owned-record free-in-finally discipline). copy-back! runs inside the same
   try: the native call already allocated the owned slice, so a copy-back
   fault must still free. A borrowed return has no shim."
   [{:keys [handle ret free-handle]} ^Arena arena base-carriers copy-back!]
@@ -790,8 +802,7 @@
           :string (read-utf8-string addr len)
           (read-slice-values addr len (-> ret :of :of)))
         (finally
-          (when free-handle
-            (.invokeWithArguments free-handle (object-array [addr len]))))))))
+          (safe-free free-handle [addr len]))))))
 
 (defn- invoke-struct-return
   "Run a plain struct-return downcall. The result is written through a
@@ -827,8 +838,7 @@
           (let [m (read-struct sized layout)]
             (if record-factory (record-factory m) m))
           (finally
-            (when free-handle
-              (.invokeWithArguments free-handle (object-array [addr])))))))))
+            (safe-free free-handle [addr])))))))
 
 (defn- invoke-scalar
   "Run a plain scalar, enum, or void downcall: invoke, copy mutable args
@@ -846,10 +856,12 @@
 
 (defn- make-stream-reducible
   "Return an `IReduceInit` that drives the iteration from `iter-addr`,
-  calling `next-handle` in a loop (writing the element to an
-  out-pointer and returning a bool), applying the reduction, and
-  calling `free-handle` in a finally so a fault cannot leak the
-  iterator (ADR 50)."
+  calling `next-handle` in a loop (writing the element to an out-pointer
+  and returning a bool), applying the reduction, and calling `free-handle`
+  in a finally so a fault cannot leak the iterator (ADR 50). The native
+  iterator is freed ONLY when the reducible is reduced, so a caller that
+  obtains it and discards it without reducing leaks it; reduce it (e.g.
+  with `into`) or do not hold the reducible."
   [iter-addr next-handle free-handle ret elem-layout]
   (let [elem-type (:of ret)]
     (reify
@@ -869,7 +881,7 @@
                         (recur result)))
                     acc)))))
           (finally
-            (.invokeWithArguments ^MethodHandle free-handle (object-array [iter-addr]))))))))
+            (safe-free free-handle [iter-addr])))))))
 
 (defn bind
   "Load `library-path`, look up the spec's symbol, and return a Clojure
@@ -885,7 +897,7 @@
   confined arena holds the native copies of slice/pointer/struct args for
   the call (ADR 37/39)."
   [spec library-path]
-  (let [linker (Linker/nativeLinker)
+  (let [linker foreign/linker
         ;; Loading a native library is a restricted operation; a JVM that
         ;; denies native access fails here, so translate it into a
         ;; diagnostic that names the flag rather than the raw FFM error.
@@ -955,8 +967,8 @@
         ;; The per-bind return context the general-path dispatch threads into
         ;; each `invoke-*` helper: the bound handle and the return shape's
         ;; once-computed metadata. Built once per bind, reused every call.
-         invoke-ctx {:handle handle :ret ret :record-factory record-factory
-                     :free-handle free-handle :error-buffer-bytes error-buffer-bytes}
+        invoke-ctx {:handle handle :ret ret :record-factory record-factory
+                    :free-handle free-handle :error-buffer-bytes error-buffer-bytes}
         stream?     (= :stream (:kind ret))
         next-h      (when stream?
                       (.downcallHandle linker

@@ -97,7 +97,9 @@
   "A Zig type string into a boundary type form: a scalar keyword, a
   compound vector, or a symbol for a named struct or enum."
   [s]
-  (let [s (str/trim s)]
+  (let [s     (str/trim s)
+        bang  (top-level-index s \!)
+        array-match (re-find #"^\[(\d+)\](.*)$" s)]
     (cond
       (str/starts-with? s "[]")
       (let [[c inner] (strip-const (str/trim (subs s 2)))]
@@ -107,8 +109,8 @@
       (let [[c inner] (strip-const (str/trim (subs s 3)))]
         (if c [:manyptr :const (parse-type inner)] [:manyptr (parse-type inner)]))
 
-      (re-find #"^\[\d+\]" s)
-      (let [[_ n inner] (re-find #"^\[(\d+)\](.*)$" s)]
+      array-match
+      (let [[_ n inner] array-match]
         [:array (Long/parseLong n) (parse-type inner)])
 
       (str/starts-with? s "?")
@@ -118,10 +120,9 @@
       (let [[c inner] (strip-const (str/trim (subs s 1)))]
         (if c [:ptr :const (parse-type inner)] [:ptr (parse-type inner)]))
 
-      (top-level-index s \!)
-      (let [i (top-level-index s \!)]
-        [:error-union (symbol (str/trim (subs s 0 i)))
-         (parse-type (subs s (inc i)))])
+      bang
+      [:error-union (symbol (str/trim (subs s 0 bang)))
+       (parse-type (subs s (inc bang)))]
 
       (scalar-types (keyword s)) (keyword s)
 

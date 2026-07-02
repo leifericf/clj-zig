@@ -22,7 +22,8 @@
 (defn- well-formed-signature? [sig]
   (and (vector? sig)
        (>= (count sig) 2)
-       (= :ret (nth sig (- (count sig) 2)))))
+       (= :ret (nth sig (- (count sig) 2)))
+       (even? (- (count sig) 2))))
 
 (defn- format-signature
   "Lay the signature out one binding/type pair per line, the return last."

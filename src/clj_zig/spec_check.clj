@@ -30,7 +30,7 @@
     (= :string (:kind t))
     'string?
 
-    (= :slice (:kind t))
+    (contains? #{:slice :stream} (:kind t))
     (list 'clojure.spec.alpha/coll-of (spec-for-type (:of t)))
 
     (= :array (:kind t))
@@ -51,10 +51,7 @@
              (keyword (str (:name v)))))
       'map?)
 
-    (and (= :owned (:kind t)) (= :slice (get-in t [:of :kind])))
-    (list 'clojure.spec.alpha/coll-of (spec-for-type (get-in t [:of :of])))
-
-    (and (= :borrowed (:kind t)) (= :slice (get-in t [:of :kind])))
+    (and (contains? #{:owned :borrowed} (:kind t)) (= :slice (get-in t [:of :kind])))
     (list 'clojure.spec.alpha/coll-of (spec-for-type (get-in t [:of :of])))
 
     (and (contains? #{:owned :borrowed} (:kind t)) (= :named (get-in t [:of :kind])))
@@ -62,9 +59,6 @@
 
     (= :error-union (:kind t))
     (spec-for-type (:of t))
-
-    (= :stream (:kind t))
-    (list 'clojure.spec.alpha/coll-of (spec-for-type (:of t)))
 
     :else 'some?))
 
@@ -109,3 +103,9 @@
     (eval `(s/def ~ret-key ~ret-spec))
     (eval `(s/fdef ~var-sym :args ~arg-key :ret ~ret-key))
     the-var))
+
+(comment
+  (spec-for-type {:kind :scalar :name :i64})            ;; => int?
+  (spec-for-type {:kind :slice :of {:kind :scalar :name :f64}})
+  ;; => (clojure.spec.alpha/coll-of double?)
+  )

@@ -25,8 +25,8 @@
             [clj-zig.zig :as zig]))
 
 (defn- field-bytes
-  "The size and alignment in bytes of a scalar field. Primitive scalars
-  align to their own width."
+  "The byte size of a scalar field, which is also its alignment: primitive
+  scalars align to their own width."
   [t]
   (let [{:keys [category bits]} (type/scalar-info (:name t))]
     (case category
@@ -105,9 +105,9 @@
                  (let [t (:type f)]
                    (or (and (= :scalar (:kind t)) (type/has-carrier? (:name t)))
                        (and (= :named (:kind t))
-                            (get-in t [:layout])
+                            (get t :layout)
                             (not (get-in t [:layout :enum]))
-                            (scalar-only-layout? (get-in t [:layout]))))))
+                            (scalar-only-layout? (get t :layout))))))
                (:fields layout))))
 
 (defn slice-element-layout?
@@ -129,20 +129,11 @@
                             (type/has-carrier? (:name t))
                             (not (type/i128-type? (:name t))))
                        (and (= :named (:kind t))
-                            (get-in t [:layout])
+                            (get t :layout)
                             (not (get-in t [:layout :enum]))
-                            (slice-element-layout? (get-in t [:layout])))
+                            (slice-element-layout? (get t :layout)))
                        (:target f))))
                (:fields layout))))
-
-(defn- nested-field?
-  "True when a normalized field is a nested struct: a named, non-enum
-  field whose inner layout is resolved."
-  [f]
-  (let [t (:type f)]
-    (and (= :named (:kind t))
-         (get-in t [:layout])
-         (not (get-in t [:layout :enum])))))
 
 (defn- classify-field
   "The wire shape of a normalized field type: `:scalar` for a carrier
@@ -185,15 +176,15 @@
 
     (= :named (:kind t))
     (cond
-      (nil? (get-in t [:layout]))
+      (nil? (get t :layout))
       (throw (ex-info (str "Field " fname " of " type-name
                            " names an undeclared type " (:name t) ".")
                       {:level :error :error/code :clj-zig/unknown-field
                        :type type-name :field fname :clj-zig/type-form ftype}))
       (get-in t [:layout :enum])
       {:wire :scalar}
-      (or (scalar-only-layout? (get-in t [:layout]))
-          (slice-element-layout? (get-in t [:layout])))
+      (or (scalar-only-layout? (get t :layout))
+          (slice-element-layout? (get t :layout)))
       {:wire :nested}
       :else
       (throw (ex-info (str "Field " fname " of " type-name
@@ -238,6 +229,88 @@
                    (select-keys classified [:target]))
       (= :nested (:wire classified)) (assoc :nested true))))
 
+(defn- describe-packed
+  "The layout descriptor for a packed struct: scalar and enum fields packed
+  at byte boundaries with no alignment padding, so the struct aligns to 1.
+  Buffer fields and nested structs are rejected with a diagnostic; the
+  `:nested` flag `normalize-field` recorded drives the nested check."
+  [type-name fields types]
+  (let [placed (reduce (fn [{:keys [fields offset]} pair]
+                         (let [{:keys [target type] :as f} (normalize-field type-name types pair)]
+                           (when target
+                             (throw (ex-info (str "A packed struct cannot have buffer field "
+                                                  (:name f) "; packed structs support scalar"
+                                                  " and enum fields only.")
+                                             {:level :error
+                                              :error/code :clj-zig/unsupported-packed-field
+                                              :type type-name :field (:name f)})))
+                           (when (:nested f)
+                             (throw (ex-info (str "A packed struct cannot nest a struct in field "
+                                                  (:name f) "; packed structs support scalar"
+                                                  " and enum fields only.")
+                                             {:level :error
+                                              :error/code :clj-zig/unsupported-packed-field
+                                              :type type-name :field (:name f)})))
+                           (let [size (wire-scalar-bytes type)]
+                             {:fields (conj fields (assoc f :offset offset))
+                              :offset (+ offset size)})))
+                       {:fields [] :offset 0}
+                       (partition 2 fields))]
+    {:name   type-name
+     :packed true
+     :fields (:fields placed)
+     :size   (:offset placed)
+     :align  1}))
+
+(defn- describe-extern
+  "The layout descriptor for an extern (C-ABI) struct. Each field is
+  aligned to its width: a buffer field expands to a `usize` ptr/len word
+  pair; a nested struct embeds the inner extern struct by value (its size
+  and alignment come from the inner layout); a scalar or enum field takes
+  its wire carrier width. The struct size is rounded up to its alignment."
+  [type-name fields types]
+  (let [word   (word-bytes)
+        placed (reduce (fn [{:keys [fields offset align]} pair]
+                         (let [{:keys [target type] :as f} (normalize-field type-name types pair)]
+                           (cond
+                             target
+                             ;; A buffer field: ptr then len, each a usize word.
+                             (let [ptr-off (round-up offset word)
+                                   len-off (+ ptr-off word)]
+                               {:fields (conj fields (assoc f
+                                                            :offset ptr-off
+                                                            :len-offset len-off))
+                                :offset (+ len-off word)
+                                :align  (max align word)})
+
+                             (:nested f)
+                             ;; A nested struct field: the inner extern struct is
+                             ;; embedded by value, so its size and alignment are the
+                             ;; inner layout's, and the field carries the inner layout
+                             ;; for the FFM reader to recurse into.
+                             (let [inner-layout (get type :layout)
+                                   inner-size   (:size inner-layout)
+                                   inner-align  (:align inner-layout)
+                                   off          (round-up offset inner-align)]
+                               {:fields (conj fields (assoc f :offset off))
+                                :offset (+ off inner-size)
+                                :align  (max align inner-align)})
+
+                             :else
+                             ;; A scalar or enum field: its wire carrier size and
+                             ;; alignment (an enum is its integer backing).
+                             (let [size (wire-scalar-bytes type)
+                                   off  (round-up offset size)]
+                               {:fields (conj fields (assoc f :offset off))
+                                :offset (+ off size)
+                                :align  (max align size)}))))
+                       {:fields [] :offset 0 :align 1}
+                       (partition 2 fields))]
+    {:name   type-name
+     :fields (:fields placed)
+     :size   (round-up (:offset placed) (:align placed))
+     :align  (:align placed)}))
+
 (defn describe
   "Build the layout descriptor for a named type from its `fields`, a
   vector of `name type` pairs. A carrier scalar or an enum keeps its
@@ -259,72 +332,8 @@
                      {:level :error :error/code :clj-zig/malformed-fields
                       :type type-name})))
    (if (:packed opts)
-     (let [placed (reduce (fn [{:keys [fields offset]} pair]
-                            (let [{:keys [target type] :as f} (normalize-field type-name types pair)]
-                              (when target
-                                (throw (ex-info (str "A packed struct cannot have buffer field "
-                                                     (:name f) "; packed structs support scalar"
-                                                     " and enum fields only.")
-                                                {:level :error
-                                                 :error/code :clj-zig/unsupported-packed-field
-                                                 :type type-name :field (:name f)})))
-                              (when (nested-field? f)
-                                (throw (ex-info (str "A packed struct cannot nest a struct in field "
-                                                     (:name f) "; packed structs support scalar"
-                                                     " and enum fields only.")
-                                                {:level :error
-                                                 :error/code :clj-zig/unsupported-packed-field
-                                                 :type type-name :field (:name f)})))
-                              (let [size (wire-scalar-bytes type)]
-                                {:fields (conj fields (assoc f :offset offset))
-                                 :offset (+ offset size)})))
-                          {:fields [] :offset 0}
-                          (partition 2 fields))]
-       {:name   type-name
-        :packed true
-        :fields (:fields placed)
-        :size   (:offset placed)
-        :align  1})
-     (let [word  (word-bytes)
-           placed (reduce (fn [{:keys [fields offset align]} pair]
-                            (let [{:keys [target type] :as f} (normalize-field type-name types pair)]
-                              (cond
-                                target
-                                ;; A buffer field: ptr then len, each a usize word.
-                                (let [ptr-off (round-up offset word)
-                                      len-off (+ ptr-off word)]
-                                  {:fields (conj fields (assoc f
-                                                               :offset ptr-off
-                                                               :len-offset len-off))
-                                   :offset (+ len-off word)
-                                   :align  (max align word)})
-
-                                (nested-field? f)
-                                ;; A nested struct field: the inner extern struct is
-                                ;; embedded by value, so its size and alignment are
-                                ;; the inner layout's, and the field carries the inner
-                                ;; layout for the FFM reader to recurse into.
-                                (let [inner (:size (get-in type [:layout]))
-                                      ialign (:align (get-in type [:layout]))
-                                      off    (round-up offset ialign)]
-                                  {:fields (conj fields (assoc f :offset off))
-                                   :offset (+ off inner)
-                                   :align  (max align ialign)})
-
-                                :else
-                                ;; A scalar or enum field: its wire carrier size
-                                ;; and alignment (an enum is its integer backing).
-                                (let [size (wire-scalar-bytes type)
-                                      off  (round-up offset size)]
-                                  {:fields (conj fields (assoc f :offset off))
-                                   :offset (+ off size)
-                                   :align  (max align size)}))))
-                          {:fields [] :offset 0 :align 1}
-                          (partition 2 fields))]
-       {:name   type-name
-        :fields (:fields placed)
-        :size   (round-up (:offset placed) (:align placed))
-        :align  (:align placed)}))))
+     (describe-packed type-name fields types)
+     (describe-extern type-name fields types))))
 
 (defn describe-record
   "The layout descriptor for a `defrecordz` type: the struct layout of
@@ -351,9 +360,11 @@
 
 (defn- enum-range
   "The inclusive `[lo hi]` range of integer values that fit a signed or
-  unsigned scalar of `bits` width."
+  unsigned scalar of `bits` width. Computed as `BigInteger` (via the
+  `.shiftLeft` method, since `bit-shift-left` is Long-only) so a 64-bit
+  backing's `2^63` half does not overflow Clojure's checked `long` math."
   [signed? bits]
-  (let [half (bit-shift-left 1 (dec bits))]
+  (let [half (.shiftLeft (BigInteger/ONE) (dec bits))]
     (if signed?
       [(- half) (dec half)]
       [0 (dec (* 2 half))])))
@@ -415,7 +426,7 @@
   their own name; an enum field uses its enum type name."
   [t]
   (if (and (= :named (:kind t))
-           (get-in t [:layout])
+           (get t :layout)
            (not (get-in t [:layout :enum]))
            (some :target (get-in t [:layout :fields])))
     (str (:name t) "__wire")

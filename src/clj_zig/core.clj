@@ -1,10 +1,9 @@
 (ns clj-zig.core
   "The `defnz` and `defz` defining forms. These macros stay thin: they
-   parse the form into data, hand it to the pure pipeline (signature,
-   then spec, then source) and the shell (compile or cache, then load,
-   then bind), then
-  rebind an ordinary Clojure Var. A user can reach every stage through
-  the data functions without the macro.
+  parse the form into data, hand it to the pure pipeline (signature, then
+  spec, then source) and the shell (compile or cache, then load, then
+  bind), then rebind an ordinary Clojure Var. A user can reach every
+  stage through the data functions without the macro.
 
   `defnz` defines a Clojure function backed by a Zig body. `defz`
   registers Zig declarations that the bodies in its namespace may call
@@ -276,7 +275,7 @@
               :body        body
               :source      src
               :deps        (zig/render preamble)
-              :options     (merge {:optimize "ReleaseSafe"} (deps-in (:ns spec)) options-extra)
+               :options     (merge {:optimize compile/default-optimize-mode} (deps-in (:ns spec)) options-extra)
               :zig-version compiler/pinned-version
               :target      (cache/target-triple)}
        aux-files (assoc :aux-files aux-files)
@@ -302,17 +301,18 @@
   reused (`:cached`) or freshly built (`:compiled`), and the external modules
   it links (`:modules`) when the namespace declares any."
   ([spec body] (artifact spec body {:mode :inline}))
-  ([spec body gen]
-   (let [inputs (build-inputs spec body gen)
-           paths  (cache/ensure-library! inputs compile/compile!)]
-     (cond-> {:spec             spec
-              :body             body
-              :generated-source (:source inputs)
-              :library          (:library-path paths)
-              :source-path      (:source-path paths)
-              :symbol           (:symbol spec)
-              :status           (if (:cached? paths) :cached :compiled)}
-       (module-info inputs) (assoc :modules (module-info inputs))))))
+   ([spec body gen]
+    (let [inputs (build-inputs spec body gen)
+          paths  (cache/ensure-library! inputs compile/compile!)
+          modules (module-info inputs)]
+      (cond-> {:spec             spec
+               :body             body
+               :generated-source (:source inputs)
+               :library          (:library-path paths)
+               :source-path      (:source-path paths)
+               :symbol           (:symbol spec)
+               :status           (if (:cached? paths) :cached :compiled)}
+        modules (assoc :modules modules)))))
 
 (defn establish!
   "Build the artifact for `spec` and `body` and bind its symbol. Returns
@@ -330,7 +330,7 @@
 (defonce ^:private rebinders (atom {}))
 
 ;; Multi-arity rebind data: {the-var {:arity-specs [...] :invoke-table
-;; {count invoke}}}. Defined here so `recompile!` (above) can reference it.
+;; {count invoke}}}. Defined here so `recompile!` (below) can reference it.
 (defonce ^:private multi-rebinders (atom {}))
 
 (defonce ^:private comptime-rebinders (atom {}))
@@ -496,7 +496,9 @@
   "Force a fresh build of `the-var`'s current spec and body, ignoring the
   cached artifact, and rebind. Returns the Var. Rebuilds in the same mode
   the function was defined with (inline, file, or raw). A multi-arity Var
-  rebuilds every arity."
+  rebuilds every arity. A comptime Var clears its per-value cache and
+  rebinds, so each distinct comptime combination rebuilds lazily on its
+  next call (the values to build for are not known until called)."
   [the-var]
   (let [wrap (get @rebinders the-var)]
     (cond
@@ -763,6 +765,17 @@
        :body      (second tail)
        :trailing  (nnext tail)})))
 
+(defn- reject-ambiguous-file-attr!
+  "Throw when `attr-map` is a `{:zig/file ...}` descriptor in the attribute
+  map position. A file body must follow a signature; this catches the
+  common slip of putting it where the attr-map goes."
+  [fn-name attr-map]
+  (when (and (map? attr-map) (contains? attr-map :zig/file))
+    (throw (ex-info (str "defnz " fn-name " has a {:zig/file ...} map where an"
+                         " attribute map goes; a file body must follow a signature.")
+                    {:level :error :error/code :clj-zig/ambiguous-body-form
+                     :var fn-name}))))
+
 (defmacro defnz
   "Define a Clojure function whose body is Zig. The signature vector is
   the boundary contract; the trailing form is the Zig body, a string or a
@@ -810,11 +823,7 @@
       (let [{:keys [docstring attr-map arities]} parsed
             the-ns (ns-name *ns*)
             _ (when (map? attr-map) (validate-descriptor-keys attr-map))
-            _ (when (and (map? attr-map) (contains? attr-map :zig/file))
-                (throw (ex-info (str "defnz " fn-name " has a {:zig/file ...} map where an"
-                                     " attribute map goes; a file body must follow a signature.")
-                                {:level :error :error/code :clj-zig/ambiguous-body-form
-                                 :var fn-name})))
+            _ (reject-ambiguous-file-attr! fn-name attr-map)
             prepared (mapv (fn [{:keys [signature body]}]
                              (when-not (string? body)
                                (throw (ex-info (str "Multi-arity defnz " fn-name
@@ -863,11 +872,7 @@
             infer?     (and (nil? body) (nil? signature))]
         (when (map? attr-map) (validate-descriptor-keys attr-map))
         (when (map? body) (validate-descriptor-keys body))
-        (when (and (map? attr-map) (contains? attr-map :zig/file))
-          (throw (ex-info (str "defnz " fn-name " has a {:zig/file ...} map where an"
-                               " attribute map goes; a file body must follow a signature.")
-                          {:level :error :error/code :clj-zig/ambiguous-body-form
-                           :var fn-name})))
+        (reject-ambiguous-file-attr! fn-name attr-map)
         (when (seq trailing)
           (throw (ex-info (str "defnz " fn-name " has " (count trailing)
                                " form(s) after the body; nothing may follow the Zig body.")
@@ -1026,8 +1031,8 @@
   Unlike `deftypez`/`defenumz`, the optional docstring does NOT land on
   the type symbol: `defrecord` interns the type as a Class, and a class
   symbol has no Var to carry `:doc`. The docstring is attached to the
-  `map->Type` factory Var instead -- the interned Var closest to the type
-  and the one the FFM return path resolves when rebuilding a record."
+   `map->Type` factory Var instead, the interned Var closest to the type
+   and the one the FFM return path resolves when rebuilding a record."
   [type-name & tail]
   (let [[docstring fields] (if (string? (first tail))
                              [(first tail) (second tail)]

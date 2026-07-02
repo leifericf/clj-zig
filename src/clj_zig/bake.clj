@@ -12,7 +12,8 @@
   (:require [clojure.java.io :as io]
             [clj-zig.cache :as cache]
             [clj-zig.compile :as compile]
-            [clj-zig.core :as core]))
+            [clj-zig.core :as core]
+            [clj-zig.fs :as fs]))
 
 (def default-targets
   "The release target matrix: a clj-zig target id (which keys the content
@@ -69,25 +70,28 @@
         coords   {:target id :ns (:ns spec) :name (:name spec) :hash hash}
         resource (cache/bundled-resource-path coords)
         lib      (io/file out-dir resource)
+        var-sym  (symbol (str (:ns spec)) (str (:name spec)))
         build    (.toFile (java.nio.file.Files/createTempDirectory
                            "clj-zig-bake" (make-array java.nio.file.attribute.FileAttribute 0)))]
     (io/make-parents lib)
-    (compile/compile!
-     {:source       (:source in)
-      :source-path  (.getPath (io/file build "source.zig"))
-      :library-path (.getPath lib)
-      :options      (:options in)
-      :target       triple
-      :module-roots (:module-roots in)
-      :aux-files    (mapv (fn [{:keys [rel text]}]
-                            {:path (.getPath (io/file build rel)) :text text})
-                          (:aux-files in))
-      :ctx          {:var (symbol (str (:ns spec)) (str (:name spec)))
-                     :signature (:signature spec)}})
-    {:var      (symbol (str (:ns spec)) (str (:name spec)))
-     :target   id
-     :resource resource
-     :library  (.getPath lib)}))
+    (try
+      (compile/compile!
+       {:source       (:source in)
+        :source-path  (.getPath (io/file build "source.zig"))
+        :library-path (.getPath lib)
+        :options      (:options in)
+        :target       triple
+        :module-roots (:module-roots in)
+        :aux-files    (mapv (fn [{:keys [rel text]}]
+                              {:path (.getPath (io/file build rel)) :text text})
+                            (:aux-files in))
+        :ctx          {:var var-sym :signature (:signature spec)}})
+      {:var      var-sym
+       :target   id
+       :resource resource
+       :library  (.getPath lib)}
+      (finally
+        (fs/delete-recursively! build)))))
 
 (defn- bake-function!
   "Bake one function for the applicable targets. A function linking a
@@ -125,7 +129,8 @@
         results (vec (mapcat #(bake-function! out % chosen) fns))]
     (binding [*out* *err*]
       (println (str "clj-zig: baked " (count fns) " function(s) over "
-                    (count chosen) " target(s) into " out "/clj-zig/native")))
+                    (count chosen) " target(s) into " out " (under "
+                    cache/native-resource-root ")")))
     results))
 
 (comment

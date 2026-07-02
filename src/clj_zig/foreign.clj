@@ -268,7 +268,7 @@
   [^Thread worker ^Arena arena ^long timeout-ms]
   (when (and worker (.isAlive worker))
     (try (.join worker timeout-ms) (catch Throwable _ nil)))
-  (when (and arena worker (not (.isAlive worker)))
+  (when (and arena (or (nil? worker) (not (.isAlive worker))))
     (try (.close arena) (catch Throwable _ nil)))
   nil)
 

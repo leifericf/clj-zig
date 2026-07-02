@@ -165,23 +165,30 @@
                        :value        s})))
     s))
 
+(defn- segment-coords
+  "The four validated path-segment strings for build coordinates, shared by
+  `artifact-paths` and `bundled-resource-path` so both gate `target`, `ns`,
+  `name`, and `hash` identically against segment escape."
+  [coords]
+  {:target (segment :target (:target coords))
+   :ns     (segment :ns (:ns coords))
+   :name   (segment :name (:name coords))
+   :hash   (segment :hash (:hash coords))})
+
 (defn artifact-paths
   "The artifact directory and file paths for a build, under `root`
   (default `.clj-zig/cache`). Each path component is checked, so a malformed
   spec cannot write outside the cache."
-  [{:keys [root target ns name hash]}]
-  (let [root   (or root ".clj-zig/cache")
-        target (segment :target target)
-        ns     (segment :ns ns)
-        name   (segment :name name)
-        hash   (segment :hash hash)
-        dir    (str root "/" target "/" ns "/" name "-" hash)]
+  [{:keys [root] :as coords}]
+  (let [root              (or root ".clj-zig/cache")
+        {:keys [target ns name hash]} (segment-coords coords)
+        dir               (str root "/" target "/" ns "/" name "-" hash)]
     {:dir           dir
      :source-path   (str dir "/source.zig")
      :library-path  (str dir "/lib" name "-" hash "." (extension-for-target target))
      :manifest-path (str dir "/manifest.edn")}))
 
-(def ^:private resource-root
+(def native-resource-root
   "The classpath root under which a library ships its baked native code.
   The layout below it mirrors the filesystem cache, so a baked artifact is
   found by the same target, namespace, name, and hash."
@@ -192,12 +199,9 @@
   layout under the resource root. The library's content hash is in the
   path, so a resource matches a function's hash for a target or it does
   not. Components are checked, as in `artifact-paths`."
-  [{:keys [target ns name hash]}]
-  (let [target (segment :target target)
-        ns     (segment :ns ns)
-        name   (segment :name name)
-        hash   (segment :hash hash)]
-    (str resource-root "/" target "/" ns "/" name "-" hash
+  [coords]
+  (let [{:keys [target ns name hash]} (segment-coords coords)]
+    (str native-resource-root "/" target "/" ns "/" name "-" hash
          "/lib" name "-" hash "." (extension-for-target target))))
 
 ;; --- Pure: external-module roots -----------------------------------------
@@ -349,9 +353,13 @@
       (edn/read-string (slurp f)))))
 
 (defn clean!
-  "Remove the entire artifact cache under `root` (default `.clj-zig/cache`)."
+  "Remove the entire artifact cache under `root` (default `.clj-zig/cache`).
+  Also clears the module-fingerprint memo so a post-clean build re-reads
+  module contents rather than reusing a fingerprint for a tree the cache
+  no longer holds."
   ([] (clean! ".clj-zig/cache"))
   ([root]
+   (reset! module-fingerprint-cache {})
    (let [d (io/file root)]
      (when (.exists d) (fs/delete-recursively! d)))))
 

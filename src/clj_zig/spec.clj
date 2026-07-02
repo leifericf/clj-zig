@@ -67,7 +67,7 @@
     (= :stream (:kind t))
     (-> t
         (update :of (partial resolve-named ident types))
-        (assoc :iter-layout (when-let [layout (get types (:iter-type t))] layout)))
+        (assoc :iter-layout (get types (:iter-type t))))
 
     (:of t)
     ;; :handle wraps an opaque defz resource that is NOT in the named-type
@@ -232,12 +232,14 @@
               (not (layout/scalar-only-layout? layout))
               (layout/slice-element-layout? layout)))))
 
-(defn- validate!
-  "Reject contracts FFM cannot honor: `:void`/`:noreturn` in argument
-  position, an `:optional` over anything but a pointer or a carrier scalar,
-  an `:error-union` outside a scalar, `:void`, or named-type return, and
-  any value-position scalar without an FFM carrier."
-  [{:keys [params ret] :as spec}]
+(defn- validate-args!
+  "Reject contracts FFM cannot honor in argument position: `:void`/`:noreturn`
+  arguments, an `:optional` over anything but a pointer or a carrier scalar,
+  `:error-union`/`:stream`/`:owned`/`:borrowed`/`:bytes` outside return
+  position, a `:handle` not wrapping a named type, and any indirection whose
+  element is not carryable. A struct-element slice must be `:const` so the
+  contract is honest about not propagating in-place edits."
+  [{:keys [params] :as spec}]
   (doseq [{:keys [type]} params]
     (when (type/void-type? type)
       (fail spec :clj-zig/void-argument
@@ -272,7 +274,16 @@
             (str "A struct-element slice argument must be :const; in-place "
                  "mutations the body makes cannot propagate back to Clojure's "
                  "immutable maps. Declare it [:slice :const " (:name (:of type)) "].")
-            {:element (select-keys (:of type) [:kind :name])})))
+            {:element (select-keys (:of type) [:kind :name])}))))
+
+(defn- validate-return!
+  "Reject contracts FFM cannot honor in return position: an `:optional`,
+  `:error-union`, `:owned`/`:borrowed`, `:bytes`, or `:handle` return of a
+  shape the boundary cannot carry; a `:borrowed` slice of a buffer-carrying
+  struct (no free shim); a bare `:slice`/`:array`/`:ptr`/`:manyptr` return
+  (no ownership policy); and any value-position scalar without an FFM
+  carrier."
+  [{:keys [ret] :as spec}]
   (when (and (= :optional (:kind ret))
              (not (or (= :ptr (:kind (:of ret)))
                       (and (= :scalar (:kind (:of ret)))
@@ -316,13 +327,20 @@
           {}))
   (let [ret-value     (if (= :error-union (:kind ret)) (:of ret) ret)
         ret-scalars   (if (type/void-type? ret-value) #{} (scalar-names ret-value))
-        value-scalars (apply set/union ret-scalars (map (comp scalar-names :type) params))
+        value-scalars (apply set/union ret-scalars (map (comp scalar-names :type) (:params spec)))
         no-carrier    (remove type/has-carrier? value-scalars)]
     (when (seq no-carrier)
       (fail spec :clj-zig/unsupported-carrier
             (str "Types " (str/join ", " (sort no-carrier))
                  " have no FFM carrier and cannot cross the boundary.")
             {}))))
+
+(defn- validate!
+  "Reject contracts FFM cannot honor, delegating to the argument and return
+  halves. Throws a diagnostic (`ex-info`) on the first violation."
+  [spec]
+  (validate-args! spec)
+  (validate-return! spec))
 
 (defn- fail
   "Throw a structured diagnostic. `spec` may be nil before it is built."

@@ -23,7 +23,10 @@
   "The relative `.zig` files a body imports by path: every
   `@import(\"...\")` target that names a relative `.zig` file. Compiler
   modules (`std`, `builtin`), absolute paths, and non-`.zig` targets are
-  not files to reproduce and are skipped. Pure."
+  not files to reproduce and are skipped. The scan is textual, so an
+  `@import` inside a comment or string literal is also picked up; a target
+  that does not resolve to a file is dropped by `closure`, leaving Zig to
+  report it. Pure."
   [zig-text]
   (->> (re-seq import-pattern zig-text)
        (map second)
@@ -50,14 +53,14 @@
 
 (defn- escapes?
   "True when `rel` (a path relative to the body directory, in slash form)
-  climbs above its base: it is exactly `..`, or begins with `../` (or
-  `..\\` on Windows). A name that merely starts with two dots -- say
-  `..drafts/util.zig`, a real sibling -- is NOT an escape and must be
-  kept, so the check is by path segment, not by raw character prefix."
+  climbs above its base: it is exactly `..`, or begins with `../`. A name
+  that merely starts with two dots -- say `..drafts/util.zig`, a real
+  sibling -- is NOT an escape and must be kept, so the check is by path
+  segment, not by raw character prefix. `rel` is always in slash form
+  (`to-slash` runs before this), so a backslash separator is not checked."
   [rel]
   (or (= rel "..")
-      (str/starts-with? rel "../")
-      (str/starts-with? rel "..\\")))
+      (str/starts-with? rel "../")))
 
 (defn- within?
   "True when `f` is at or below `dir`, so it is inside the module path

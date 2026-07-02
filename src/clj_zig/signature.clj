@@ -113,7 +113,7 @@
                             {:binding binding})))
 
 (defn- fail
-  "Throw a structured diagnostic carrying the offending signature
+  "Throw a structured diagnostic carrying the offending signature.
   The shell renders it; callers can branch on `:error/code`."
   [signature code message extra]
   (throw (ex-info message

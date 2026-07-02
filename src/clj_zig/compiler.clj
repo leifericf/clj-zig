@@ -260,7 +260,10 @@
       (ensure-pinned!)))
 
 (defn zig-version
-  "The `zig` compiler version string, part of the cache key."
+  "The `zig` compiler version string reported by the resolved executable.
+  The content hash uses `pinned-version` (every machine pins the same
+  compiler); this reads the live compiler's version for diagnostics and
+  tests."
   []
   (str/trim (:out (sh/sh (zig-exe) "version"))))
 

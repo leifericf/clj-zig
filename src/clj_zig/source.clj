@@ -74,11 +74,11 @@
   what was tried."
   [defining-file rel]
   (let [fs-paths (candidate-paths defining-file rel)
-        on-disk  (first (filter #(.isFile (io/file %)) fs-paths))]
+        on-disk  (first (filter #(.isFile (io/file %)) fs-paths))
+        res      (io/resource rel)]
     (cond
-      on-disk            {:text (slurp on-disk) :path on-disk}
-      (io/resource rel)  (let [res (io/resource rel)]
-                           {:text (slurp res) :path (str res)})
+      on-disk  {:text (slurp on-disk) :path on-disk}
+      res      {:text (slurp res) :path (str res)}
       :else
       (throw (ex-info (str "Could not find the Zig source file " (pr-str rel) ".")
                       {:level :error
@@ -110,6 +110,7 @@
 
 (declare zig-type pointee pointer-type error-union-struct-return?
          buffer-element wire-struct-name wire-struct
+         wire-write-stmts wire-struct-free-stmts
          file-owned-buffer-slice file-simple-slice-ownership
          generate-owned-buffer-slice wire-to-nice-copy-stmts
          buffer-wire-decls buffer-carrying-slice-element?
@@ -186,7 +187,7 @@
 
 (defn- wire-to-nice-copy-stmts
   "Statement nodes converting one wire element into a nice record, used
-  inside a reconstruction loop. Inverse of `buffer-slice-copy-stmts`:
+  inside a reconstruction loop. Inverse of `wire-write-stmts`:
   a scalar field is assigned directly; a buffer field reinterprets the
   `{ptr, len}` pair as a real slice; a nested buffer-carrying struct
   field recurses into the inner layout."
@@ -290,6 +291,27 @@
   "The byte length the error-name buffer is clamped to before copy-out."
   255)
 
+(defn- error-catch-clause
+  "The `catch` clause that writes the caught error's name to the caller's
+  buffer (clamped to `error-name-cap`) and returns. `void?` picks `return;`
+  (a void wrapper return) over `return undefined;` (a value return); a
+  struct return is always void from the wrapper's side."
+  [void?]
+  (str "catch |__err_value| {\n"
+       "    const __name = @errorName(__err_value);\n"
+       "    const __n = @min(__name.len, " error-name-cap ");\n"
+       "    @memcpy(__err[0..__n], __name[0..__n]);\n"
+       "    __errlen.* = __n;\n"
+       "    return" (when-not void? " undefined") ";\n"
+       "}"))
+
+(defn- free-body-or-noop
+  "The free-shim body: the free statements, or a no-op `_ = __ret;` when the
+  struct has no buffer field to free (a bare struct must still consume its
+  sole arg so Zig does not warn it is unused)."
+  [free-stmts]
+  (if (seq free-stmts) (vec free-stmts) [(zig/raw-stmt "_ = __ret;")]))
+
 (defn- impl-body
   "The statement nodes for a function body: reconstruction prelude
   statements followed by the user body as a single raw statement."
@@ -317,13 +339,7 @@
         value-t     (zig-type (:of ret))
         void?       (= "void" value-t)
         out-params  [(zig/param "__err" "[*]u8") (zig/param "__errlen" "*usize")]
-        on-error-text (str "catch |__err_value| {\n"
-                           "    const __name = @errorName(__err_value);\n"
-                           "    const __n = @min(__name.len, " error-name-cap ");\n"
-                           "    @memcpy(__err[0..__n], __name[0..__n]);\n"
-                           "    __errlen.* = __n;\n"
-                           "    return" (when-not void? " undefined") ";\n"
-                           "}")]
+        on-error-text (error-catch-clause void?)]
     [(zig/fn-decl
       (str sym "__impl")
       params-data
@@ -427,58 +443,6 @@
                 (str "const __p: [*]" elem-t " = @ptrFromInt(__ptr);\n"
                      "std.heap.c_allocator.free(__p[0..__len]);"))])])))))
 
-(defn- buffer-slice-copy-stmts
-  "Statement nodes copying one nice record into a wire element, used
-  inside the transform loop. A scalar or enum field is assigned directly;
-  a buffer field decomposes into its pointer and length; a nested
-  buffer-carrying struct field recurses into the inner layout."
-  ([layout] (buffer-slice-copy-stmts layout "__wire[__i]" "__src"))
-  ([layout wire-path src-path]
-   (mapcat (fn [{:keys [name type] :as f}]
-             (cond
-               (:target f)
-               [(zig/assign-stmt
-                 (zig/raw-expr (str wire-path "." name "_ptr"))
-                 (zig/call "@intFromPtr" [(zig/raw-expr (str src-path "." name ".ptr"))]))
-                (zig/assign-stmt
-                 (zig/raw-expr (str wire-path "." name "_len"))
-                 (zig/raw-expr (str src-path "." name ".len")))]
-
-               (and (:nested f) (some :target (get-in type [:layout :fields])))
-               (buffer-slice-copy-stmts (get-in type [:layout])
-                                        (str wire-path "." name)
-                                        (str src-path "." name))
-
-               :else
-               [(zig/assign-stmt
-                 (zig/raw-expr (str wire-path "." name))
-                 (zig/raw-expr (str src-path "." name)))]))
-           (:fields layout))))
-
-(defn- buffer-slice-free-stmts
-  "Statement nodes freeing one wire element's buffer fields, used inside
-  the walking free shim's loop body. Recurses into nested buffer-carrying
-  struct fields. The `alloc` argument is the allocator expression."
-  ([layout] (buffer-slice-free-stmts layout "__e" "std.heap.c_allocator"))
-  ([layout elem-path alloc]
-   (mapcat (fn [{:keys [name type] :as f}]
-             (cond
-               (and (:target f) (= :borrowed (:kind type)))
-               nil
-
-               (:target f)
-               (let [elem (buffer-element type)]
-                 [(zig/raw-stmt
-                   (str alloc ".free(@as([*]" elem
-                    ", @ptrFromInt(" elem-path "." name "_ptr))[0.." elem-path "." name "_len]);"))])
-
-               (and (:nested f) (some :target (get-in type [:layout :fields])))
-               (buffer-slice-free-stmts (get-in type [:layout])
-                                        (str elem-path "." name) alloc)
-
-               :else nil))
-           (:fields layout))))
-
 (defn- generate-owned-buffer-slice
   "An owned slice whose element is a buffer-carrying struct. The body
   returns `[]NiceRecord` (c_allocator); the wrapper allocates a `[]Wire`
@@ -496,8 +460,8 @@
         all-params  (conj (vec params-data)
                           (zig/param "__ptr" "*usize")
                           (zig/param "__len" "*usize"))
-        copies      (buffer-slice-copy-stmts layout)
-        frees       (buffer-slice-free-stmts layout)]
+        copies      (wire-write-stmts layout "__wire[__i]" "__src")
+        frees       (wire-struct-free-stmts layout "__e" "std.heap.c_allocator")]
     [(zig/fn-decl
       (str sym "__impl")
       params-data
@@ -666,9 +630,7 @@
         writes     (wire-write-stmts layout)
         owned?     (= :owned (:kind ret))
         free-stmts (wire-struct-free-stmts layout)
-        free-body  (if (seq free-stmts)
-                     (vec free-stmts)
-                     [(zig/raw-stmt "_ = __ret;")])]
+        free-body  (free-body-or-noop free-stmts)]
     (vec (concat
           [(zig/fn-decl
             (str sym "__impl")
@@ -707,16 +669,8 @@
                      (zig/param "__ret" (str "*" wire-t))]
         writes      (wire-write-stmts layout)
         free-stmts  (wire-struct-free-stmts layout)
-        free-body   (if (seq free-stmts)
-                      (vec free-stmts)
-                      [(zig/raw-stmt "_ = __ret;")])
-        on-error    (str "catch |__err_value| {\n"
-                         "    const __name = @errorName(__err_value);\n"
-                         "    const __n = @min(__name.len, " error-name-cap ");\n"
-                         "    @memcpy(__err[0..__n], __name[0..__n]);\n"
-                         "    __errlen.* = __n;\n"
-                         "    return;\n"
-                         "}")]
+        free-body   (free-body-or-noop free-stmts)
+        on-error    (error-catch-clause true)]
     [(zig/fn-decl
       (str sym "__impl")
       params-data
@@ -935,7 +889,7 @@
   that rebuild slice, array, and struct arguments before calling the user
   fn. Returns an empty vector when no param needs rebuilding."
   [params]
-  (vec (mapcat #(when-let [r (reconstruction % true)] r) params)))
+  (vec (mapcat #(reconstruction % true) params)))
 
 (defn- file-plain
   "A file-mode `export fn` that reconstructs its slice and struct args and
@@ -957,13 +911,7 @@
         void?       (= "void" value-t)
         out-params  [(zig/param "__err" "[*]u8") (zig/param "__errlen" "*usize")]
         call        (user-call entry params)
-        on-error    (str "catch |__err_value| {\n"
-                         "    const __name = @errorName(__err_value);\n"
-                         "    const __n = @min(__name.len, " error-name-cap ");\n"
-                         "    @memcpy(__err[0..__n], __name[0..__n]);\n"
-                         "    __errlen.* = __n;\n"
-                         "    return" (when-not void? " undefined") ";\n"
-                         "}")]
+        on-error    (error-catch-clause void?)]
     [(zig/export-fn-decl
       sym
       (vec (concat params-data out-params))
@@ -1047,8 +995,8 @@
         all-params  (conj (vec params-data)
                           (zig/param "__ptr" "*usize")
                           (zig/param "__len" "*usize"))
-        copies      (buffer-slice-copy-stmts layout)
-        frees       (buffer-slice-free-stmts layout "__e" "@import(\"std\").heap.c_allocator")]
+        copies      (wire-write-stmts layout "__wire[__i]" "__src")
+        frees       (wire-struct-free-stmts layout "__e" "@import(\"std\").heap.c_allocator")]
     [(zig/export-fn-decl
       sym
       all-params
@@ -1087,9 +1035,7 @@
         writes     (wire-write-stmts layout)
         owned?     (= :owned (:kind ret))
         free-stmts (wire-struct-free-stmts layout "__ret" "@import(\"std\").heap.c_allocator")
-        free-body  (if (seq free-stmts)
-                     (vec free-stmts)
-                     [(zig/raw-stmt "_ = __ret;")])]
+        free-body  (free-body-or-noop free-stmts)]
     (vec (concat
           [(zig/export-fn-decl
             sym
@@ -1120,16 +1066,8 @@
                      (zig/param "__ret" (str "*" wire-t))]
         writes      (wire-write-stmts layout)
         free-stmts (wire-struct-free-stmts layout "__ret" "@import(\"std\").heap.c_allocator")
-        free-body   (if (seq free-stmts)
-                      (vec free-stmts)
-                      [(zig/raw-stmt "_ = __ret;")])
-        on-error    (str "catch |__err_value| {\n"
-                         "    const __name = @errorName(__err_value);\n"
-                         "    const __n = @min(__name.len, " error-name-cap ");\n"
-                         "    @memcpy(__err[0..__n], __name[0..__n]);\n"
-                         "    __errlen.* = __n;\n"
-                         "    return;\n"
-                         "}")]
+        free-body   (free-body-or-noop free-stmts)
+        on-error    (error-catch-clause true)]
     [(zig/export-fn-decl
       sym
       (vec (concat params-data out-params))

@@ -12,9 +12,10 @@
             [clojure.string :as str]
             [clj-zig.compiler :as compiler]))
 
-(def ^:private optimize-mode
+(def default-optimize-mode
   "The default optimize mode when a descriptor or `zig-deps` declares none.
-    Safety checks stay on; the mode is part of the cache key."
+  Safety checks stay on; the mode is part of the cache key. Public so the
+  build-inputs default and this fallback share one source of truth."
   "ReleaseSafe")
 
 (defn dynamic-library-extension
@@ -69,7 +70,7 @@
   lower to `-f` arguments (ADR 48)."
   [zig {:keys [source-abs library-abs options target module-roots global-cache-dir]}]
   (let [link-flags (into ["-lc"] (options->flags options))
-        mode       (get options :optimize optimize-mode)
+        mode       (get options :optimize default-optimize-mode)
         zf         (cond-> []
                      (:single-threaded options) (conj "-fsingle-threaded")
                      (:pic options)             (conj "-fPIC")
@@ -93,8 +94,9 @@
   Pure."
   [stderr module-roots]
   (or (some (fn [[name root]]
-              (when (and root (str/includes? stderr (str (.getParent (io/file ^String root)))))
-                {:zig/origin :module :zig/module name}))
+              (when-let [dir (some-> root io/file .getParent str not-empty)]
+                (when (str/includes? stderr dir)
+                  {:zig/origin :module :zig/module name})))
             module-roots)
       {:zig/origin :wrapper}))
 
