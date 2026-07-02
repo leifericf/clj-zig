@@ -425,12 +425,21 @@
 (defn- comptime-prefix
   "The `const` declarations prepended to the body for a set of comptime
   values. Each `param` is `{:binding :type}`, and `values` is a parallel
-  vector of the caller's comptime arguments."
+  vector of the caller's comptime arguments. Throws for nil values since
+  a null comptime argument has no valid Zig literal."
   [params values]
   (str/join "\n"
             (for [[p v] (map vector params values)]
-              (str "const " (:binding p) ": " (name (:type p)) " = "
-                   (zig-literal v (:type p)) ";"))))
+              (do
+                (when (nil? v)
+                  (throw (ex-info (str "Comptime parameter " (:binding p)
+                                       " cannot be nil; pass a "
+                                       (name (:type p)) " value.")
+                                  {:level :error
+                                   :error/code :clj-zig/comptime-nil-value
+                                   :param (:binding p)})))
+                (str "const " (:binding p) ": " (name (:type p)) " = "
+                     (zig-literal v (:type p)) ";")))))
 
 (defn establish-comptime-binding!
   "Bind a comptime-specialized `defnz` Var. The body is compiled once per
@@ -830,8 +839,13 @@
                                 :arity-count (count (:args raw-norm))
                                 :arglist arglist}))
                            arities)
-            arglists    (mapv :arglist prepared)
-            var-meta    (merge (when docstring {:doc docstring})
+             arglists    (mapv :arglist prepared)
+             _ (when (not= (count prepared) (count (set (map :arity-count prepared))))
+                 (throw (ex-info (str "defnz " fn-name " has duplicate arity counts; each"
+                                      " arity must take a distinct number of arguments.")
+                                 {:level :error :error/code :clj-zig/duplicate-arity
+                                  :var fn-name})))
+             var-meta    (merge (when docstring {:doc docstring})
                                attr-map
                                {:arglists arglists})]
        `(do

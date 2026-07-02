@@ -49,24 +49,26 @@
 
 (defn emit-var
   "Generate a markdown section documenting one `defnz` Var. Includes the
-  function name, docstring, signature table, and return type."
+  function name, docstring, signature table, and return type. Returns nil
+  for a non-defnz Var (no `:clj-zig/info` metadata)."
   [the-var]
   (let [m     (meta the-var)
-        info  (:clj-zig/info m)
-        name  (str (:name (meta the-var)))
-        doc   (:doc m)
-        spec  (:spec info)
-        params (:params spec)
-        ret    (:ret spec)]
-    (str/join "\n\n"
-              (remove nil?
-                      [(str "### " name)
-                       (str "```clojure\n(" name " "
-                            (str/join " " (map (comp str :binding) params))
-                            ")\n```")
-                       doc
-                       (param-table params)
-                       (str "**Returns:** `" (return-type-str ret) "`")]))))
+        info  (:clj-zig/info m)]
+    (when info
+      (let [name  (str (:name m))
+            doc   (:doc m)
+            spec  (:spec info)
+            params (:params spec)
+            ret    (:ret spec)]
+        (str/join "\n\n"
+                  (remove nil?
+                          [(str "### " name)
+                           (str "```clojure\n(" name " "
+                                (str/join " " (map (comp str :binding) params))
+                                ")\n```")
+                           doc
+                           (param-table params)
+                           (str "**Returns:** `" (return-type-str ret) "`")]))))))
 
 (defn emit-namespace
   "Generate markdown documentation for every `defnz` Var in `ns-sym`.

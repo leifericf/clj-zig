@@ -24,3 +24,8 @@
 (deftest non-comptime-function-still-works
   (eval `(defnz ~'plain-add [~'x :i64 ~'y :i64 :ret :i64] "return x + y;"))
   (is (= 7 ((resolve 'plain-add) 3 4))))
+
+(deftest comptime-nil-value-throws-clear-error
+  (is (thrown-with-msg?
+       Exception #"cannot be nil"
+       (ct-multiplier 10 nil))))

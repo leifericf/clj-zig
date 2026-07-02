@@ -21,3 +21,6 @@
   (let [md (doc/emit-namespace 'clj-zig.doc-test)]
     (is (str/includes? md "# clj-zig.doc-test"))
     (is (str/includes? md "doc-add"))))
+
+(deftest emit-var-on-non-defnz-var-returns-nil
+  (is (nil? (doc/emit-var #'doc/emit-var))))

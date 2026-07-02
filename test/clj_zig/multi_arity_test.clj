@@ -49,3 +49,11 @@
 (deftest multi-arity-attaches-arglists-metadata
   (let [m (meta #'multi-add)]
     (is (= '([x] [x y]) (:arglists m)))))
+
+(deftest duplicate-arity-count-rejected
+  (testing "two arities with the same parameter count throw at macro expansion"
+    (is (thrown?
+         Exception
+         (eval `(defnz ~'dup-arity
+                  ([~'x :i64 :ret :i64] "return x;")
+                  ([~'y :i64 :ret :i64] "return y + 1;")))))))
