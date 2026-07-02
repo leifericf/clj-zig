@@ -282,6 +282,36 @@
 ;; arglist and destructuring the macro built.
 (defonce ^:private rebinders (atom {}))
 
+;; Multi-arity rebind data: {the-var {:arity-specs [...] :invoke-table
+;; {count invoke}}}. Defined here so `recompile!` (above) can reference it.
+(defonce ^:private multi-rebinders (atom {}))
+
+(declare establish-multi-binding!)
+
+(defn- nested-info
+  "Build the ADR 47 nested inspection structure from the flat info map,
+  keeping the flat keys alongside for backward compat. Each nested key
+  groups the flat keys by domain: `:contract` holds the boundary spec,
+  signature, and symbol; `:source` holds the body, generated source, and
+  provenance; `:build` holds the library, status, and modules; `:lifecycle`
+  is empty for single-arity and carries per-arity data for multi-arity."
+  [info spec]
+  (assoc info
+         :contract {:spec spec
+                    :signature (:signature spec)
+                    :symbol (:symbol spec)}
+         :source {:body (:body info)
+                  :generated-source (:generated-source info)
+                  :mode (:source-mode info)
+                  :file (:source-file info)
+                  :entry (:entry info)
+                  :options-extra (:options-extra info)
+                  :aux-files (:aux-files info)}
+         :build {:library (:library info)
+                 :status (:status info)
+                 :modules (:modules info)}
+         :lifecycle {}))
+
 (defn establish-binding!
   "Establish the native function for `the-var` and rebind it. `wrap` turns
   the raw invoker into the public fn (it carries the arglist and any
@@ -298,7 +328,8 @@
                     (:source-file gen)   (assoc :source-file (:source-file gen))
                     (:entry gen)         (assoc :entry (:entry gen))
                     (:options-extra gen) (assoc :options-extra (:options-extra gen))
-                    (:aux-files gen)     (assoc :aux-files (:aux-files gen)))]
+                    (:aux-files gen)     (assoc :aux-files (:aux-files gen)))
+            info   (nested-info info spec)]
        (alter-var-root the-var (constantly (wrap (:invoke result))))
        (swap! rebinders assoc the-var wrap)
        (alter-meta! the-var
@@ -335,17 +366,124 @@
 (defn recompile!
   "Force a fresh build of `the-var`'s current spec and body, ignoring the
   cached artifact, and rebind. Returns the Var. Rebuilds in the same mode
-  the function was defined with (inline, file, or raw)."
+  the function was defined with (inline, file, or raw). A multi-arity Var
+  rebuilds every arity."
   [the-var]
-  (let [{:keys [spec body] :as info} (:clj-zig/info (meta the-var))
-        gen  (gen-from-info info)
-        wrap (get @rebinders the-var)]
-    (when-not (and spec wrap)
+  (let [wrap (get @rebinders the-var)]
+    (cond
+      (= :multi-arity wrap)
+      (let [{:keys [arity-specs]} (get @multi-rebinders the-var)]
+        (doseq [{:keys [spec body]} arity-specs]
+          (cache/evict! (build-inputs spec body)))
+        (establish-multi-binding! the-var arity-specs {}))
+
+      (some? wrap)
+      (let [{:keys [spec body] :as info} (:clj-zig/info (meta the-var))
+            gen  (gen-from-info info)]
+        (when-not (and spec wrap)
+          (throw (ex-info "recompile! needs a defnz Var with a current binding."
+                          {:level :error :error/code :clj-zig/not-recompilable
+                           :var the-var})))
+        (cache/evict! (build-inputs spec body gen))
+        (establish-binding! the-var spec body {} wrap gen))
+
+      :else
       (throw (ex-info "recompile! needs a defnz Var with a current binding."
                       {:level :error :error/code :clj-zig/not-recompilable
-                       :var the-var})))
-      (cache/evict! (build-inputs spec body gen))
-    (establish-binding! the-var spec body {} wrap gen)))
+                       :var the-var})))))
+
+;; --- Multi-arity binding (ADR 51) ---------------------------------------
+
+(defn establish-multi-binding!
+  "Establish a multi-arity `defnz` function (ADR 51). Each arity is
+  compiled independently into its own native library with its own invoke
+  fn; the Var's root fn dispatches by argument count. On redefinition,
+  each arity is recompiled independently: a failed arity keeps its
+  previous invoke fn while successful arities get new ones, so a
+  redefinition that breaks one arity leaves the others callable."
+  [the-var arity-specs var-meta]
+  (let [prev-entry  (get @multi-rebinders the-var)
+        prev-table  (:invoke-table prev-entry)
+        prev-arities (get-in (meta the-var) [:clj-zig/info :lifecycle :arities] {})
+        results     (mapv (fn [{:keys [spec body wrap arity-count]}]
+                             (try
+                               (let [result (establish! spec body)
+                                     invoke (wrap (:invoke result))
+                                     info   (-> (merge (dissoc result :invoke)
+                                                       {:source-mode :inline})
+                                                (nested-info spec))]
+                                 {:status :ok :arity-count arity-count
+                                  :invoke invoke :info info
+                                  :spec spec :body body})
+                               (catch Throwable e
+                                 (let [data (if (instance? clojure.lang.ExceptionInfo e)
+                                              (assoc (ex-data e) :body body)
+                                              {:level :error
+                                               :error/code :clj-zig/shell-failure
+                                               :message (.getMessage e)
+                                               :cause e :body body})]
+                                 {:status :failed :arity-count arity-count
+                                  :error e :error-data data
+                                  :spec spec :body body}))))
+                           arity-specs)
+        first-hard-fail (first (filter #(and (= :failed (:status %))
+                                             (nil? (get prev-table (:arity-count %))))
+                                       results))]
+    (when first-hard-fail
+      (let [data (:error-data first-hard-fail)]
+        (alter-meta! the-var assoc :clj-zig/failed-attempt data)
+        (throw (ex-info (diagnostics/render data) data (:error first-hard-fail)))))
+    (let [var-sym   (symbol (str (-> arity-specs first :spec :ns))
+                            (str (-> arity-specs first :spec :name)))
+          new-table (into {}
+                          (map (fn [{:keys [arity-count status] :as r}]
+                                 [arity-count
+                                  (if (= :ok status)
+                                    (:invoke r)
+                                    (get prev-table arity-count))])
+                               results))
+          expected  (sort (keys new-table))
+          dispatch  (fn [& args]
+                      (let [n (count args)]
+                        (if-let [invk (get new-table n)]
+                          (apply invk args)
+                          (throw (ex-info (str "Wrong number of arguments to " var-sym
+                                                ": expected one of " expected ", got " n)
+                                          {:level :error
+                                           :error/code :clj-zig/arity
+                                           :var var-sym
+                                           :expected expected
+                                           :actual n})))))]
+      (alter-var-root the-var (constantly dispatch))
+      (swap! multi-rebinders assoc the-var
+             {:arity-specs arity-specs :invoke-table new-table})
+      (let [arities-info (into {}
+                               (map (fn [{:keys [arity-count status] :as r}]
+                                      [arity-count
+                                       (cond
+                                         (= :ok status) (:info r)
+                                         (get prev-table arity-count)
+                                         (-> (or (get prev-arities arity-count) {})
+                                             (assoc :failed-attempt (:error-data r)))
+                                         :else {})]))
+                               results)
+            first-ok  (first (filter #(= :ok (:status %)) results))
+            flat-info (or (:info first-ok)
+                          (-> (get prev-arities (:arity-count first-ok))
+                              (dissoc :failed-attempt)))
+            any-fail? (some #(= :failed (:status %)) results)
+            info      (cond-> (assoc flat-info :lifecycle {:arities arities-info})
+                        any-fail?
+                        (assoc-in [:lifecycle :failed-attempt]
+                                  (:error-data (first (filter #(= :failed (:status %)) results)))))]
+        (swap! rebinders assoc the-var :multi-arity)
+        (alter-meta! the-var
+                     #(-> (merge % var-meta {:clj-zig/info info})
+                          (cond-> (not any-fail?) (dissoc :clj-zig/failed-attempt)))))
+      (when-let [first-fail (first (filter #(= :failed (:status %)) results))]
+        (let [data (:error-data first-fail)]
+          (throw (ex-info (diagnostics/render data) data (:error first-fail)))))
+      the-var)))
 
 ;; --- File-sourced bodies ------------------------------------------------
 
@@ -463,18 +601,34 @@
         (conj :ret (resolve-form ret)))))
 
 (defn- parse-defnz
-  "Split a `defnz` tail into `{:docstring :attr-map :signature :body
-  :trailing}`, mirroring the optional docstring and attr-map of `defn`.
-  `:trailing` is whatever sits after the body, normally nil; the macro
-  rejects a non-empty tail so stray forms after the body are not dropped."
+  "Split a `defnz` tail into its parts, mirroring the optional docstring
+  and attr-map of `defn`. When the first element after the optional
+  docstring and attr-map is a list, the form is multi-arity (ADR 51):
+  each remaining element is a `([signature] body)` pair. Otherwise the
+  form is single-arity and `:signature`, `:body`, and `:trailing` are
+  populated as before."
   [tail]
   (let [[docstring tail] (if (string? (first tail)) [(first tail) (next tail)] [nil tail])
         [attr-map tail]  (if (map? (first tail)) [(first tail) (next tail)] [nil tail])]
-    {:docstring docstring
-     :attr-map  attr-map
-     :signature (first tail)
-     :body      (second tail)
-     :trailing  (nnext tail)}))
+    (if (and (seq tail) (seq? (first tail)))
+      {:docstring    docstring
+       :attr-map     attr-map
+       :multi-arity? true
+       :arities      (mapv (fn [pair]
+                             (when-not (and (sequential? pair)
+                                            (vector? (first pair))
+                                            (= 2 (count pair)))
+                               (throw (ex-info (str "Each multi-arity pair must be"
+                                                    " ([signature] body); got " (pr-str pair))
+                                               {:level :error
+                                                :error/code :clj-zig/malformed-defnz})))
+                             {:signature (first pair) :body (second pair)})
+                           tail)}
+      {:docstring docstring
+       :attr-map  attr-map
+       :signature (first tail)
+       :body      (second tail)
+       :trailing  (nnext tail)})))
 
 (defmacro defnz
   "Define a Clojure function whose body is Zig. The signature vector is
@@ -507,60 +661,109 @@
   signature is omitted too. The descriptor may also carry C-interop options
   (`:c/link`, `:c/include-path`, ...), an entry name (`:zig/fn`), and a raw
   escape hatch (`:zig/raw`, `:zig/symbol`). Redefining recompiles; a failed
-  recompile keeps the last good binding."
+  recompile keeps the last good binding.
+
+  Multi-arity (ADR 51) mirrors `defn`:
+
+      (defnz add
+        ([x :i64 :ret :i64] \"return x;\")
+        ([x :i64 y :i64 :ret :i64] \"return x + y;\"))
+
+  Each arity compiles independently and the Var dispatches by argument
+  count. File-body descriptors are not supported in multi-arity."
   [fn-name & tail]
-  (let [{:keys [docstring attr-map signature body trailing]} (parse-defnz tail)
-        file-body? (and (map? body) (contains? body :zig/file))
-        bodyless?  (and (nil? body) (vector? signature))
-        infer?     (and (nil? body) (nil? signature))]
-    (when (and (map? attr-map) (contains? attr-map :zig/file))
-      (throw (ex-info (str "defnz " fn-name " has a {:zig/file ...} map where an"
-                           " attribute map goes; a file body must follow a signature.")
-                      {:level :error :error/code :clj-zig/ambiguous-body-form
-                       :var fn-name})))
-    (when (seq trailing)
-      (throw (ex-info (str "defnz " fn-name " has " (count trailing)
-                           " form(s) after the body; nothing may follow the Zig body.")
-                      {:level :error :error/code :clj-zig/malformed-defnz
-                       :var fn-name})))
-    (when-not (or (string? body) file-body? bodyless? infer?)
-      (throw (ex-info "defnz needs a Zig body: a string, a {:zig/file ...} descriptor, or a signature with the body in the namespace's .zig."
-                      {:level :error :error/code :clj-zig/malformed-defnz
-                       :var fn-name})))
-    (let [the-ns        (ns-name *ns*)
-          defining-file *file*
-          raw-signature (if infer?
-                          (infer/infer-signature
-                           (:text (source/resolve-and-read
-                                   defining-file (source/namespace-zig-file defining-file)))
-                           (str/replace (name fn-name) "-" "_"))
-                          signature)
-          ;; The rest flag rides on the raw signature's normalization;
-          ;; prepare-signature flattens through a vector that drops it, so
-          ;; arglist and wrap read from raw-norm and the spec reads from
-          ;; the prepared signature.
-          raw-norm      (signature/normalize raw-signature)
-          rest-arg      (some #(when (:rest? %) %) (:args raw-norm))
-          signature     (prepare-signature the-ns raw-signature)
-          spec          (spec/build-spec {:ns the-ns :name fn-name :signature signature
-                                          :types (types-in the-ns)})
-          arglist       (build-arglist raw-norm)
-          call-args     (mapv :binding (:params spec))
-          var-meta      (merge (when docstring {:doc docstring})
+  (let [parsed (parse-defnz tail)]
+    (if (:multi-arity? parsed)
+      (let [{:keys [docstring attr-map arities]} parsed
+            the-ns (ns-name *ns*)
+            _ (when (and (map? attr-map) (contains? attr-map :zig/file))
+                (throw (ex-info (str "defnz " fn-name " has a {:zig/file ...} map where an"
+                                     " attribute map goes; a file body must follow a signature.")
+                                {:level :error :error/code :clj-zig/ambiguous-body-form
+                                 :var fn-name})))
+            prepared (mapv (fn [{:keys [signature body]}]
+                             (when-not (string? body)
+                               (throw (ex-info (str "Multi-arity defnz " fn-name
+                                                    " needs a string body for every arity.")
+                                               {:level :error :error/code :clj-zig/malformed-defnz
+                                                :var fn-name})))
+                             (let [raw-norm (signature/normalize signature)
+                                   rest-arg  (some #(when (:rest? %) %) (:args raw-norm))
+                                   _ (when rest-arg
+                                       (throw (ex-info (str "Multi-arity defnz " fn-name
+                                                            " does not support rest arguments; use"
+                                                            " single-arity with & instead.")
+                                                       {:level :error :error/code :clj-zig/malformed-defnz
+                                                        :var fn-name})))
+                                   sig       (prepare-signature the-ns signature)
+                                   spec      (spec/build-spec {:ns the-ns :name fn-name
+                                                               :signature sig :types (types-in the-ns)})
+                                   arglist   (build-arglist raw-norm)
+                                   call-args (mapv :binding (:params spec))
+                                   wrap      `(fn [invoke#] (fn ~arglist (invoke# ~@call-args)))]
+                               {:spec spec :body body :wrap wrap
+                                :arity-count (count (:args raw-norm))
+                                :arglist arglist}))
+                           arities)
+            arglists    (mapv :arglist prepared)
+            var-meta    (merge (when docstring {:doc docstring})
                                attr-map
-                               {:arglists (list arglist)})
-          wrap          (if rest-arg
-                          (rest-wrap arglist call-args rest-arg)
-                          `(fn [invoke#] (fn ~arglist (invoke# ~@call-args))))
-          descriptor    (if (or bodyless? infer?)
-                          `{:zig/file (source/namespace-zig-file ~defining-file)}
-                          body)]
-      `(do
-         (def ~fn-name)
-         ~(if (string? body)
-            `(establish-binding! (var ~fn-name) '~spec ~body '~var-meta ~wrap)
-            `(establish-binding-from! (var ~fn-name) '~spec ~descriptor ~defining-file
-                                      '~var-meta ~wrap))))))
+                               {:arglists arglists})]
+        `(do
+           (def ~fn-name)
+           (establish-multi-binding!
+            (var ~fn-name)
+            [~@(for [{:keys [spec body wrap arity-count]} prepared]
+                 `{:spec '~spec :body ~body :wrap ~wrap :arity-count ~arity-count})]
+            '~var-meta)))
+      (let [{:keys [docstring attr-map signature body trailing]} parsed
+            file-body? (and (map? body) (contains? body :zig/file))
+            bodyless?  (and (nil? body) (vector? signature))
+            infer?     (and (nil? body) (nil? signature))]
+        (when (and (map? attr-map) (contains? attr-map :zig/file))
+          (throw (ex-info (str "defnz " fn-name " has a {:zig/file ...} map where an"
+                               " attribute map goes; a file body must follow a signature.")
+                          {:level :error :error/code :clj-zig/ambiguous-body-form
+                           :var fn-name})))
+        (when (seq trailing)
+          (throw (ex-info (str "defnz " fn-name " has " (count trailing)
+                               " form(s) after the body; nothing may follow the Zig body.")
+                          {:level :error :error/code :clj-zig/malformed-defnz
+                           :var fn-name})))
+        (when-not (or (string? body) file-body? bodyless? infer?)
+          (throw (ex-info "defnz needs a Zig body: a string, a {:zig/file ...} descriptor, or a signature with the body in the namespace's .zig."
+                          {:level :error :error/code :clj-zig/malformed-defnz
+                           :var fn-name})))
+        (let [the-ns        (ns-name *ns*)
+              defining-file *file*
+              raw-signature (if infer?
+                              (infer/infer-signature
+                               (:text (source/resolve-and-read
+                                       defining-file (source/namespace-zig-file defining-file)))
+                               (str/replace (name fn-name) "-" "_"))
+                              signature)
+              raw-norm      (signature/normalize raw-signature)
+              rest-arg      (some #(when (:rest? %) %) (:args raw-norm))
+              signature     (prepare-signature the-ns raw-signature)
+              spec          (spec/build-spec {:ns the-ns :name fn-name :signature signature
+                                              :types (types-in the-ns)})
+              arglist       (build-arglist raw-norm)
+              call-args     (mapv :binding (:params spec))
+              var-meta      (merge (when docstring {:doc docstring})
+                                   attr-map
+                                   {:arglists (list arglist)})
+              wrap          (if rest-arg
+                              (rest-wrap arglist call-args rest-arg)
+                              `(fn [invoke#] (fn ~arglist (invoke# ~@call-args))))
+              descriptor    (if (or bodyless? infer?)
+                              `{:zig/file (source/namespace-zig-file ~defining-file)}
+                              body)]
+          `(do
+             (def ~fn-name)
+             ~(if (string? body)
+                `(establish-binding! (var ~fn-name) '~spec ~body '~var-meta ~wrap)
+                `(establish-binding-from! (var ~fn-name) '~spec ~descriptor ~defining-file
+                                          '~var-meta ~wrap))))))))
 
 (defn resolve-decl-source
   "The Zig text for a `defz` declaration: a string as-is, or the contents
