@@ -145,7 +145,7 @@ toolchain is present. The default matrix is seven targets across Linux,
 macOS, and Windows; a function linking a third-party C library is baked for
 the host only. `examples/build.clj` shows bake, jar, and deploy. See
 [ADR 31](docs/adr/31-distribute-precompiled-artifacts.md) and the
-[Installation and Distribution](docs/09-installation-and-distribution.md)
+[Installation and Distribution](docs/08-installation-and-distribution.md)
 guide.
 
 ## Inspect and redefine
@@ -197,10 +197,9 @@ And two show a namespace backed by a co-located `.zig`:
 3. [Boundary Contract](docs/03-boundary-contract.md): how values cross and the type vocabulary.
 4. [REPL and Execution Model](docs/04-repl-and-execution-model.md): redefinition, caching, diagnostics.
 5. [Composability and Builders](docs/05-composability-and-builders.md): data-level reuse and macros.
-6. [Proof-of-Concept Plan](docs/06-proof-of-concept-plan.md): scope, phases, acceptance tests.
-7. [Design Principles and Decisions](docs/07-design-principles-and-decisions.md): the principles; decisions are ADRs in [docs/adr/](docs/adr/README.md).
-8. [Test Strategy](docs/08-test-strategy.md): how generative and exhaustive testing prove the boundary, layered on the example suite.
-9. [Installation and Distribution](docs/09-installation-and-distribution.md): the consumer and author flows, baking, and the toolchain bootstrap.
+6. [Design Principles and Decisions](docs/06-design-principles-and-decisions.md): the principles; decisions are ADRs in [docs/adr/](docs/adr/).
+7. [Test Strategy](docs/07-test-strategy.md): how generative and exhaustive testing prove the boundary, layered on the example suite.
+8. [Installation and Distribution](docs/08-installation-and-distribution.md): the consumer and author flows, baking, and the toolchain bootstrap.
 
 ## Requirements
 
@@ -256,7 +255,7 @@ brew install --cask temurin
 ```
 
 A consumer of a library whose native code is baked needs no Zig at all. The
-[Installation and Distribution](docs/09-installation-and-distribution.md)
+[Installation and Distribution](docs/08-installation-and-distribution.md)
 guide covers the consumer flow, the author bake-and-publish flow, and the
 toolchain bootstrap.
 
@@ -271,7 +270,9 @@ tests compile and load native code, so they need `zig` on the path and JDK 22+.
 
 ## Non-goals for the proof of concept
 
-- No Zig-to-Clojure callbacks.
+- No asynchronous Zig-to-Clojure callbacks. Synchronous upcalls through
+  `clj-zig.foreign/upcall-stub` are supported (ADR 38); the open-ended
+  bidirectional case remains out of scope.
 - No embedded JVM from Zig.
 - No arbitrary Clojure object marshalling.
 - No hiding of Zig's type system.
