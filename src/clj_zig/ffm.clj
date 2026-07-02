@@ -915,6 +915,102 @@
           (finally
             (safe-free free-handle [iter-addr])))))))
 
+(defn- free-shim-handle
+  "Bind the `<sym>` downcall (a `__free` or stream `__next`/`__free` shim)
+  returning void with `arg-layouts`, the shared shape of every per-bind
+  shim. The `__next` handle returns bool and is built inline at its one
+  call site."
+  [linker lookup sym arg-layouts]
+  (.downcallHandle linker (foreign/find-symbol lookup sym)
+                   (FunctionDescriptor/ofVoid (into-array MemoryLayout arg-layouts))
+                   (into-array Linker$Option [])))
+
+(defn- bind-context
+  "The per-bind context shared by the scalar hot path and the general
+  invoker: the downcall handle, the return-shape classification, the
+  free/next stream handles, and the return-context map the general-path
+  dispatch threads into each `invoke-*` helper. Built once per bind,
+  reused every call; `bind` only chooses the scalar or general invoker
+  from it."
+  [spec library-path]
+  (let [linker foreign/linker
+        ;; Loading a native library is a restricted operation; a JVM that
+        ;; denies native access fails here, so translate it into a
+        ;; diagnostic that names the flag rather than the raw FFM error.
+        ;; `foreign/library-lookup` opens the file and degrades a bad path
+        ;; as data; `with-native-access` layers the native-access diagnostic
+        ;; on top, so both failure modes read clearly.
+        lookup (with-native-access #(foreign/library-lookup library-path))
+        sym    (foreign/find-symbol lookup (:symbol spec))
+        handle ^MethodHandle (.downcallHandle linker sym (descriptor spec)
+                                              (into-array Linker$Option []))
+        params (:params spec)
+        ret    (:ret spec)
+        arity  (count params)
+        free-sym (str (:symbol spec) "__free")
+        {:keys [eu-struct? owned-rec? owned-slice? opt-struct? struct-ret? stream?]}
+        (classify-return ret)
+        ;; An owned/borrowed record and an error-union over a struct both
+        ;; wrap the value's named type under :of; everything else (a plain
+        ;; struct return, an enum, a scalar, a scalar/void/enum error-union)
+        ;; names the value type directly on ret. Unwrapping consistently is
+        ;; safe: the record-factory lookup below returns nil for any
+        ;; non-named or enum-named value.
+        ret-value    (if (contains? #{:owned :borrowed :error-union :optional} (:kind ret))
+                       (:of ret)
+                       ret)
+        ;; A record return names the map-factory that rebuilds it; a plain
+        ;; struct return has none and stays a map.
+        record-factory (when (and (= :named (:kind ret-value)) (:record (:layout ret-value)))
+                         (requiring-resolve (:record (:layout ret-value))))
+        ;; An owned slice (or :bytes buffer, or :string) return carries a
+        ;; free shim taking the slice's pointer and length; an owned record
+        ;; and an error-union over a struct both carry a per-field free shim
+        ;; taking a pointer to the wire struct (the eu-struct shim runs on
+        ;; the success path only); a borrowed return frees nothing. A
+        ;; :string return always owns its bytes (allocated by the body,
+        ;; decoded on read).
+        struct-free? (or eu-struct? (and owned-rec? (= :owned (:kind ret))))
+        free-handle  (cond
+                       opt-struct?
+                       (free-shim-handle linker lookup free-sym [ValueLayout/JAVA_LONG])
+                       struct-free?
+                       (free-shim-handle linker lookup free-sym [ValueLayout/ADDRESS])
+                       (contains? #{:owned :bytes :string} (:kind ret))
+                       (free-shim-handle linker lookup free-sym
+                                         [ValueLayout/JAVA_LONG ValueLayout/JAVA_LONG])
+                       :else nil)
+        next-h       (when stream?
+                       (.downcallHandle linker
+                                        (foreign/find-symbol lookup (str (:symbol spec) "__next"))
+                                        (FunctionDescriptor/of ValueLayout/JAVA_BOOLEAN
+                                          (into-array MemoryLayout [ValueLayout/JAVA_LONG ValueLayout/ADDRESS]))
+                                        (into-array Linker$Option [])))
+        free-h       (when stream?
+                       (free-shim-handle linker lookup free-sym [ValueLayout/JAVA_LONG]))
+        elem-lay     (when stream? (value-layout (:of ret)))]
+    {:handle handle :params params :ret ret :arity arity
+     :stream? stream? :eu-struct? eu-struct? :owned-rec? owned-rec?
+     :owned-slice? owned-slice? :opt-struct? opt-struct? :struct-ret? struct-ret?
+     ;; The per-bind return context the general-path dispatch threads into
+     ;; each `invoke-*` helper: the bound handle and the return shape's
+     ;; once-computed metadata.
+     :invoke-ctx {:handle handle :ret ret :record-factory record-factory
+                  :free-handle free-handle :error-buffer-bytes error-buffer-bytes}
+     :next-h next-h :free-h free-h :elem-lay elem-lay
+     :var-sym (symbol (str (:ns spec)) (str (:name spec)))
+     ;; The hot path for a scalar-only signature: no per-call arena, and a
+     ;; thread-local carrier array reused across calls on the same thread
+     ;; (each thread gets its own, so concurrent callers never share one).
+     ;; The native call does not retain the array, and one-directional
+     ;; interop (ADR 10) means a call cannot re-enter itself on the same
+     ;; thread, so reuse is safe.
+     :scalar?     (scalar-only? params ret)
+     :carriers-tl (when (scalar-only? params ret)
+                    (ThreadLocal/withInitial
+                     (reify java.util.function.Supplier
+                       (get [_] (object-array arity)))))}))
+
 (defn bind
   "Load `library-path`, look up the spec's symbol, and return a Clojure
   fn that calls it with scalar coercion. The library is held by the
@@ -931,94 +1027,10 @@
   pooled thread-local one reused across calls (see `arena-pool`), so its
   lifetime is logically call-bounded but physically extended."
   [spec library-path]
-  (let [linker foreign/linker
-        ;; Loading a native library is a restricted operation; a JVM that
-        ;; denies native access fails here, so translate it into a
-        ;; diagnostic that names the flag rather than the raw FFM error.
-        ;; `foreign/library-lookup` opens the file and degrades a bad path
-        ;; as data; `with-native-access` layers the native-access
-        ;; diagnostic on top, so both failure modes read clearly.
-        lookup (with-native-access #(foreign/library-lookup library-path))
-        sym    (foreign/find-symbol lookup (:symbol spec))
-        handle ^MethodHandle (.downcallHandle linker sym (descriptor spec)
-                                              (into-array Linker$Option []))
-        params (:params spec)
-        ret    (:ret spec)
-        arity  (count params)
-        ;; An owned/borrowed record and an error-union over a struct both
-        ;; wrap the value's named type under :of; everything else (a plain
-        ;; struct return, an enum, a scalar, a scalar/void/enum error-union)
-        ;; names the value type directly on ret. Unwrapping consistently is
-        ;; safe: the record-factory lookup below returns nil for any
-        ;; non-named or enum-named value.
-        ret-value    (if (contains? #{:owned :borrowed :error-union :optional} (:kind ret))
-                       (:of ret)
-                       ret)
-        ;; A record return names the map-factory that rebuilds it; a plain
-        ;; struct return has none and stays a map.
-        record-factory (when (and (= :named (:kind ret-value)) (:record (:layout ret-value)))
-                         (requiring-resolve (:record (:layout ret-value))))
-        {:keys [eu-struct? owned-rec? owned-slice? opt-struct? struct-ret? stream?]}
-        (classify-return ret)
-        ;; An owned slice (or :bytes buffer, or :string) return carries a
-        ;; free shim taking the slice's pointer and length; an owned record
-        ;; and an error-union over a struct both carry a per-field free shim
-        ;; taking a pointer to the wire struct (the eu-struct shim runs on
-        ;; the success path only); a borrowed return frees nothing. A
-        ;; :string return always owns its bytes (allocated by the body,
-        ;; decoded on read).
-        struct-free? (or eu-struct? (and owned-rec? (= :owned (:kind ret))))
-        free-handle (cond
-                      opt-struct?
-                      (.downcallHandle linker
-                                       (foreign/find-symbol lookup (str (:symbol spec) "__free"))
-                                       (FunctionDescriptor/ofVoid
-                                        (into-array MemoryLayout [ValueLayout/JAVA_LONG]))
-                                       (into-array Linker$Option []))
-                      struct-free?
-                      (.downcallHandle linker
-                                       (foreign/find-symbol lookup (str (:symbol spec) "__free"))
-                                       (FunctionDescriptor/ofVoid
-                                        (into-array MemoryLayout [ValueLayout/ADDRESS]))
-                                       (into-array Linker$Option []))
-                       (contains? #{:owned :bytes :string} (:kind ret))
-                       (.downcallHandle linker
-                                        (foreign/find-symbol lookup (str (:symbol spec) "__free"))
-                                        (FunctionDescriptor/ofVoid
-                                         (into-array MemoryLayout [ValueLayout/JAVA_LONG
-                                                                   ValueLayout/JAVA_LONG]))
-                                        (into-array Linker$Option []))
-                       :else nil)
-        ;; The per-bind return context the general-path dispatch threads into
-        ;; each `invoke-*` helper: the bound handle and the return shape's
-        ;; once-computed metadata. Built once per bind, reused every call.
-        invoke-ctx {:handle handle :ret ret :record-factory record-factory
-                    :free-handle free-handle :error-buffer-bytes error-buffer-bytes}
-        next-h      (when stream?
-                      (.downcallHandle linker
-                        (foreign/find-symbol lookup (str (:symbol spec) "__next"))
-                        (FunctionDescriptor/of ValueLayout/JAVA_BOOLEAN
-                          (into-array MemoryLayout [ValueLayout/JAVA_LONG ValueLayout/ADDRESS]))
-                        (into-array Linker$Option [])))
-        free-h      (when stream?
-                      (.downcallHandle linker
-                        (foreign/find-symbol lookup (str (:symbol spec) "__free"))
-                        (FunctionDescriptor/ofVoid
-                          (into-array MemoryLayout [ValueLayout/JAVA_LONG]))
-                        (into-array Linker$Option [])))
-        elem-lay    (when stream? (value-layout (:of ret)))
-        var-sym (symbol (str (:ns spec)) (str (:name spec)))
-        ;; The hot path for a scalar-only signature: no per-call arena, and
-        ;; a thread-local carrier array reused across calls on the same
-        ;; thread (each thread gets its own, so concurrent callers never
-        ;; share one). The native call does not retain the array, and
-        ;; one-directional interop (ADR 10) means a call cannot re-enter
-        ;; itself on the same thread, so reuse is safe.
-        scalar?     (scalar-only? params ret)
-        carriers-tl (when scalar?
-                      (ThreadLocal/withInitial
-                       (reify java.util.function.Supplier
-                         (get [_] (object-array arity)))))]
+  (let [{:keys [handle params ret arity invoke-ctx next-h free-h elem-lay var-sym
+                scalar? carriers-tl stream? eu-struct? owned-rec? owned-slice?
+                opt-struct? struct-ret?]}
+        (bind-context spec library-path)]
     (if scalar?
       (fn [& args]
         (when (not= (count args) arity)
@@ -1030,29 +1042,29 @@
               (recur (inc i) (next as))))
           (from-return ret (.invokeWithArguments ^MethodHandle handle carriers))))
       (fn [& args]
-       (when (not= (count args) arity)
-         (throw (wrong-arity-ex var-sym arity (count args))))
-       ;; A confined arena holds the native copies of any slice arguments
-       ;; for exactly the duration of the call. Mutable slices are copied
-       ;; back before it closes, keeping the lifetime to the call.
-       (arena-pool/with-pooled-arena
-        (fn [^Arena arena]
-        (let [marshalled    (mapv #(marshal-arg arena %1 %2) params args)
-              base-carriers (mapcat :carriers marshalled)
-              copy-back!    #(run! (fn [m] (when-let [back (:copy-back m)] (back)))
-                                   marshalled)]
-            (cond
+        (when (not= (count args) arity)
+          (throw (wrong-arity-ex var-sym arity (count args))))
+        ;; A confined arena holds the native copies of any slice arguments
+        ;; for exactly the duration of the call. Mutable slices are copied
+        ;; back before it closes, keeping the lifetime to the call.
+        (arena-pool/with-pooled-arena
+         (fn [^Arena arena]
+           (let [marshalled    (mapv #(marshal-arg arena %1 %2) params args)
+                 base-carriers (mapcat :carriers marshalled)
+                 copy-back!    #(run! (fn [m] (when-let [back (:copy-back m)] (back)))
+                                      marshalled)]
+             (cond
                stream?                      (let [iter-addr (.invokeWithArguments ^MethodHandle handle
-                                                                 (object-array (vec base-carriers)))]
+                                                                                  (object-array (vec base-carriers)))]
                                               (copy-back!)
                                               (make-stream-reducible iter-addr next-h free-h ret elem-lay))
                eu-struct?                   (invoke-eu-struct   invoke-ctx arena base-carriers copy-back!)
-              (= :error-union (:kind ret)) (invoke-error-union invoke-ctx arena base-carriers copy-back!)
-              owned-rec?                   (invoke-owned-record invoke-ctx arena base-carriers copy-back!)
-              owned-slice?                 (invoke-owned-slice  invoke-ctx arena base-carriers copy-back!)
-              opt-struct?                  (invoke-optional-struct invoke-ctx arena base-carriers copy-back!)
-               struct-ret?                   (invoke-struct-return invoke-ctx arena base-carriers copy-back!)
-              :else                        (invoke-scalar       invoke-ctx arena base-carriers copy-back!)))))))))
+               (= :error-union (:kind ret)) (invoke-error-union invoke-ctx arena base-carriers copy-back!)
+               owned-rec?                   (invoke-owned-record invoke-ctx arena base-carriers copy-back!)
+               owned-slice?                 (invoke-owned-slice  invoke-ctx arena base-carriers copy-back!)
+               opt-struct?                  (invoke-optional-struct invoke-ctx arena base-carriers copy-back!)
+               struct-ret?                  (invoke-struct-return invoke-ctx arena base-carriers copy-back!)
+               :else                        (invoke-scalar       invoke-ctx arena base-carriers copy-back!)))))))))
 
 (comment
   ;; A whole small pipeline: build, compile, bind, call.
