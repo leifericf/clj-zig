@@ -36,7 +36,8 @@ The node model has three levels, each with a `:raw` escape hatch:
 - **Declarations**: `:fn`, `:struct`, `:enum`, `:const`, `:raw`.
   A generator returns a vector of declaration nodes.
 - **Statements**: `:const`, `:assign`, `:return`, `:if`, `:for`,
-  `:defer`, `:raw`. A function body is a vector of statement nodes.
+  `:defer`, `:expr-stmt`, `:raw`. A function body is a vector of
+  statement nodes.
 - **Expressions**: `:ref`, `:field`, `:deref`, `:call`, `:lit`, `:as`,
   `:slice`, `:raw`. The expression vocabulary covers the common cases;
   `:raw` handles one-off complex expressions.

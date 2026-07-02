@@ -18,7 +18,21 @@
             [clojure.java.io :as io]
             [clojure.java.shell :as sh]
             [clojure.string :as str]
-            [clj-zig.compiler :as compiler]))
+            [clj-zig.compiler :as compiler])
+  (:import [java.nio.file Files Path]
+           [java.nio.file.attribute FileAttribute]
+           [java.util.stream Stream]
+           [java.util Comparator]))
+
+(defn- delete-recursively!
+  "Delete a directory tree rooted at `dir`."
+  [dir]
+  (let [path (.toPath (io/file dir))]
+    (with-open [tree ^Stream (Files/walk path (make-array java.nio.file.FileVisitOption 0))]
+      (->> (.sorted tree (Comparator/reverseOrder))
+           (.forEach (reify java.util.function.Consumer
+                       (accept [_ p]
+                         (Files/deleteIfExists ^Path p))))))))
 
 (defn run-zig-test
   "Compile and run `source` as a Zig test binary. Returns
@@ -26,15 +40,18 @@
   failure."
   [source]
   (let [zig (compiler/zig-exe)
-        tmp (str (java.nio.file.Files/createTempDirectory
-                  "clj-zig-test" (make-array java.nio.file.attribute.FileAttribute 0)))
+        tmp (str (Files/createTempDirectory
+                  "clj-zig-test" (make-array FileAttribute 0)))
         src (io/file tmp "test.zig")]
-    (spit src source)
-    (let [{:keys [exit out err]} (sh/sh zig "test" (.getAbsolutePath src)
-                                       :dir tmp)]
-      (if (zero? exit)
-        {:pass true}
-        {:pass false :output (str/join "\n" (remove str/blank? [out err]))}))))
+    (try
+      (spit src source)
+      (let [{:keys [exit out err]} (sh/sh zig "test" (.getAbsolutePath src)
+                                         :dir tmp)]
+        (if (zero? exit)
+          {:pass true}
+          {:pass false :output (str/join "\n" (remove str/blank? [out err]))}))
+      (finally
+        (try (delete-recursively! tmp) (catch Exception _))))))
 
 (defmacro deftestz
   "Define a Clojure test that runs Zig `test` blocks. The `body` is a

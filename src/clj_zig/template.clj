@@ -19,29 +19,28 @@
   [op lhs rhs]
   (str "return " lhs " " op " " rhs ";"))
 
+(defn reducer-step
+  "Zig source that applies `op` (a compound assignment like `+=`, `*=`)
+  between `acc` and each element of `binding`, with an optional
+  accumulator type annotation."
+  ([binding init op] (reducer-step binding nil init op))
+  ([binding acc-type init op]
+   (str "var acc" (when acc-type (str ": " acc-type)) " = " init ";\n"
+        "for (" binding ") |__elem| acc " op " __elem;\n"
+        "return acc;")))
+
 (defn slice-fold
   "Zig source that folds a slice with an accumulator. Iterates `binding`,
   combines each element with the accumulator using the compound assignment
   `op` (e.g. `+=`, `*=`, etc.), starting from `init`. Returns the accumulator."
   [binding init op]
-  (str "var acc = " init ";\n"
-       "for (" binding ") |__elem| acc " op " __elem;\n"
-       "return acc;"))
+  (reducer-step binding init op))
 
 (defn comparator
   "Zig source for a comparison returning bool. `op` is one of `<`, `>`,
   `<=`, `>=`, `==`, `!=`."
   [op lhs rhs]
-  (str "return " lhs " " op " " rhs ";"))
-
-(defn reducer-step
-  "Zig source that applies `op` (a compound assignment like `+=`, `*=`)
-  between `acc` and each element of `binding`, with an explicit
-  accumulator type annotation."
-  [binding acc-type init op]
-  (str "var acc: " acc-type " = " init ";\n"
-       "for (" binding ") |__elem| acc " op " __elem;\n"
-       "return acc;"))
+  (binary-op op lhs rhs))
 
 (defn clamp
   "Zig source that clamps `val` between `lo` and `hi`."

@@ -63,6 +63,9 @@
     (= :error-union (:kind t))
     (spec-for-type (:of t))
 
+    (= :stream (:kind t))
+    (list 'clojure.spec.alpha/coll-of (spec-for-type (:of t)))
+
     :else 'some?))
 
 (defn spec-for-param

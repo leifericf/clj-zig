@@ -180,7 +180,7 @@
     :named           (if (enum-type? type)
                        [(zig/param (str binding) (zig-type type))]
                        (if (some :target (get-in type [:layout :fields]))
-                         [(zig/param (str binding "_ptr") (str "*const " (wire-struct-name (:name (:layout type))))) ]
+                         [(zig/param (str binding "_ptr") (str "*const " (wire-struct-name (:name (:layout type)))))]
                          [(zig/param (str binding "_ptr") (str "*const " (zig-type type)))]))
     [(zig/param (str binding) (zig-type type))]))
 
@@ -458,9 +458,9 @@
 (defn- buffer-slice-free-stmts
   "Statement nodes freeing one wire element's buffer fields, used inside
   the walking free shim's loop body. Recurses into nested buffer-carrying
-  struct fields."
-  ([layout] (buffer-slice-free-stmts layout "__e"))
-  ([layout elem-path]
+  struct fields. The `alloc` argument is the allocator expression."
+  ([layout] (buffer-slice-free-stmts layout "__e" "std.heap.c_allocator"))
+  ([layout elem-path alloc]
    (mapcat (fn [{:keys [name type] :as f}]
              (cond
                (and (:target f) (= :borrowed (:kind type)))
@@ -469,12 +469,12 @@
                (:target f)
                (let [elem (buffer-element type)]
                  [(zig/raw-stmt
-                   (str "std.heap.c_allocator.free(@as([*]" elem
+                   (str alloc ".free(@as([*]" elem
                     ", @ptrFromInt(" elem-path "." name "_ptr))[0.." elem-path "." name "_len]);"))])
 
                (and (:nested f) (some :target (get-in type [:layout :fields])))
                (buffer-slice-free-stmts (get-in type [:layout])
-                                        (str elem-path "." name))
+                                        (str elem-path "." name) alloc)
 
                :else nil))
            (:fields layout))))
@@ -525,7 +525,7 @@
             [(zig/raw-stmt (str "const __p: [*]" wire-t " = @ptrFromInt(__ptr);"))
              (zig/const-stmt "__slice" (zig/raw-expr "__p[0..__len]"))]
             [(zig/for-stmt "(__slice) |__e|" (vec frees))]
-            [(zig/raw-stmt "std.heap.c_allocator.free(__slice);")]))) ]))
+             [(zig/raw-stmt "std.heap.c_allocator.free(__slice);")])))]))
 
 (defn- generate-ownership
   "Dispatch an owned, borrowed, bytes, or string slice return: the simple
@@ -636,51 +636,28 @@
 (defn- wire-struct-free-stmts
   "Statement nodes for freeing a wire struct's buffer fields, reading
   `{ptr, len}` back from each owned buffer field and freeing it. Recurses
-  into nested buffer-carrying struct wire fields. Skips borrowed fields."
-  ([layout] (wire-struct-free-stmts layout "__ret"))
-  ([layout elem-path]
-   (let [alloc "std.heap.c_allocator"]
-     (mapcat (fn [{:keys [name type] :as f}]
-               (cond
-                 (and (:target f) (= :borrowed (:kind type)))
-                 nil
+  into nested buffer-carrying struct wire fields. Skips borrowed fields.
+  The `alloc` argument is the allocator expression (`std.heap.c_allocator`
+  for inline mode, `@import(\"std\").heap.c_allocator` for file mode)."
+  ([layout] (wire-struct-free-stmts layout "__ret" "std.heap.c_allocator"))
+  ([layout elem-path alloc]
+   (mapcat (fn [{:keys [name type] :as f}]
+             (cond
+               (and (:target f) (= :borrowed (:kind type)))
+               nil
 
-                 (:target f)
-                 (let [elem (buffer-element type)]
-                   [(zig/raw-stmt
-                     (str alloc ".free(@as([*]" elem
-                      ", @ptrFromInt(" elem-path "." name "_ptr))[0.." elem-path "." name "_len]);"))])
+               (:target f)
+               (let [elem (buffer-element type)]
+                 [(zig/raw-stmt
+                   (str alloc ".free(@as([*]" elem
+                    ", @ptrFromInt(" elem-path "." name "_ptr))[0.." elem-path "." name "_len]);"))])
 
-                 (and (:nested f) (some :target (get-in type [:layout :fields])))
-                 (wire-struct-free-stmts (get-in type [:layout])
-                                         (str elem-path "." name))
+               (and (:nested f) (some :target (get-in type [:layout :fields])))
+               (wire-struct-free-stmts (get-in type [:layout])
+                                       (str elem-path "." name) alloc)
 
-                 :else nil))
-             (:fields layout)))))
-
-(defn- file-wire-struct-free-stmts
-  "File-mode free statement nodes for a wire struct. Imports std inline
-  so a user file's own imports never collide."
-  ([layout] (file-wire-struct-free-stmts layout "__ret"))
-  ([layout elem-path]
-   (let [alloc "@import(\"std\").heap.c_allocator"]
-     (mapcat (fn [{:keys [name type] :as f}]
-               (cond
-                 (and (:target f) (= :borrowed (:kind type)))
-                 nil
-
-                 (:target f)
-                 (let [elem (buffer-element type)]
-                   [(zig/raw-stmt
-                     (str alloc ".free(@as([*]" elem
-                      ", @ptrFromInt(" elem-path "." name "_ptr))[0.." elem-path "." name "_len]);"))])
-
-                 (and (:nested f) (some :target (get-in type [:layout :fields])))
-                 (file-wire-struct-free-stmts (get-in type [:layout])
-                                              (str elem-path "." name))
-
-                 :else nil))
-             (:fields layout)))))
+               :else nil))
+           (:fields layout))))
 
 (defn- generate-owned-struct-return
   "An inner impl fn holding the user body returns the nice record by value;
@@ -780,42 +757,22 @@
   "Statement nodes for freeing a nice struct's buffer fields (with real
   slice fields), used in the optional-struct free shim. Each owned buffer
   field is freed directly; nested buffer-carrying struct fields recurse."
-  ([layout] (nice-struct-free-stmts layout "__p"))
-  ([layout ptr-path]
+  ([layout] (nice-struct-free-stmts layout "__p" "std.heap.c_allocator"))
+  ([layout ptr-path alloc]
    (mapcat (fn [{:keys [name type] :as f}]
              (cond
                (and (:target f) (= :borrowed (:kind type)))
                nil
 
                (:target f)
-               [(zig/raw-stmt (str "std.heap.c_allocator.free(" ptr-path "." name ");"))]
+               [(zig/raw-stmt (str alloc ".free(" ptr-path "." name ");"))]
 
                (and (:nested f) (some :target (get-in type [:layout :fields])))
                (nice-struct-free-stmts (get-in type [:layout])
-                                       (str ptr-path "." name))
+                                       (str ptr-path "." name) alloc)
 
                :else nil))
            (:fields layout))))
-
-(defn- file-nice-struct-free-stmts
-  "File-mode free statement nodes for a nice struct, importing std inline."
-  ([layout] (file-nice-struct-free-stmts layout "__p"))
-  ([layout ptr-path]
-   (let [alloc "@import(\"std\").heap.c_allocator"]
-     (mapcat (fn [{:keys [name type] :as f}]
-               (cond
-                 (and (:target f) (= :borrowed (:kind type)))
-                 nil
-
-                 (:target f)
-                 [(zig/raw-stmt (str alloc ".free(" ptr-path "." name ");"))]
-
-                 (and (:nested f) (some :target (get-in type [:layout :fields])))
-                 (file-nice-struct-free-stmts (get-in type [:layout])
-                                              (str ptr-path "." name))
-
-                 :else nil))
-             (:fields layout)))))
 
 (defn- optional-struct-free-shim
   "The `__free` shim declaration node for an optional-struct return. The
@@ -848,7 +805,7 @@
   [{:keys [ret] sym :symbol :as spec} entry]
   (let [layout     (get-in ret [:of :layout])
         type-name  (:name layout)
-        free-stmts (file-nice-struct-free-stmts layout)]
+        free-stmts (nice-struct-free-stmts layout "__p" "@import(\"std\").heap.c_allocator")]
     (vec (concat (file-plain spec entry)
                  [(zig/export-fn-decl
                    (str sym "__free")
@@ -1085,30 +1042,6 @@
                 (str "const __p: [*]" elem-t " = @ptrFromInt(__ptr);\n"
                      "@import(\"std\").heap.c_allocator.free(__p[0..__len]);"))])])))))
 
-(defn- file-buffer-slice-free-stmts
-  "File-mode free statement nodes for one wire element's buffer fields,
-  recursing into nested buffer-carrying struct fields. `std` is imported
-  inline so a user file's own imports never collide."
-  ([layout] (file-buffer-slice-free-stmts layout "__e"))
-  ([layout elem-path]
-   (mapcat (fn [{:keys [name type] :as f}]
-             (cond
-               (and (:target f) (= :borrowed (:kind type)))
-               nil
-
-               (:target f)
-               (let [elem (buffer-element type)]
-                 [(zig/raw-stmt
-                   (str "@import(\"std\").heap.c_allocator.free(@as([*]" elem
-                    ", @ptrFromInt(" elem-path "." name "_ptr))[0.." elem-path "." name "_len]);"))])
-
-               (and (:nested f) (some :target (get-in type [:layout :fields])))
-               (file-buffer-slice-free-stmts (get-in type [:layout])
-                                             (str elem-path "." name))
-
-               :else nil))
-           (:fields layout))))
-
 (defn- file-owned-buffer-slice
   "File-mode owned slice of buffer-carrying structs: calls the user's
   `pub fn`, transforms it into a wire slab, and emits a walking free shim.
@@ -1122,7 +1055,7 @@
                           (zig/param "__ptr" "*usize")
                           (zig/param "__len" "*usize"))
         copies      (buffer-slice-copy-stmts layout)
-        frees       (file-buffer-slice-free-stmts layout)]
+        frees       (buffer-slice-free-stmts layout "__e" "@import(\"std\").heap.c_allocator")]
     [(zig/export-fn-decl
       sym
       all-params
@@ -1160,7 +1093,7 @@
         params-data (mapcat param-decls params)
         writes     (wire-write-stmts layout)
         owned?     (= :owned (:kind ret))
-        free-stmts (file-wire-struct-free-stmts layout)
+        free-stmts (wire-struct-free-stmts layout "__ret" "@import(\"std\").heap.c_allocator")
         free-body  (if (seq free-stmts)
                      (vec free-stmts)
                      [(zig/raw-stmt "_ = __ret;")])]
@@ -1193,7 +1126,7 @@
                      (zig/param "__errlen" "*usize")
                      (zig/param "__ret" (str "*" wire-t))]
         writes      (wire-write-stmts layout)
-        free-stmts  (file-wire-struct-free-stmts layout)
+        free-stmts (wire-struct-free-stmts layout "__ret" "@import(\"std\").heap.c_allocator")
         free-body   (if (seq free-stmts)
                       (vec free-stmts)
                       [(zig/raw-stmt "_ = __ret;")])

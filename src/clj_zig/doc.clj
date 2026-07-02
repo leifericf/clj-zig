@@ -1,7 +1,7 @@
 (ns clj-zig.doc
   "Generate documentation for `defnz` functions from their inspection
-  metadata. Pure: a Var (or its metadata) goes in, a markdown string
-  comes out.
+  metadata. Pure functions turn a Var (or its metadata) into a markdown
+  string; `emit-namespace-to-file` is the shell writer.
 
       (clj-zig.doc/emit-var #'add)
       ;; => \"### add\\n\\n`[x :i64 y :i64 :ret :i64]`\\n\\nAdds two integers.\\n\"
@@ -21,7 +21,8 @@
                    :slice  (str "[:slice " (when (:const? type) ":const ")
                                 (case (get-in type [:of :kind])
                                   :scalar (name (get-in type [:of :name]))
-                                  :named  (str (get-in type [:of :name])))
+                                  :named  (str (get-in type [:of :name]))
+                                  (pr-str type))
                                 "]")
                    (pr-str type))]
     (str "| `" binding "` | `" type-str "` |")))

@@ -277,8 +277,8 @@
               :source      src
               :deps        (zig/render preamble)
               :options     (merge {:optimize "ReleaseSafe"} (deps-in (:ns spec)) options-extra)
-                :zig-version compiler/pinned-version
-                 :target      (cache/target-triple)}
+              :zig-version compiler/pinned-version
+              :target      (cache/target-triple)}
        aux-files (assoc :aux-files aux-files)
        mods      (assoc :modules      (cache/modules-fingerprint mods)
                        :module-roots (cache/module-roots mods))))))
@@ -332,6 +332,8 @@
 ;; Multi-arity rebind data: {the-var {:arity-specs [...] :invoke-table
 ;; {count invoke}}}. Defined here so `recompile!` (above) can reference it.
 (defonce ^:private multi-rebinders (atom {}))
+
+(defonce ^:private comptime-rebinders (atom {}))
 
 (declare establish-multi-binding!)
 
@@ -474,6 +476,9 @@
                              inv))]
           (apply invoke-fn reg-args)))))
     (swap! rebinders assoc the-var :comptime)
+    (swap! comptime-rebinders assoc the-var
+           {:spec spec :body body :comptime-params comptime-params
+            :var-meta var-meta :wrap wrap})
     (alter-meta! the-var #(merge % var-meta {:clj-zig/info {:spec spec :body body
                                                              :comptime-params comptime-params}}))
     the-var))
@@ -491,6 +496,10 @@
         (doseq [{:keys [spec body]} arity-specs]
           (cache/evict! (build-inputs spec body)))
         (establish-multi-binding! the-var arity-specs {}))
+
+      (= :comptime wrap)
+      (let [{:keys [spec body comptime-params var-meta wrap-fn]} (get @comptime-rebinders the-var)]
+        (establish-comptime-binding! the-var spec body comptime-params var-meta wrap-fn))
 
       (some? wrap)
       (let [{:keys [spec body] :as info} (:clj-zig/info (meta the-var))

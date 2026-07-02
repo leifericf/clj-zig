@@ -19,10 +19,12 @@
 
 (defn- refresh-if-needed []
   (let [entry (.get tl-arena)]
-    (when (>= (:count entry) refresh-interval)
-      (.close ^Arena (:arena entry))
-      (.set tl-arena {:arena (Arena/ofConfined) :count 0}))
-    entry))
+    (if (>= (:count entry) refresh-interval)
+      (let [fresh {:arena (Arena/ofConfined) :count 0}]
+        (.close ^Arena (:arena entry))
+        (.set tl-arena fresh)
+        fresh)
+      entry)))
 
 (defn with-pooled-arena
   "Run `f` with an Arena. When pooling is enabled, reuses a thread-local
