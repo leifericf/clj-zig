@@ -202,6 +202,46 @@
          :subprocess-ms (:subprocess-ms results)
          :tier-contaminated (boolean (:tier-contaminated results))))
 
+(defn tier-contaminated?
+  "True when the observed cache state does not match the intended state
+  for `tier`. A stale cache entry that survives a tier-clear is
+  contamination: the timed loop would hit the cache and report a clean
+  number when the tier in fact ran with the wrong cache state. The
+  detection runs AFTER a clear and BEFORE the tier's first timed sample.
+
+  `tier` is one of :cold, :global-cache-hit, :clj-zig-cache-hit.
+  `observed` carries the cache state the shell gathers at the predicted
+  artifact path and the zig global cache:
+
+    :artifact-exists?     truthy when the predicted clj-zig artifact dir
+                          is present AFTER the clear
+    :global-cache-exists? truthy when .clj-zig/global-cache/ is present
+    :global-cache-empty?  truthy when .clj-zig/global-cache/ has no
+                          entries (nil when the dir is absent)
+
+  Tier intended state (the contract each clear must establish):
+    :cold                no artifact AND no usable global cache (the
+                          global cache must be absent or empty)
+    :global-cache-hit    no artifact AND a present, non-empty global
+                          cache (the clj-zig clear ran, the global cache
+                          hit is intact)
+    :clj-zig-cache-hit   artifact PRESENT (the prior tier populated it;
+                          no clear ran, so the artifact must already
+                          exist for the tier to measure a true hit)
+
+  Pure: the shell gathers the observed state and passes it as data, so
+  this namespace stays JVM-free and the decision table is unit-testable
+  with teeth."
+  [tier observed]
+  (case tier
+    :cold              (or (:artifact-exists? observed)
+                           (and (:global-cache-exists? observed)
+                                (not (:global-cache-empty? observed))))
+    :global-cache-hit  (or (:artifact-exists? observed)
+                           (not (:global-cache-exists? observed))
+                           (:global-cache-empty? observed))
+    :clj-zig-cache-hit (not (:artifact-exists? observed))))
+
 ;; --- the top-level numbers record ----------------------------------------
 
 (defn numbers-record

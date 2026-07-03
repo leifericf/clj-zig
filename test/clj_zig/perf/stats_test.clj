@@ -200,6 +200,99 @@
     (is (= :string (:kind entry)))
     (is (= "string-identity" (:name entry)))))
 
+;; --- Axis-1 tier-contamination detection ---------------------------------
+;;
+;; The decision table is pure: it consumes a map of observed cache state
+;; the shell gathers (whether the predicted artifact path exists, whether
+;; the zig global cache is present and non-empty) and returns true when
+;; that state does not match the tier's intended state. The shell-side
+;; state gathering lives in run.clj; this is the pure half, exercised
+;; here with teeth. A forced stale entry that survives a clear MUST be
+;; flagged contaminated, never silently shaped as a clean number.
+
+(deftest tier-contaminated-cold-clean-when-both-caches-empty
+  ;; The cold tier cleared both caches; the predicted artifact path does
+  ;; not exist and the global cache is gone (or empty). Clean.
+  (is (not (stats/tier-contaminated?
+            :cold
+            {:artifact-exists?     false
+             :global-cache-exists? false
+             :global-cache-empty?  true})))
+  (is (not (stats/tier-contaminated?
+            :cold
+            {:artifact-exists?     false
+             :global-cache-exists? true
+             :global-cache-empty?  true}))))
+
+(deftest tier-contaminated-cold-flagged-when-artifact-survives-clear
+  ;; A forced stale entry: the clear was supposed to remove the artifact,
+  ;; but the predicted path is still there. The cold tier would hit the
+  ;; cache and report a clean cold number when in fact it ran warm.
+  (is (stats/tier-contaminated?
+       :cold
+       {:artifact-exists?     true
+        :global-cache-exists? false
+        :global-cache-empty?  true})))
+
+(deftest tier-contaminated-cold-flagged-when-global-cache-survives-clear
+  ;; The cold tier cleared the global cache too; a non-empty global cache
+  ;; after the clear means the zig subprocess will reuse prior compilation
+  ;; and the cold tier is no longer "from scratch".
+  (is (stats/tier-contaminated?
+       :cold
+       {:artifact-exists?     false
+        :global-cache-exists? true
+        :global-cache-empty?  false})))
+
+(deftest tier-contaminated-global-cache-hit-clean-when-artifact-gone-and-global-kept
+  ;; The global-cache-hit tier cleared only the clj-zig cache: the
+  ;; predicted artifact path is gone and the zig global cache is still
+  ;; present and non-empty (the hit). Clean.
+  (is (not (stats/tier-contaminated?
+            :global-cache-hit
+            {:artifact-exists?     false
+             :global-cache-exists? true
+             :global-cache-empty?  false}))))
+
+(deftest tier-contaminated-global-cache-hit-flagged-when-artifact-survives-clear
+  ;; A forced stale entry: the clj-zig cache clear failed to remove the
+  ;; artifact, so the tier would hit instead of re-linking.
+  (is (stats/tier-contaminated?
+       :global-cache-hit
+       {:artifact-exists?     true
+        :global-cache-exists? true
+        :global-cache-empty?  false})))
+
+(deftest tier-contaminated-global-cache-hit-flagged-when-global-cache-lost
+  ;; The tier's contract is "global cache KEPT". If the global cache is
+  ;; gone (or empty) after the tier's clear, the hit was lost and the
+  ;; tier would behave like cold instead of reusing the prior build.
+  (is (stats/tier-contaminated?
+       :global-cache-hit
+       {:artifact-exists?     false
+        :global-cache-exists? false
+        :global-cache-empty?  true}))
+  (is (stats/tier-contaminated?
+       :global-cache-hit
+       {:artifact-exists?     false
+        :global-cache-exists? true
+        :global-cache-empty?  true})))
+
+(deftest tier-contaminated-clj-zig-cache-hit-clean-when-artifact-present
+  ;; The clj-zig-cache-hit tier keeps both caches and runs no clear. The
+  ;; artifact must be present from the prior tier; if it is, clean.
+  (is (not (stats/tier-contaminated?
+            :clj-zig-cache-hit
+            {:artifact-exists? true}))))
+
+(deftest tier-contaminated-clj-zig-cache-hit-flagged-when-artifact-absent
+  ;; If the artifact the prior tier was supposed to populate is absent,
+  ;; the "hit" tier is actually a miss on its first sample. Flag it
+  ;; rather than silently measuring a cold compile as a hot hit.
+  (is (stats/tier-contaminated?
+       :clj-zig-cache-hit
+       {:artifact-exists? false})))
+
 (deftest numbers-record-shapes-many-entries
   (let [entries [(stats/shape-entry
                   {:kind :scalar-passthrough :name "a"}

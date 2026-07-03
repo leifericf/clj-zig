@@ -609,22 +609,11 @@
                                (empty? (.listFiles g))))}))
 
 (defn- axis1-tier-contaminated?
-  "True when the observed cache state does not match the intended state
-  for `tier`. A stale entry that survives a clear is contamination: the
-  timed loop would hit the cache and report a clean cold number when the
-  cold tier in fact ran warm. The detection runs AFTER a clear and
-  BEFORE the tier's first timed sample. Inline here; the same decision
-  table lands as a pure fn in stats.clj in the next task so a Tier-0
-  test can pin it."
+  "Shell-side wrapper around the pure stats/tier-contaminated? decision.
+  Kept as a private fn so the call site reads as a tier predicate and
+  the pure decision stays unit-testable in stats.clj."
   [tier observed]
-  (case tier
-    :cold              (or (:artifact-exists? observed)
-                           (and (:global-cache-exists? observed)
-                                (not (:global-cache-empty? observed))))
-    :global-cache-hit  (or (:artifact-exists? observed)
-                           (not (:global-cache-exists? observed))
-                           (:global-cache-empty? observed))
-    :clj-zig-cache-hit (not (:artifact-exists? observed))))
+  (stats/tier-contaminated? tier observed))
 
 (def ^:private axis1-tier-order
   "The tier run order. Cold first establishes a fresh global cache the
