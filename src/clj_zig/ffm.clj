@@ -67,11 +67,14 @@
 
 ;; An opaque native resource handle: the symbol naming its Zig type and
 ;; the native pointer. The caller threads it back across calls and frees
-;; it explicitly; it never inspects the pointer.
-(defrecord Handle [type segment])
+;; it explicitly; it never inspects the pointer. A deftype (not
+;; defrecord) so each return allocates one instance and no backing
+;; PersistentArrayMap; the type and segment fields are immutable and
+;; accessed by name at the boundary.
+(deftype Handle [^Object type ^MemorySegment segment])
 
 (defmethod print-method Handle [h ^java.io.Writer w]
-  (.write w (str "#clj-zig/handle[" (:type h) "]")))
+  (.write w (str "#clj-zig/handle[" (.type h) "]")))
 
 (defn- value-layout ^ValueLayout [t]
   (let [{:keys [category bits]} (type/scalar-info (:name t))]
@@ -302,13 +305,13 @@
                  (do (aset cs off (marshal-struct arena layout arg))
                      nil)))
       :handle (let [expected (-> type :of :name)]
-                (when-not (and (instance? Handle arg) (= expected (:type arg)))
+                (when-not (and (instance? Handle arg) (= expected (.type ^Handle arg)))
                   (throw (ex-info (str "Expected a :handle of " expected
                                        " but got " (pr-str arg) ".")
                                   {:level :error
                                    :error/code :clj-zig/handle-type-mismatch
                                    :expected expected :actual arg})))
-                (aset cs off (:segment arg))
+                (aset cs off (.segment ^Handle arg))
                 nil)
       (if (i128-type? type)
         (do (aset cs off (bigint->i128-segment arena (biginteger arg)))
@@ -457,13 +460,13 @@
                     {:carriers [(to-carrier {:type (:backing layout)} value)]})
                   {:carriers [(marshal-struct arena layout arg)]}))
     :handle   (let [expected (-> param :type :of :name)]
-                (when-not (and (instance? Handle arg) (= expected (:type arg)))
+                (when-not (and (instance? Handle arg) (= expected (.type ^Handle arg)))
                   (throw (ex-info (str "Expected a :handle of " expected
                                        " but got " (pr-str arg) ".")
                                   {:level :error
                                    :error/code :clj-zig/handle-type-mismatch
                                    :expected expected :actual arg})))
-                {:carriers [(:segment arg)]})
+                {:carriers [(.segment ^Handle arg)]})
     (if (i128-type? (:type param))
       ;; A 128-bit integer crosses as a 16-byte segment allocated in the call
       ;; arena; the general path (not the scalar hot path) owns that arena.
@@ -958,7 +961,7 @@
     (type/void-type? ret)     nil
     (= :optional (:kind ret)) (deref-optional ret v)
     (= :handle (:kind ret))   (when-not (zero? (.address ^MemorySegment v))
-                                (->Handle (-> ret :of :name) v))
+                                (Handle. (-> ret :of :name) v))
     (and (= :named (:kind ret))
          (enum-type? ret))    (enum-value->member (:layout ret) (long v))
     (i128-type? ret)          (i128-segment->bigint ret v)
@@ -1183,13 +1186,13 @@
   for a wrong-typed handle, mirroring the general path's marshal-arg-into!."
   [expected]
   (fn handle-coerce [arg]
-    (when-not (and (instance? Handle arg) (= expected (:type arg)))
+    (when-not (and (instance? Handle arg) (= expected (.type ^Handle arg)))
       (throw (ex-info (str "Expected a :handle of " expected
                            " but got " (pr-str arg) ".")
                       {:level :error
                        :error/code :clj-zig/handle-type-mismatch
                        :expected expected :actual arg})))
-    (:segment arg)))
+    (.segment ^Handle arg)))
 
 (defn- enum-aware-coercions
   "Build `[param-coercions return-coercion]` for an enum- or handle-aware

@@ -38,7 +38,7 @@
 (deftest a-handle-is-opaque-and-tagged-with-its-type
   (let [c (counter-new 0)]
     (testing "the tag names the native type"
-      (is (= 'Counter (:type c))))
+      (is (= 'Counter (.type c))))
     (testing "the handle prints opaquely, not as its raw pointer"
       (is (= "#clj-zig/handle[Counter]" (pr-str c))))
     (counter-free c)))
