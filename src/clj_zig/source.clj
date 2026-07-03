@@ -1207,10 +1207,12 @@
 
    1. Prepends a counting allocator over c_allocator (Zig
      0.16.0 has no std.heap.TrackingAllocator; this is the fallback).
-  2. Rewrites every `std.heap.c_allocator` reference in `src` to route
-     through the counter, so both the wrapper-generated code AND the
-     user body's c_allocator calls (the bench shapes' bodies spell
-     `std.heap.c_allocator` directly) are counted.
+   2. Rewrites every c_allocator reference in `src` to route through the
+      counter, covering both spellings the codegen emits: the inline
+      `std.heap.c_allocator` and the file-mode
+      `@import(\"std\").heap.c_allocator` reconstruction, so both the
+      wrapper-generated code AND the user body's c_allocator calls are
+      counted regardless of source mode.
   3. Appends per-symbol `__alloc_count_get` / `__alloc_count_reset`
      export fns the bench reads after each shape's measured loop.
 
@@ -1223,7 +1225,9 @@
   :track-allocations enters the options map cache/cache-key hashes, AND
   the wrapped source differs, so the isolation is double."
   [src symbol]
-  (let [rewritten (str/replace src "std.heap.c_allocator" "__clj_zig_alloc")]
+  (let [rewritten (-> src
+                      (str/replace "@import(\"std\").heap.c_allocator" "__clj_zig_alloc")
+                      (str/replace "std.heap.c_allocator" "__clj_zig_alloc"))]
     (str tracking-allocator-block "\n\n" rewritten "\n\n" (count-fn-block symbol) "\n")))
 
 (comment

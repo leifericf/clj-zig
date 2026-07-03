@@ -227,6 +227,13 @@
           "the body routes through the counting allocator")
       (is (not (re-find #"std\.heap\.c_allocator\.create" wrapped))
           "no bare c_allocator call remains in the body"))
+    (testing "the file-mode @import spelling is also rewritten"
+      (let [file-src "export fn f(p: [*]u8) void {\n    const b = @import(\"std\").heap.c_allocator.create(Box) catch @panic(\"oom\");\n    _ = p;\n}\n"
+            file-wrapped (source/tracking-wrap file-src "f")]
+        (is (str/includes? file-wrapped "__clj_zig_alloc.create(Box)")
+            "the file-mode alloc call routes through the counter")
+        (is (not (re-find #"@import\(\"std\"\)\.heap\.c_allocator\.create" file-wrapped))
+            "no bare @import c_allocator call remains")))
     (testing "the counting allocator itself still reaches c_allocator"
       (is (re-find #"c_allocator\.rawAlloc" wrapped)
           "the counter delegates to c_allocator.rawAlloc"))
