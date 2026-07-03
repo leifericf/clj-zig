@@ -173,6 +173,9 @@
                               (#'ffm/enum-aware-scalar? (:params s) (:ret s))))]
     (is (enum-aware? #'f/echo-suit) "enum in, enum out")
     (is (enum-aware? #'f/box)        "a handle return with scalar args takes the no-arena path")
+    (is (enum-aware? #'f/unbox)      "a handle arg with a scalar return takes the no-arena path")
+    (is (enum-aware? #'f/free-box)   "a handle arg with a void return takes the no-arena path")
+    (is (enum-aware? #'f/node-free)  "two handle args plus a void return take the no-arena path")
     (is (not (enum-aware? #'f/echo-i64))  "a scalar-only sig takes the scalar path, not the enum path")
     (is (not (enum-aware? #'f/sum-f64))   "a slice arg needs the arena")
     (is (not (enum-aware? #'f/echo-point)) "a struct return needs the out-pointer")))
@@ -195,6 +198,55 @@
                           (every? true?
                                   (map (fn [i] (let [v (nth suits (mod (+ t i) 4))]
                                                  (= v (f/echo-suit v))))
+                                       (range per)))))
+                      (range threads))]
+    (is (every? true? (map deref futs)))))
+
+;; --- the handle-arg hot path -------------------------------------------
+;; A signature that threads a [:handle Type] arg with a scalar/enum/void
+;; return also skips the confined arena: a handle arg is just an aset of
+;; the segment pointer, no arena needed. Both directions of the
+;; handle-threading workload (box+unbox, box+free-box) leave the general
+;; path and take this no-arena sibling.
+
+(deftest enum-aware-handle-arg-round-trips-in-volume
+  ;; No arena and a reused carrier array: a handle-arg call driven hard
+  ;; must stay correct call after call. The box allocates a fresh handle
+  ;; each iteration (the body allocates), so this is not allocation-free,
+  ;; but the clj-zig overhead path is the no-arena one.
+  (let [boxes (repeatedly 50000 #(f/box 42))]
+    (is (every? #(= 42 (f/unbox %)) boxes))
+    (doseq [b boxes] (f/free-box b))
+    (is true "50000 box+unbox+free-box round-trips stayed correct")))
+
+(deftest enum-aware-handle-arg-path-rejects-a-mismatched-handle
+  ;; The no-arena path still validates the handle's tag: unboxing a
+  ;; Tracker handle where a Box is expected throws the mismatch ex-info
+  ;; with the :clj-zig/handle-type-mismatch code, the same diagnostic the
+  ;; general path issues.
+  (let [t (f/tracker-new)]
+    (try
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"handle"
+           (f/unbox t)))
+      (finally (f/tracker-free t)))))
+
+(deftest enum-aware-handle-arg-path-is-thread-safe
+  ;; The carrier array is thread-local; concurrent callers do not corrupt
+  ;; each other's handle pointers. Each thread boxes a disjoint value,
+  ;; unboxes it, and frees it; the unboxed value must equal the input.
+  (let [threads 8
+        per     5000
+        futs    (mapv (fn [t]
+                        (future
+                          (every? true?
+                                  (map (fn [i]
+                                         (let [v (+ (* (long t) 1000000) i)
+                                               b (f/box v)
+                                               ok (= v (f/unbox b))]
+                                           (f/free-box b)
+                                           ok))
                                        (range per)))))
                       (range threads))]
     (is (every? true? (map deref futs)))))

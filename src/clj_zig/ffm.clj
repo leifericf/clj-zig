@@ -991,18 +991,20 @@
 
 (defn- enum-aware-scalar?
   "True when every param and the return cross as a plain scalar carrier,
-  a named enum, or a `[:handle Type]` return, so the call needs no
-  confined arena, AND the signature is not pure-scalar (`scalar-only?`
-  covers that case). An enum crosses the C ABI as its backing scalar; a
-  handle return is a pointer with no out-seg. Both lower to the same
-  `(int|long|ptr) -> ...` ABI the scalar hot path serves. The
-  not-pure-scalar guard keeps the scalar hot path single-shape."
+  a named enum, or a `[:handle Type]` arg (a pointer aset, no arena), and
+  the return is a plain scalar, named enum, `[:handle Type]`, or `:void`,
+  so the call needs no confined arena, AND the signature is not
+  pure-scalar (`scalar-only?` covers that case). An enum crosses the C
+  ABI as its backing scalar; a handle is a pointer threaded opaquely
+  across. Both lower to the same `(int|long|ptr) -> ...` ABI the scalar
+  hot path serves. The not-pure-scalar guard keeps the scalar hot path
+  single-shape."
   [params ret]
   (and (not (scalar-only? params ret))
-       (every? (fn [p] (or (and (= :scalar (-> p :type :kind))
-                                (not (i128-type? (:type p))))
-                           (and (= :named (-> p :type :kind))
-                                (enum-type? (:type p)))))
+       (every? (fn [p] (let [k (:kind (:type p))]
+                         (or (and (= :scalar k) (not (i128-type? (:type p))))
+                             (and (= :named k) (enum-type? (:type p)))
+                             (and (= :handle k) (= :named (-> p :type :of :kind))))))
                params)
        (or (and (= :scalar (:kind ret)) (not (i128-type? ret)))
            (and (= :named (:kind ret)) (enum-type? ret))
@@ -1106,17 +1108,34 @@
   (fn enum-ret [result]
     (enum-value->member layout (long result))))
 
+(defn- handle-param-coerce
+  "Build a per-call coercion fn for one [:handle Type] param: validate the
+  arg is a Handle of the expected type and return its native segment for
+  aset into the carrier array. Throws `:clj-zig/handle-type-mismatch`
+  for a wrong-typed handle, mirroring the general path's marshal-arg-into!."
+  [expected]
+  (fn handle-coerce [arg]
+    (when-not (and (instance? Handle arg) (= expected (:type arg)))
+      (throw (ex-info (str "Expected a :handle of " expected
+                           " but got " (pr-str arg) ".")
+                      {:level :error
+                       :error/code :clj-zig/handle-type-mismatch
+                       :expected expected :actual arg})))
+    (:segment arg)))
+
 (defn- enum-aware-coercions
-  "Build `[param-coercions return-coercion]` for an enum-aware signature:
-  one coercion fn per param (scalar uses `to-carrier`, enum uses the
-  keyword-to-backing lookup) and one return fn (scalar uses `from-return`,
+  "Build `[param-coercions return-coercion]` for an enum- or handle-aware
+  signature: one coercion fn per param (scalar uses `to-carrier`, enum
+  uses the keyword-to-backing lookup, handle validates the type and
+  returns its segment) and one return fn (scalar uses `from-return`,
   enum uses the int-to-keyword lookup)."
   [params ret]
   [(vec (for [p params]
           (let [type (:type p)]
             (cond
               (= :scalar (:kind type)) #(to-carrier p %)
-              (enum-type? type)        (enum-param-coerce (:layout type))))))
+              (enum-type? type)        (enum-param-coerce (:layout type))
+              (= :handle (:kind type)) (handle-param-coerce (-> type :of :name))))))
    (if (= :named (:kind ret))
      (enum-return-coerce (:layout ret))
      #(from-return ret %))])
