@@ -101,6 +101,15 @@
     (:ptr :manyptr :array :optional :handle)  [ValueLayout/ADDRESS]
     [(if (i128-type? type) i128-layout (value-layout type))]))
 
+(defn- param-carrier-count
+  "The number of carrier slots `param` writes into the invoke array. Mirrors
+  `param-layouts` length so the general invoker's loop can advance its write
+  offset without realizing a layout vector per call."
+  [param]
+  (case (-> param :type :kind)
+    (:slice :string) 2
+    1))
+
 (defn- return-layout ^MemoryLayout [ret]
   (cond
     (= :optional (:kind ret))                ValueLayout/ADDRESS
@@ -173,7 +182,106 @@
       :float (case bits 32 (unchecked-float v) 64 (double v))
       :bool  (boolean v))))
 
-(declare marshal-struct-into! marshal-buffer-field buffer-field-element)
+(declare marshal-struct-into! marshal-buffer-field buffer-field-element marshal-array)
+
+(defn- marshal-arg-into!
+  "Marshal one boundary `arg` for `param` directly into `carriers` at
+  `offset`, returning the param's copy-back thunk or nil. The hot-path
+  companion to `marshal-arg`: same per-case semantics, no per-arg
+  `{:carriers [...]}` map allocation, and no intermediate carrier vector.
+  The caller pre-sized `carriers` for `base-offset + n-base + n-trailing`
+  and pre-computed each param's carrier count at bind time so the loop
+  that calls this can advance its offset without realizing a layout vec."
+  [^Arena arena param arg ^objects carriers offset]
+  (let [type (:type param)
+        off  (long offset)
+        ^objects cs carriers]
+    (case (:kind type)
+      :string (let [bs (if (string? arg)
+                         (.getBytes ^String arg StandardCharsets/UTF_8)
+                         (do (when-not (bytes? arg)
+                               (throw (ex-info (str "A :string argument must be a String or a byte[]"
+                                                    " of UTF-8; got " (pr-str (type arg)) ".")
+                                               {:level :error
+                                                :error/code :clj-zig/string-argument
+                                                :actual (type arg)})))
+                             arg))
+                    len (alength ^bytes bs)
+                    seg ^MemorySegment (.allocate arena (long len) 1)]
+                (when (pos? len)
+                  (MemorySegment/copy bs (long 0) seg ValueLayout/JAVA_BYTE (long 0) (long len)))
+                (aset cs off seg)
+                (aset cs (inc off) (Long/valueOf (long len)))
+                nil)
+      :slice (let [{:keys [address length copy-back]} (marshal-array arena param arg)]
+               (aset cs off address)
+               (aset cs (inc off) length)
+               copy-back)
+      :manyptr (let [{:keys [address copy-back]} (marshal-array arena param arg)]
+                 (aset cs off address)
+                 copy-back)
+      :ptr (do (when (not= 1 (Array/getLength arg))
+                 (throw (ex-info "A :ptr argument must be a one-element array."
+                                 {:level :error
+                                  :error/code :clj-zig/pointer-arity
+                                  :expected 1
+                                  :actual (Array/getLength arg)})))
+               (let [{:keys [address copy-back]} (marshal-array arena param arg)]
+                 (aset cs off address)
+                 copy-back))
+      :array (let [n (-> param :type :length)
+                   actual (if (= :named (:kind (:of (:type param))))
+                            (count arg)
+                            (Array/getLength arg))]
+               (when (not= n actual)
+                 (throw (ex-info (str "An :array argument must have length " n ".")
+                                 {:level :error
+                                  :error/code :clj-zig/array-length
+                                  :expected n
+                                  :actual actual})))
+               (aset cs off (:address (marshal-array arena param arg)))
+               nil)
+      :optional (let [pointed (-> param :type :of)]
+                  (cond
+                    (nil? arg) (do (aset cs off MemorySegment/NULL) nil)
+                    (= :scalar (:kind pointed))
+                    (let [layout (value-layout pointed)
+                          seg    ^MemorySegment (.allocate arena
+                                                           (.byteSize layout)
+                                                           (.byteSize layout))]
+                      (write-scalar seg pointed 0 (to-carrier {:type pointed} arg))
+                      (aset cs off seg)
+                      nil)
+                    :else (let [{:keys [copy-back]} (marshal-arg-into! arena
+                                                                       (update param :type :of)
+                                                                       arg cs off)]
+                            copy-back)))
+      :named (let [layout (-> type :layout)]
+               (if (:enum layout)
+                 (let [value (enum-member->value layout arg)]
+                   (when (nil? value)
+                     (throw (ex-info (str arg " is not a member of enum " (:name layout) ".")
+                                     {:level :error
+                                      :error/code :clj-zig/unknown-enum-member
+                                      :type (:name layout) :member arg})))
+                   (aset cs off (to-carrier {:type (:backing layout)} value))
+                   nil)
+                 (do (aset cs off (marshal-struct arena layout arg))
+                     nil)))
+      :handle (let [expected (-> type :of :name)]
+                (when-not (and (instance? Handle arg) (= expected (:type arg)))
+                  (throw (ex-info (str "Expected a :handle of " expected
+                                       " but got " (pr-str arg) ".")
+                                  {:level :error
+                                   :error/code :clj-zig/handle-type-mismatch
+                                   :expected expected :actual arg})))
+                (aset cs off (:segment arg))
+                nil)
+      (if (i128-type? type)
+        (do (aset cs off (bigint->i128-segment arena (biginteger arg)))
+            nil)
+        (do (aset cs off (to-carrier param arg))
+            nil)))))
 
 (defn- marshal-struct-collection
   "Copy a Clojure collection of maps into a fresh native segment, one
@@ -200,7 +308,7 @@
   copies the segment back into the array after the call. A named-struct
   element is a Clojure collection of maps, marshaled one struct per
   stride via `marshal-struct-collection`."
-  [arena {:keys [type]} arr]
+  [^Arena arena {:keys [type]} arr]
   (let [elem (:of type)]
     (cond
       (and (= :named (:kind elem)) (enum-type? elem))
@@ -233,8 +341,8 @@
           (dotimes [i len] (.set seg ValueLayout/JAVA_BOOLEAN (long i) (boolean (Array/get arr i))))
           (MemorySegment/copy arr (int 0) seg bl (long 0) (int len)))
         {:address   seg
-         :length    len
-         :copy-back (when-not (:const? type)
+          :length    (long len)
+          :copy-back (when-not (:const? type)
                       (if bool?
                         (fn [] (dotimes [i len]
                                  (Array/set arr i (.get seg ValueLayout/JAVA_BOOLEAN (long i)))))
@@ -745,16 +853,24 @@
   failure read the error keyword. The error path wrote no struct, so the
   free shim does not run and there is nothing to free. The result rebuilds
   as a record via its map-> factory when the named type is a defrecordz,
-  else a plain map."
-  [{:keys [handle ret record-factory free-handle error-buffer-bytes]}
-   ^Arena arena base-carriers copy-back!]
+  else a plain map.
+
+  Carriers is the thread-local base array of size `(:n-base ctx) + 3`; the
+  trailing three slots are filled with errbuf, errlen, and out before the
+  invoke, then cleared so the next call on this thread starts clean."
+  [{:keys [^MethodHandle handle ret record-factory free-handle error-buffer-bytes n-base]}
+   ^Arena arena ^objects carriers copy-back!]
   (let [desc   (-> ret :of :layout)
         out    ^MemorySegment (.allocate arena (long (:size desc)) (long (:align desc)))
         errbuf ^MemorySegment (.allocate arena error-buffer-bytes 1)
-        errlen ^MemorySegment (.allocate arena 8 8)]
-    (->> (concat base-carriers [errbuf errlen out])
-         (object-array)
-         (.invokeWithArguments handle))
+        errlen ^MemorySegment (.allocate arena 8 8)
+        i0     (int n-base)
+        i1     (inc i0)
+        i2     (inc i1)]
+    (aset carriers i0 errbuf)
+    (aset carriers i1 errlen)
+    (aset carriers i2 out)
+    (.invokeWithArguments handle carriers)
     (let [n (.get errlen ValueLayout/JAVA_LONG 0)]
       (if (zero? n)
         (try
@@ -771,21 +887,27 @@
   "Run a non-struct error-union downcall. The value type is a scalar
   (coerced with the unsigned policy), `:void` (nil), or a named enum whose
   backing int maps to its member keyword (an unknown int returns the raw
-  int, total per ADR 20). On failure read the error keyword."
-  [{:keys [handle ret error-buffer-bytes]} ^Arena arena base-carriers copy-back!]
+  int, total per ADR 20). On failure read the error keyword.
+
+  Carriers is the thread-local base array of size `base-count + 2`; the
+  trailing two slots are filled with errbuf and errlen before the invoke."
+  [{:keys [^MethodHandle handle ret error-buffer-bytes n-base]} ^Arena arena
+   ^objects carriers copy-back!]
   (let [errbuf ^MemorySegment (.allocate arena error-buffer-bytes 1)
         errlen ^MemorySegment (.allocate arena 8 8)
-        result (->> (concat base-carriers [errbuf errlen])
-                    (object-array)
-                    (.invokeWithArguments handle))
-        n      (do (copy-back!) (.get errlen ValueLayout/JAVA_LONG 0))]
-    (if (zero? n)
-      (let [value-t (:of ret)]
-        (cond
-          (type/void-type? value-t) nil
-          (enum-type? value-t)      (enum-value->member (:layout value-t) (long result))
-          :else                     (coerce-scalar value-t result)))
-      (read-error-name errbuf n))))
+        i0     (int n-base)
+        i1     (inc i0)]
+    (aset carriers i0 errbuf)
+    (aset carriers i1 errlen)
+    (let [result (.invokeWithArguments handle carriers)
+          n      (do (copy-back!) (.get errlen ValueLayout/JAVA_LONG 0))]
+      (if (zero? n)
+        (let [value-t (:of ret)]
+          (cond
+            (type/void-type? value-t) nil
+            (enum-type? value-t)      (enum-value->member (:layout value-t) (long result))
+            :else                     (coerce-scalar value-t result)))
+        (read-error-name errbuf n)))))
 
 (defn- invoke-owned-record
   "Run an owned or borrowed record downcall. The result writes its fields
@@ -794,13 +916,17 @@
   in a finally so a read fault cannot leak any buffer the body allocated
   (mirror of the owned-record free-in-finally discipline). A borrowed record has no shim. The result rebuilds
   as a record via its map-> factory when the named type is a defrecordz,
-  else a plain map."
-  [{:keys [handle ret record-factory free-handle]} ^Arena arena base-carriers copy-back!]
+  else a plain map.
+
+  Carriers is the thread-local base array of size `base-count + 1`; the
+  trailing slot is filled with the out-segment before the invoke."
+  [{:keys [^MethodHandle handle ret record-factory free-handle n-base]} ^Arena arena
+   ^objects carriers copy-back!]
   (let [desc (-> ret :of :layout)
-        out  ^MemorySegment (.allocate arena (long (:size desc)) (long (:align desc)))]
-    (->> (concat base-carriers [out])
-         (object-array)
-         (.invokeWithArguments handle))
+        out  ^MemorySegment (.allocate arena (long (:size desc)) (long (:align desc)))
+        i0   (int n-base)]
+    (aset carriers i0 out)
+    (.invokeWithArguments handle carriers)
     (try
       (copy-back!)
       (let [m (read-struct out desc)]
@@ -817,13 +943,19 @@
   wild pointer, or an OOM on a huge length) cannot leak the slice the body
   allocated (ADR 21, mirror of the owned-record free-in-finally discipline). copy-back! runs inside the same
   try: the native call already allocated the owned slice, so a copy-back
-  fault must still free. A borrowed return has no shim."
-  [{:keys [handle ret free-handle]} ^Arena arena base-carriers copy-back!]
+  fault must still free. A borrowed return has no shim.
+
+  Carriers is the thread-local base array of size `(:n-base ctx) + 2`; the
+  trailing two slots are filled with pout and lout before the invoke."
+  [{:keys [^MethodHandle handle ret free-handle n-base]} ^Arena arena
+   ^objects carriers copy-back!]
   (let [pout ^MemorySegment (.allocate arena 8 8)
-        lout ^MemorySegment (.allocate arena 8 8)]
-    (->> (concat base-carriers [pout lout])
-         (object-array)
-         (.invokeWithArguments handle))
+        lout ^MemorySegment (.allocate arena 8 8)
+        i0   (int n-base)
+        i1   (inc i0)]
+    (aset carriers i0 pout)
+    (aset carriers i1 lout)
+    (.invokeWithArguments handle carriers)
     (let [addr (.get pout ValueLayout/JAVA_LONG 0)
           len  (.get lout ValueLayout/JAVA_LONG 0)]
       (try
@@ -840,13 +972,17 @@
   caller-allocated out-segment, then read back into a Clojure map (rebuilt
   as a record via its map-> factory when the named type is a defrecordz).
   An enum return crosses as its backing int and takes the scalar path, not
-  this one."
-  [{:keys [handle ret record-factory]} ^Arena arena base-carriers copy-back!]
+  this one.
+
+  Carriers is the thread-local base array of size `(:n-base ctx) + 1`; the
+  trailing slot is filled with the out-segment before the invoke."
+  [{:keys [^MethodHandle handle ret record-factory n-base]} ^Arena arena
+   ^objects carriers copy-back!]
   (let [desc (:layout ret)
-        out  ^MemorySegment (.allocate arena (long (:size desc)) (long (:align desc)))]
-    (->> (concat base-carriers [out])
-         (object-array)
-         (.invokeWithArguments handle))
+        out  ^MemorySegment (.allocate arena (long (:size desc)) (long (:align desc)))
+        i0   (int n-base)]
+    (aset carriers i0 out)
+    (.invokeWithArguments handle carriers)
     (copy-back!)
     (let [m (read-struct out desc)]
       (if record-factory (record-factory m) m))))
@@ -856,9 +992,15 @@
   c_allocator pointer to the nice struct; the FFM reads the struct through
   the returned address, rebuilds it as a map (or record via the factory),
   and frees in a finally: buffer fields first, then the struct allocation.
-  A null return yields nil with no free."
-  [{:keys [handle ret record-factory free-handle]} _arena base-carriers copy-back!]
-  (let [result (.invokeWithArguments handle (object-array (vec base-carriers)))
+  A null return yields nil with no free.
+
+  Carriers is the thread-local base array of size `(:n-base ctx)` (no
+  trailing slots; the optional return is the FFM return value)."
+  [{:keys [^MethodHandle handle ret record-factory free-handle]} _arena
+   ^objects carriers copy-back!]
+  ;; base-count names the array length; nothing is appended, and the array
+  ;; is already in invoke order.
+  (let [result (.invokeWithArguments handle carriers)
         addr   (.address ^MemorySegment result)]
     (if (zero? addr)
       (do (copy-back!) nil)
@@ -876,12 +1018,18 @@
   back, and read the return with the unsigned policy. The arena backs any
   slice/pointer arguments. A 128-bit-integer return is a by-value struct,
   so FFM prepends a SegmentAllocator to the downcall handle; the arena is
-  that allocator, threaded in front of the carriers."
-  [{:keys [handle ret]} ^Arena arena base-carriers copy-back!]
-  (let [carriers (if (i128-type? ret)
-                   (cons arena base-carriers)
-                   base-carriers)
-        result (.invokeWithArguments handle (object-array carriers))]
+  that allocator, threaded in front of the carriers.
+
+  Carriers is the thread-local base array. For a non-i128 return the array
+  is exactly the base carriers; for an i128 return it is sized for one
+  leading slot (the arena as SegmentAllocator) plus the base carriers, the
+  loop wrote them at indices 1..n-base, and this fn fills index 0 with the
+  arena before invoking."
+  [{:keys [^MethodHandle handle ret]} ^Arena arena ^objects carriers copy-back!]
+  (let [result (if (i128-type? ret)
+                 (do (aset carriers 0 arena)
+                     (.invokeWithArguments handle carriers))
+                 (.invokeWithArguments handle carriers))]
     (copy-back!)
     (from-return ret result)))
 
@@ -987,7 +1135,23 @@
                                         (into-array Linker$Option [])))
         free-h       (when stream?
                        (free-shim-handle linker lookup free-sym [ValueLayout/JAVA_LONG]))
-        elem-lay     (when stream? (value-layout (:of ret)))]
+        elem-lay     (when stream? (value-layout (:of ret)))
+        ;; Carrier-array sizing for the general invoker's thread-local
+        ;; invoke array. The base carriers fill indices `[base-offset,
+        ;; base-offset+n-base)`; the dispatch helper fills any trailing
+        ;; out-seg slots after that. base-offset is 1 only for an i128
+        ;; return, where FFM prepends the arena as SegmentAllocator.
+        scalar-path? (scalar-only? params ret)
+        i128-ret?    (i128-type? ret)
+        base-offset  (if i128-ret? 1 0)
+        n-base       (reduce + (map param-carrier-count params))
+        n-trailing   (cond stream? 0
+                           eu-struct? 3
+                           (= :error-union (:kind ret)) 2
+                           owned-slice? 2
+                           (or owned-rec? struct-ret?) 1
+                           :else 0)
+        total        (+ base-offset n-base n-trailing)]
     {:handle handle :params params :ret ret :arity arity
      :stream? stream? :eu-struct? eu-struct? :owned-rec? owned-rec?
      :owned-slice? owned-slice? :opt-struct? opt-struct? :struct-ret? struct-ret?
@@ -995,7 +1159,8 @@
      ;; each `invoke-*` helper: the bound handle and the return shape's
      ;; once-computed metadata.
      :invoke-ctx {:handle handle :ret ret :record-factory record-factory
-                  :free-handle free-handle :error-buffer-bytes error-buffer-bytes}
+                  :free-handle free-handle :error-buffer-bytes error-buffer-bytes
+                  :n-base n-base}
      :next-h next-h :free-h free-h :elem-lay elem-lay
      :var-sym (symbol (str (:ns spec)) (str (:name spec)))
      ;; The hot path for a scalar-only signature: no per-call arena, and a
@@ -1004,11 +1169,27 @@
      ;; The native call does not retain the array, and one-directional
      ;; interop (ADR 10) means a call cannot re-enter itself on the same
      ;; thread, so reuse is safe.
-     :scalar?     (scalar-only? params ret)
-     :carriers-tl (when (scalar-only? params ret)
-                    (ThreadLocal/withInitial
-                     (reify java.util.function.Supplier
-                       (get [_] (object-array arity)))))}))
+     :scalar?      scalar-path?
+     :carriers-tl  (when scalar-path?
+                     (ThreadLocal/withInitial
+                      (reify java.util.function.Supplier
+                        (get [_] (object-array arity)))))
+     ;; The general invoker's thread-local state: the pre-sized carrier
+     ;; array (`total` slots) and a copy-back slot array sized for the
+     ;; arity (the worst case is one copy-back per param). Reused across
+     ;; calls on the same thread; safe for the same one-directional-interop
+     ;; reason the scalar hot path is (ADR 10).
+     :gen-carriers-tl (when-not scalar-path?
+                        (ThreadLocal/withInitial
+                         (reify java.util.function.Supplier
+                           (get [_] (object-array total)))))
+     :gen-copybacks-tl (when-not scalar-path?
+                         (ThreadLocal/withInitial
+                          (reify java.util.function.Supplier
+                            (get [_] (object-array arity)))))
+     :gen-base-offset base-offset
+     :gen-n-base      n-base
+     :i128-ret?       i128-ret?}))
 
 ;; --- Thread-local arena pooling for the call path ------------------------
 ;; With -Dclj-zig.arena-pool=true, a thread-local confined arena is reused
@@ -1069,11 +1250,20 @@
   confined arena holds the native copies of slice/pointer/struct args for
   the call (ADR 37/39). With `-Dclj-zig.arena-pool=true` the arena is a
   pooled thread-local one reused across calls (`with-pooled-arena`), so its
-  lifetime is logically call-bounded but physically extended."
+  lifetime is logically call-bounded but physically extended.
+
+  The general path fills a pre-sized thread-local carrier array through
+  `marshal-arg-into!` and dispatches the return through `invoke-*` helpers
+  that fill the trailing out-seg slots in place. The choreography avoids
+  the per-call `mapv` of marshalled maps, the `mapcat :carriers` lazy seq,
+  the `copy-back!` closure, and the `concat`+`object-array` alloc each
+  helper used to do; the per-call allocation surface is now the arena, the
+  out-segments themselves, and any owned/buffer resource the body allocates."
   [spec library-path]
   (let [{:keys [handle params ret arity invoke-ctx next-h free-h elem-lay var-sym
                 scalar? carriers-tl stream? eu-struct? owned-rec? owned-slice?
-                opt-struct? struct-ret?]}
+                opt-struct? struct-ret?
+                gen-carriers-tl gen-copybacks-tl gen-base-offset gen-n-base]}
         (bind-context spec library-path)]
     (if scalar?
       (fn [& args]
@@ -1093,22 +1283,43 @@
         ;; back before it closes, keeping the lifetime to the call.
         (with-pooled-arena
          (fn [^Arena arena]
-           (let [marshalled    (mapv #(marshal-arg arena %1 %2) params args)
-                 base-carriers (mapcat :carriers marshalled)
-                 copy-back!    #(run! (fn [m] (when-let [back (:copy-back m)] (back)))
-                                      marshalled)]
-             (cond
-               stream?                      (let [iter-addr (.invokeWithArguments ^MethodHandle handle
-                                                                                  (object-array (vec base-carriers)))]
-                                              (copy-back!)
-                                              (make-stream-reducible iter-addr next-h free-h ret elem-lay))
-               eu-struct?                   (invoke-eu-struct   invoke-ctx arena base-carriers copy-back!)
-               (= :error-union (:kind ret)) (invoke-error-union invoke-ctx arena base-carriers copy-back!)
-               owned-rec?                   (invoke-owned-record invoke-ctx arena base-carriers copy-back!)
-               owned-slice?                 (invoke-owned-slice  invoke-ctx arena base-carriers copy-back!)
-               opt-struct?                  (invoke-optional-struct invoke-ctx arena base-carriers copy-back!)
-               struct-ret?                  (invoke-struct-return invoke-ctx arena base-carriers copy-back!)
-               :else                        (invoke-scalar       invoke-ctx arena base-carriers copy-back!)))))))))
+           (let [^objects carriers (.get ^ThreadLocal gen-carriers-tl)
+                 ^objects copybacks (.get ^ThreadLocal gen-copybacks-tl)
+                 base-offset (long gen-base-offset)]
+             ;; Fill the base carriers, collecting copy-back thunks into
+             ;; `copybacks`; the helper reads `cb-count` to know how many
+             ;; to run. The loop advances the write offset by each param's
+             ;; carrier count without realizing a per-arg map or vector.
+             (let [cb-count (loop [i (long 0) off base-offset cb (long 0)]
+                              (if (>= i (long arity))
+                                cb
+                                (let [param (nth params i)
+                                      arg   (nth args i)
+                                      copy-back (marshal-arg-into! arena param arg carriers off)]
+                                  (when copy-back
+                                    (aset copybacks cb copy-back))
+                                  (recur (inc i)
+                                         (+ off (param-carrier-count param))
+                                         (if copy-back (inc cb) cb)))))]
+               ;; The copy-back thunk runs each collected thunk once. Built
+               ;; per call (no closed-over marshalled vec), but its body is
+               ;; a tight loop over the pre-sized array.
+               (let [copy-back! (fn []
+                                  (loop [i (long 0)]
+                                    (when (< i cb-count)
+                                      ((aget copybacks i))
+                                      (recur (inc i)))))]
+                 (cond
+                   stream?                      (let [iter-addr (.invokeWithArguments ^MethodHandle handle carriers)]
+                                                  (copy-back!)
+                                                  (make-stream-reducible iter-addr next-h free-h ret elem-lay))
+                   eu-struct?                   (invoke-eu-struct   invoke-ctx arena carriers copy-back!)
+                   (= :error-union (:kind ret)) (invoke-error-union invoke-ctx arena carriers copy-back!)
+                   owned-rec?                   (invoke-owned-record invoke-ctx arena carriers copy-back!)
+                   owned-slice?                 (invoke-owned-slice  invoke-ctx arena carriers copy-back!)
+                   opt-struct?                  (invoke-optional-struct invoke-ctx arena carriers copy-back!)
+                   struct-ret?                  (invoke-struct-return invoke-ctx arena carriers copy-back!)
+                   :else                        (invoke-scalar       invoke-ctx arena carriers copy-back!)))))))))))
 
 (comment
   ;; A whole small pipeline: build, compile, bind, call.
