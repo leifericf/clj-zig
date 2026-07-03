@@ -710,31 +710,39 @@
   the clj-zig-cache-hit tier then hits. The cold-tier subprocess-ms is
   the entry's :subprocess-ms (the dominant term per p1); the entry's
   :tier-contaminated flag is true when any tier detected cache-state
-  contamination."
+  contamination.
+
+  Per-shape errors are isolated: a compile or establish! fault is caught
+  and shaped into a :status :errored entry via stats/diagnostic-entry, so
+  the run continues the remaining shapes rather than aborting (mirroring
+  the per-call path's measure-one)."
   [shape]
-  (let [identity (shape-identity shape)
-        shape-ns (shape-ns shape)
-        _        (register-setup! shape-ns (:setup shape))
-        inputs   (axis1-build-inputs shape shape-ns)
-        spec     (:spec inputs)
-        body     (:body inputs)
-        gen      {:mode :inline}
-        per-tier (fn [tier]
-                   (measure-axis1-tier tier spec body gen inputs))
-        results  (into {} (for [tier axis1-tier-order]
-                            [tier (per-tier tier)]))
-        cold     (:cold results)
-        gch      (:global-cache-hit results)
-        czh      (:clj-zig-cache-hit results)]
-    (stats/tier-entry
-     identity
-     {:cold              (:wall-ms cold)
-      :global-cache-hit  (:wall-ms gch)
-      :clj-zig-cache-hit (:wall-ms czh)
-      :subprocess-ms     (:subprocess-ms cold)
-      :tier-contaminated (or (:contaminated cold)
-                             (:contaminated gch)
-                             (:contaminated czh))})))
+  (let [identity (shape-identity shape)]
+    (try
+      (let [shape-ns (shape-ns shape)
+            _        (register-setup! shape-ns (:setup shape))
+            inputs   (axis1-build-inputs shape shape-ns)
+            spec     (:spec inputs)
+            body     (:body inputs)
+            gen      {:mode :inline}
+            per-tier (fn [tier]
+                       (measure-axis1-tier tier spec body gen inputs))
+            results  (into {} (for [tier axis1-tier-order]
+                                [tier (per-tier tier)]))
+            cold     (:cold results)
+            gch      (:global-cache-hit results)
+            czh      (:clj-zig-cache-hit results)]
+        (stats/tier-entry
+         identity
+         {:cold              (:wall-ms cold)
+          :global-cache-hit  (:wall-ms gch)
+          :clj-zig-cache-hit (:wall-ms czh)
+          :subprocess-ms     (:subprocess-ms cold)
+          :tier-contaminated (or (:contaminated cold)
+                                 (:contaminated gch)
+                                 (:contaminated czh))}))
+      (catch Throwable e
+        (stats/diagnostic-entry identity e)))))
 
 (defn- axis1-artifact-file
   "The gitignored output file for an Axis-1 run on `date`. The bench
@@ -761,12 +769,14 @@
     (write-record! out record)
     (println "wrote" (str out) "--" (count entries) "axis1 shapes")
     (doseq [e entries]
-      (println "  " (:kind e)
-               "cold" (format "%.1f" (:cold e)) "ms"
-               "gch" (format "%.1f" (:global-cache-hit e)) "ms"
-               "czh" (format "%.2f" (:clj-zig-cache-hit e)) "ms"
-               "sub" (when-let [s (:subprocess-ms e)] (format "%.0f" s)) "ms"
-               (when (:tier-contaminated e) "(tier-contaminated)")))
+      (if (= :errored (:status e))
+        (println "  " (:kind e) ": ERRORED;" (:diagnostic e))
+        (println "  " (:kind e)
+                 "cold" (format "%.1f" (:cold e)) "ms"
+                 "gch" (format "%.1f" (:global-cache-hit e)) "ms"
+                 "czh" (format "%.2f" (:clj-zig-cache-hit e)) "ms"
+                 "sub" (when-let [s (:subprocess-ms e)] (format "%.0f" s)) "ms"
+                 (when (:tier-contaminated e) "(tier-contaminated)"))))
     nil))
 
 (defn- measure-one
