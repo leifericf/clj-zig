@@ -1017,6 +1017,17 @@
             :expected arity
             :actual actual}))
 
+(defn- check-arity!
+  "Throw :clj-zig/arity when `args` is not `arity` long. Caches the count
+  in a primitive `long` so the previous shape's double `count` call (one
+  for the check, one for the diagnostic) collapses to one. ArraySeq (the
+  direct-call shape) is Counted, so `count` is O(1) on the hot path;
+  `apply` produces a LazySeq that walks, but that is the rare path."
+  [var-sym ^long arity args]
+  (let [actual (long (count args))]
+    (when (not= actual arity)
+      (throw (wrong-arity-ex var-sym arity actual)))))
+
 (defn- scalar-only?
   "True when every param and the return cross as a plain scalar carrier, so
   the call needs no confined arena. A scalar param coerces straight to its
@@ -1724,8 +1735,7 @@
       scalar?
       (let [[param-coercions return-coerce] scalar-coercions]
         (fn [& args]
-          (when (not= (count args) arity)
-            (throw (wrong-arity-ex var-sym arity (count args))))
+          (check-arity! var-sym arity args)
           (let [^objects carriers (.get ^ThreadLocal carriers-tl)]
             (loop [i 0 as args]
               (when (< i (long arity))
@@ -1736,8 +1746,7 @@
       enum?
       (let [[param-coercions return-coerce] enum-coercions]
         (fn [& args]
-          (when (not= (count args) arity)
-            (throw (wrong-arity-ex var-sym arity (count args))))
+          (check-arity! var-sym arity args)
           (let [^objects carriers (.get ^ThreadLocal carriers-tl)]
             (loop [i (long 0) as args]
               (when (< i (long arity))
@@ -1750,8 +1759,7 @@
                             (enum-return-coerce (:layout ret))
                             #(from-return ret %))]
         (fn [& args]
-          (when (not= (count args) arity)
-            (throw (wrong-arity-ex var-sym arity (count args))))
+          (check-arity! var-sym arity args)
           (with-pooled-arena
            (fn [^Arena arena]
              (let [^objects carriers (.get ^ThreadLocal slice-carriers-tl)]
@@ -1760,8 +1768,7 @@
 
       :else
       (fn [& args]
-        (when (not= (count args) arity)
-          (throw (wrong-arity-ex var-sym arity (count args))))
+        (check-arity! var-sym arity args)
         ;; A confined arena holds the native copies of any slice arguments
         ;; for exactly the duration of the call. Mutable slices are copied
         ;; back before it closes, keeping the lifetime to the call.
