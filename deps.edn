@@ -7,8 +7,15 @@
  {:repl
   {:jvm-opts ["--enable-native-access=ALL-UNNAMED"]}
 
+  ;; The :test lane includes bench/ on its classpath so the pure-core
+  ;; perf unit tests (test/clj_zig/perf/*_test.clj requiring
+  ;; clj-zig.perf.shape and clj-zig.perf.stats) run in the green gate.
+  ;; bench/ is the pure core only at this point; the bench shell
+  ;; clj-zig.perf.run (landed later) requires Criterium, which is NOT a
+  ;; :test dependency -- the load-bearing assertion is that :test never
+  ;; requires clj-zig.perf.run once it exists.
   :test
-  {:extra-paths ["test"]
+  {:extra-paths ["test" "bench"]
    :extra-deps {io.github.cognitect-labs/test-runner
                 {:git/tag "v0.5.1" :git/sha "dfb30dd"}
                 org.clojure/test.check {:mvn/version "1.1.1"}
