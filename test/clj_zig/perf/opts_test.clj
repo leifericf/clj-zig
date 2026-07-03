@@ -46,6 +46,35 @@
 (deftest non-numeric-flag-value-is-off
   (is (nil? (:attach-window (opts/parse-args ["--attach-window" "abc"] {})))))
 
+(deftest track-allocations-off-by-default
+  ;; The profiling build is OFF by default: a run with no option compiles
+  ;; the default library and matches the baseline. Pinned so a regression
+  ;; that flips the default surfaces as a test failure.
+  (let [m (opts/parse-args [] {})]
+    (is (not (:track-allocations m)))))
+
+(deftest track-allocations-set-via-flag
+  (is (:track-allocations (opts/parse-args ["--track-allocations"] {}))))
+
+(deftest track-allocations-set-via-env
+  (is (:track-allocations
+       (opts/parse-args [] {"CLJ_ZIG_TRACK_ALLOCATIONS" "1"}))))
+
+(deftest track-allocations-env-falsy-stays-off
+  ;; Any value other than the truthy set keeps the flag off, so unsetting
+  ;; the env or a stray empty string never accidentally enables the
+  ;; profiling build.
+  (is (not (:track-allocations
+            (opts/parse-args [] {"CLJ_ZIG_TRACK_ALLOCATIONS" "0"}))))
+  (is (not (:track-allocations
+            (opts/parse-args [] {"CLJ_ZIG_TRACK_ALLOCATIONS" ""})))))
+
+(deftest track-allocations-with-kind-and-attach-window
+  (let [m (opts/parse-args ["--track-allocations" "string" "--attach-window" "5"] {})]
+    (is (:track-allocations m))
+    (is (= "string" (:kind m)))
+    (is (= 5 (:attach-window m)))))
+
 (deftest opts-source-is-pure
   ;; Source-level purity: the parse namespace requires neither Criterium
   ;; nor clj-zig native edges, so the :test lane can load it.

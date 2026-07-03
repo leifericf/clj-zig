@@ -14,6 +14,8 @@
 
 (def ^:private attach-window-flag "--attach-window")
 (def ^:private attach-window-env "CLJ_ZIG_ATTACH_WINDOW")
+(def ^:private track-allocations-flag "--track-allocations")
+(def ^:private track-allocations-env "CLJ_ZIG_TRACK_ALLOCATIONS")
 
 (defn- parse-attach-window-flag
   "Walk `args` and return the integer value of the --attach-window flag,
@@ -26,6 +28,21 @@
       (nil? a)                 nil
       (= a attach-window-flag) (some-> (first rest) parse-long)
       :else                    (recur rest))))
+
+(defn- track-allocations-from-args?
+  "True when `args` carries the --track-allocations flag (a bare switch,
+  no value). Walks the arg list so the flag may appear in any position
+  alongside the kind positional and the --attach-window value."
+  [args]
+  (boolean (some #(= % track-allocations-flag) args)))
+
+(defn- track-allocations-from-env?
+  "True when the CLJ_ZIG_TRACK_ALLOCATIONS env var is set to a truthy
+  value (1, true, yes, on, case-insensitive). Any other value (0, empty,
+  unset) keeps the profiling build off so the default library is built."
+  [env]
+  (let [v (some-> (get env track-allocations-env) str/lower-case str/trim)]
+    (boolean (and v (#{ "1" "true" "yes" "on"} v)))))
 
 (defn- positional-kind
   "The first positional arg in `args`: one that neither starts with `--`
@@ -43,14 +60,25 @@
   "Parse bench `args` (the raw command-line seq) against `env` (a
   String->String map, the process environment). Returns a map:
 
-    :kind           the optional shape-kind positional arg, nil absent
-    :attach-window  the attach window in whole seconds, nil absent
+    :kind                the optional shape-kind positional arg, nil absent
+    :attach-window       the attach window in whole seconds, nil absent
+    :track-allocations   truthy when the profiling build is on (see below)
 
   The attach window reads from the --attach-window <secs> flag or the
   CLJ_ZIG_ATTACH_WINDOW env var; the flag wins when both are set. :kind
-  is the first positional arg. Pure: no io."
+  is the first positional arg.
+
+  :track-allocations enables the profiling build: each shape's wrapper
+  is compiled under :zig/track-allocations (a counting allocator over
+  c_allocator), and the bench reads a per-shape native allocation count
+  after each measured loop. OFF by default (no flag, no env, or a falsy
+  env value), so a run without the option builds the default library and
+  matches the baseline. Set via the --track-allocations bare switch or
+  CLJ_ZIG_TRACK_ALLOCATIONS=1; the flag wins when both are set. Pure: no io."
   [args env]
   (let [from-flag (parse-attach-window-flag args)
         from-env  (some-> (get env attach-window-env) parse-long)]
     (cond-> {:kind (positional-kind args)}
-      (or from-flag from-env) (assoc :attach-window (or from-flag from-env)))))
+      (or from-flag from-env)        (assoc :attach-window (or from-flag from-env))
+      (or (track-allocations-from-args? args)
+          (track-allocations-from-env? env)) (assoc :track-allocations true))))

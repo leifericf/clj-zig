@@ -424,43 +424,72 @@
   the shape carries a :free-body it establishes that sibling too; opens
   the library through clj-zig.foreign (process-lifetime); runs Criterium
   over the defnz invoker and the direct-handle floor invoker; returns
-  the two normalized result maps stats consumes."
-  [shape]
-  (let [shape-ns  (shape-ns shape)
-        _         (register-setup! shape-ns (:setup shape))
-        the-spec  (build-spec-for shape shape-ns)
-        body      (:body shape)
-        artifact  (clj-zig/establish! the-spec body)
-        library   (:library artifact)
-        main-sym  (:symbol artifact)
-        defnz-fn  (:invoke artifact)
-        lookup    (foreign/library-lookup library)
-        free-art  (when (:free-body shape)
-                    (let [fb (:free-body shape)]
-                      (clj-zig/establish!
-                       (spec/build-spec {:ns        shape-ns
-                                         :name      (symbol (:name fb))
-                                         :signature (:signature fb)
-                                         :types     (clj-zig.core/types-in shape-ns)})
-                       (:body fb))))
-        free-fn   (some-> free-art :invoke)
-        ;; The free binding the floor uses to bind its free handle. For
-        ;; auto-emitted shims (:string, :owned-return) the shim lives in
-        ;; the MAIN library, so the binding shares the main lookup with
-        ;; the derived <sym>__free symbol. For a sibling :free-body
-        ;; (:handle) the shim lives in its OWN library, so the binding
-        ;; carries that library's lookup and the free-body's symbol.
-        free-binding (when (:free-shim (:floor shape))
-                       (if free-art
-                         {:free-lookup (foreign/library-lookup (:library free-art))
-                          :free-symbol (:symbol free-art)}
-                         {:free-lookup lookup
-                          :free-symbol (str main-sym "__free")}))
-        arg-values ((:arg-fn shape))
-        defnz-call (defnz-thunk shape defnz-fn free-fn arg-values)
-        floor-call (floor-thunk shape main-sym lookup free-binding)]
-    {:defnz (measure defnz-call)
-     :floor (measure floor-call)}))
+  the two normalized result maps stats consumes.
+
+  When `track?` is true the bench runs under :zig/track-allocations: the
+  artifact is compiled with the flag (a counting allocator over
+  c_allocator), and a per-shape native allocation count is read around
+  the defnz measured loop -- reset before, read after -- so the entry
+  carries :native-allocations for the defnz path. The count is read
+  BEFORE the floor loop runs, so the floor's wrapper invokes do not
+  pollute it. The count fns are the codegen-emitted per-symbol
+  `__alloc_count_get` / `__alloc_count_reset` the flag adds to the MAIN
+  library."
+  ([shape] (measure-shape shape nil))
+  ([shape track?]
+   (let [shape-ns  (shape-ns shape)
+         _         (register-setup! shape-ns (:setup shape))
+         the-spec  (build-spec-for shape shape-ns)
+         body      (:body shape)
+         gen-opts  (when track? {:options-extra {:track-allocations true}})
+         artifact  (clj-zig/establish! the-spec body gen-opts)
+         library   (:library artifact)
+         main-sym  (:symbol artifact)
+         defnz-fn  (:invoke artifact)
+         lookup    (foreign/library-lookup library)
+         free-art  (when (:free-body shape)
+                     (let [fb (:free-body shape)]
+                       (clj-zig/establish!
+                        (spec/build-spec {:ns        shape-ns
+                                          :name      (symbol (:name fb))
+                                          :signature (:signature fb)
+                                          :types     (clj-zig.core/types-in shape-ns)})
+                        (:body fb)
+                        gen-opts)))
+         free-fn   (some-> free-art :invoke)
+         ;; The free binding the floor uses to bind its free handle. For
+         ;; auto-emitted shims (:string, :owned-return) the shim lives in
+         ;; the MAIN library, so the binding shares the main lookup with
+         ;; the derived <sym>__free symbol. For a sibling :free-body
+         ;; (:handle) the shim lives in its OWN library, so the binding
+         ;; carries that library's lookup and the free-body's symbol.
+         free-binding (when (:free-shim (:floor shape))
+                        (if free-art
+                          {:free-lookup (foreign/library-lookup (:library free-art))
+                           :free-symbol (:symbol free-art)}
+                          {:free-lookup lookup
+                           :free-symbol (str main-sym "__free")}))
+         ;; Count handles for the profiling build: the codegen-emitted
+         ;; per-symbol get/reset fns in the MAIN library. Bound only
+         ;; under the flag; nil otherwise.
+         count-get   (when track?
+                       (foreign/downcall lookup (str main-sym "__alloc_count_get")
+                                         foreign/c-long []))
+         count-reset (when track?
+                       (foreign/downcall lookup (str main-sym "__alloc_count_reset")
+                                         :void []))
+         arg-values ((:arg-fn shape))
+         defnz-call (defnz-thunk shape defnz-fn free-fn arg-values)
+         floor-call (floor-thunk shape main-sym lookup free-binding)
+         ;; The defnz count is snapshot between the reset and the read,
+         ;; so it isolates the defnz path's native allocations. The floor
+         ;; loop runs after the read and does not affect the count.
+         _ (when track? (foreign/call count-reset))
+         defnz-result (measure defnz-call)
+         native-allocations (when track? (foreign/call count-get))
+         floor-result (measure floor-call)]
+     (cond-> {:defnz defnz-result :floor floor-result}
+       track? (assoc :native-allocations native-allocations)))))
 
 ;; --- profiler attach window ---------------------------------------------
 ;;
@@ -502,13 +531,15 @@
   "Measure one shape with error isolation: a compile, floor-bind, or
   Criterium fault is caught and shaped into an :errored entry via
   stats/diagnostic-entry, so the run continues the remaining shapes
-  rather than aborting the JVM. Returns the entry map."
-  [shape]
-  (let [identity (shape-identity shape)]
-    (try
-      (stats/shape-entry identity (measure-shape shape))
-      (catch Throwable e
-        (stats/diagnostic-entry identity e)))))
+  rather than aborting the JVM. Returns the entry map. `track?` threads
+  the :zig/track-allocations profiling build through to measure-shape."
+  ([shape] (measure-one shape nil))
+  ([shape track?]
+   (let [identity (shape-identity shape)]
+     (try
+       (stats/shape-entry identity (measure-shape shape track?))
+       (catch Throwable e
+         (stats/diagnostic-entry identity e))))))
 
 (defn- print-summary
   "Print one line per entry so a manual run sees the headline numbers
@@ -521,7 +552,9 @@
                "defnz" (int (:defnz-median e)) "ns"
                "floor" (int (:floor-median e)) "ns"
                "overhead" (int (:overhead-ns e)) "ns"
-               (when (:body-leak-suspect e) "(body-leak-suspect)"))))
+               (when (:body-leak-suspect e) "(body-leak-suspect)")
+               (when (some? (:native-allocations e))
+                 (str "allocs " (:native-allocations e))))))
   nil)
 
 (defn- select-shapes
@@ -549,16 +582,26 @@
   An optional --attach-window <secs> (or CLJ_ZIG_ATTACH_WINDOW) opens a
   profiler attach window before the measured run: the bench prints its
   pid and sleeps, so an external profiler can attach. Off by default;
-  see bench/RUNBOOK.md."
+  see bench/RUNBOOK.md.
+
+  An optional --track-allocations (or CLJ_ZIG_TRACK_ALLOCATIONS=1)
+  enables the profiling build: each shape's wrapper is compiled under
+  :zig/track-allocations and the entry carries a per-shape native
+  allocation count for the defnz path (0 for non-allocating shapes,
+  >0 for allocating ones). Off by default; a run without the option
+  builds the default library and matches the baseline, and the
+  profiling build's cache key is distinct from the default's (ADR 12)."
   [& args]
   (ensure-dir! artifacts-dir)
   (let [opts    (opts/parse-args args (System/getenv))
         _       (attach-profiler! opts)
         shapes  (select-shapes (:kind opts))
-        entries (mapv measure-one shapes)
+        track?  (:track-allocations opts)
+        entries (mapv #(measure-one % track?) shapes)
         record  (stats/numbers-record entries (meta-inputs))
         out     (io/file artifacts-dir
                          (str "perf-" (.getTime (java.util.Date.)) ".edn"))]
     (write-record! out record)
-    (println "wrote" (str out) "--" (count entries) "shapes")
+    (println "wrote" (str out) "--" (count entries) "shapes"
+             (when track? "(track-allocations)"))
     (print-summary entries)))
