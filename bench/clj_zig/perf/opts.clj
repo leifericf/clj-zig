@@ -19,16 +19,25 @@
 (def ^:private axis1-flag "--axis1")
 (def ^:private axis1-env "CLJ_ZIG_AXIS1")
 
+(defn- parse-attach-window
+  "Parse `s` as the whole-second attach window, returning the integer
+  only when it is a positive long. nil otherwise (absent, non-numeric,
+  or non-positive), so a malformed or non-positive invocation is off
+  rather than an IllegalArgumentException from Thread/sleep."
+  [s]
+  (when-let [secs (parse-long s)]
+    (when (pos? secs) secs)))
+
 (defn- parse-attach-window-flag
   "Walk `args` and return the integer value of the --attach-window flag,
-  or nil when the flag is absent or its value does not parse as a long.
-  A trailing flag with no value parses to nil, so a malformed invocation
-  is off rather than an indefinite sleep."
+  or nil when the flag is absent, its value does not parse as a positive
+  long. A trailing flag with no value parses to nil, so a malformed
+  invocation is off rather than an indefinite sleep."
   [args]
   (loop [[a & rest] args]
     (cond
       (nil? a)                 nil
-      (= a attach-window-flag) (some-> (first rest) parse-long)
+      (= a attach-window-flag) (some-> (first rest) parse-attach-window)
       :else                    (recur rest))))
 
 (defn- track-allocations-from-args?
@@ -104,7 +113,7 @@
   default mode."
   [args env]
   (let [from-flag (parse-attach-window-flag args)
-        from-env  (some-> (get env attach-window-env) parse-long)]
+        from-env  (some-> (get env attach-window-env) parse-attach-window)]
     (cond-> {:kind (positional-kind args)}
       (or from-flag from-env)        (assoc :attach-window (or from-flag from-env))
       (or (track-allocations-from-args? args)

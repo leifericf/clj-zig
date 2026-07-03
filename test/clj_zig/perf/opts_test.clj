@@ -46,6 +46,14 @@
 (deftest non-numeric-flag-value-is-off
   (is (nil? (:attach-window (opts/parse-args ["--attach-window" "abc"] {})))))
 
+(deftest non-positive-flag-value-is-off
+  ;; A negative or zero attach window would throw in Thread/sleep; the
+  ;; parse treats it as absent so a malformed invocation is off.
+  (is (nil? (:attach-window (opts/parse-args ["--attach-window" "-5"] {}))))
+  (is (nil? (:attach-window (opts/parse-args ["--attach-window" "0"] {}))))
+  (is (nil? (:attach-window (opts/parse-args ["scalar" "--attach-window" "-1"] {}))))
+  (is (nil? (:attach-window (opts/parse-args [] {"CLJ_ZIG_ATTACH_WINDOW" "-3"})))))
+
 (deftest track-allocations-off-by-default
   ;; The profiling build is OFF by default: a run with no option compiles
   ;; the default library and matches the baseline. Pinned so a regression
