@@ -156,6 +156,52 @@
            :status     :errored
            :diagnostic (str/join "; " parts))))
 
+;; --- Axis-1 authoring-latency tier shaping --------------------------------
+;;
+;; Axis-1 measures a defnz redefine's wall-clock across three cache tiers
+;; (cold, global-cache-hit, clj-zig-cache-hit) and separates the zig
+;; build-lib subprocess wall-clock from the JVM-side time. p1 found a
+;; single redefine is subprocess-dominated: the clj-zig authoring code
+;; runs for milliseconds, the zig build-lib subprocess wait dominates
+;; the roughly one-second wall-clock. The separation lets optimization
+;; see where redefine time actually goes without re-deriving it.
+
+(defn tier-entry
+  "Shape one Axis-1 shape's three-tier redefine timings into a
+  numbers-record entry. `ctx` carries the shape identity ({:kind,
+  :name}); `results` carries the three tier redefine wall-clock medians
+  and the separated subprocess wall-clock as DATA the shell supplies:
+
+    :cold                median redefine wall-clock (ms) for the cold
+                         tier (clj-zig cache and global cache cleared)
+    :global-cache-hit    median redefine wall-clock (ms) for the tier
+                         that clears the clj-zig cache but keeps the
+                         zig global cache (so the zig artifact is reused
+                         but clj-zig re-links)
+    :clj-zig-cache-hit   median redefine wall-clock (ms) for the tier
+                         that keeps both caches (the fastest path; no
+                         subprocess runs)
+    :subprocess-ms       the zig build-lib subprocess wall-clock (ms)
+                         separated from JVM-side time, captured in the
+                         cold tier where the subprocess dominates; nil
+                         when the tier loop did not invoke the subprocess
+    :tier-contaminated   truthy when a stale cache entry survived a
+                         clear and a tier did not reach its intended
+                         cache state; the entry is flagged, never
+                         silently misreported as a clean number
+
+  Returns a map carrying the shape identity plus :cold,
+  :global-cache-hit, :clj-zig-cache-hit, :subprocess-ms, and
+  :tier-contaminated. Pure data the shell threads in, so this namespace
+  stays JVM-free and unit-testable without Criterium or a native lib."
+  [ctx results]
+  (assoc ctx
+         :cold (:cold results)
+         :global-cache-hit (:global-cache-hit results)
+         :clj-zig-cache-hit (:clj-zig-cache-hit results)
+         :subprocess-ms (:subprocess-ms results)
+         :tier-contaminated (boolean (:tier-contaminated results))))
+
 ;; --- the top-level numbers record ----------------------------------------
 
 (defn numbers-record

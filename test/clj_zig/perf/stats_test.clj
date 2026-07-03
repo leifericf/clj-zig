@@ -158,6 +158,48 @@
     (is (= :errored (:status entry)))
     (is (re-find #"boom" (:diagnostic entry)))))
 
+(deftest tier-entry-carries-three-tier-medians-and-subprocess-ms
+  ;; The pure core threads the three tier medians (cold, global-cache-hit,
+  ;; clj-zig-cache-hit), the separated zig build-lib subprocess wall-clock,
+  ;; and the tier-contamination flag as DATA the shell supplies, so it stays
+  ;; JVM-free and unit-testable without Criterium or a native lib.
+  (let [entry (stats/tier-entry
+               {:kind :scalar-passthrough :name "echo-i64"}
+               {:cold 1000.0
+                :global-cache-hit 200.0
+                :clj-zig-cache-hit 5.0
+                :subprocess-ms 950.0})]
+    (is (= 1000.0 (:cold entry)))
+    (is (= 200.0  (:global-cache-hit entry)))
+    (is (= 5.0    (:clj-zig-cache-hit entry)))
+    (is (= 950.0  (:subprocess-ms entry))
+        "the subprocess ms is the separated zig build-lib wall-clock")))
+
+(deftest tier-entry-defaults-tier-contaminated-to-false-when-absent
+  ;; An entry measured without a contamination signal is unflagged, never
+  ;; missing the key, so every entry has a consistent shape.
+  (let [entry (stats/tier-entry
+               {:kind :scalar-passthrough :name "echo-i64"}
+               {:cold 1000.0 :global-cache-hit 200.0 :clj-zig-cache-hit 5.0})]
+    (is (false? (:tier-contaminated entry))
+        "an absent contamination signal is false, never a missing key")))
+
+(deftest tier-entry-propagates-tier-contaminated-when-supplied
+  ;; A forced stale entry surviving a clear is reported as contaminated,
+  ;; never silently shaped as a clean number.
+  (let [entry (stats/tier-entry
+               {:kind :scalar-passthrough :name "echo-i64"}
+               {:cold 1000.0 :global-cache-hit 200.0 :clj-zig-cache-hit 5.0
+                :tier-contaminated true})]
+    (is (:tier-contaminated entry))))
+
+(deftest tier-entry-preserves-shape-identity
+  (let [entry (stats/tier-entry
+               {:kind :string :name "string-identity"}
+               {:cold 1.0 :global-cache-hit 1.0 :clj-zig-cache-hit 1.0})]
+    (is (= :string (:kind entry)))
+    (is (= "string-identity" (:name entry)))))
+
 (deftest numbers-record-shapes-many-entries
   (let [entries [(stats/shape-entry
                   {:kind :scalar-passthrough :name "a"}
