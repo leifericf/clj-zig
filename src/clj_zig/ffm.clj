@@ -1219,6 +1219,27 @@
     (try (.invokeWithArguments ^MethodHandle free-handle (object-array args))
          (catch Throwable _ nil))))
 
+(def ^:private noop-copy-back!
+  "A constant no-op copy-back, installed at bind time when no param can
+  produce a copy-back thunk (no mutable slices, pointers, or optionals).
+  Lets the general invoker skip the per-call cb-count loop and the
+  per-call copy-back! closure allocation."
+  (fn noop-copy-back! []))
+
+(defn- param-may-copy-back?
+  "True if marshalling this param can produce a non-nil copy-back thunk.
+  Const slices, arrays, named structs, handles, strings, and scalars
+  never copy back; mutable slices and pointers do; an :optional is
+  conservatively treated as may (a pointer-pointed optional can copy
+  back, a scalar-pointed one cannot, but the distinction is rare)."
+  [param]
+  (let [t (:type param)]
+    (case (:kind t)
+      (:manyptr :ptr) true
+      :slice (not (:const? t))
+      :optional true
+      false)))
+
 ;; --- general-path return dispatch ----------------------------------------
 ;; The non-scalar return shapes each need their own downcall choreography:
 ;; where to write out-params, how to read the result, and whether a free
@@ -1542,6 +1563,7 @@
                            (or owned-rec? struct-ret?) 1
                            :else 0)
         total        (+ base-offset n-base n-trailing)
+        has-mutable-args? (some param-may-copy-back? params)
         ;; Cache a spreader handle once per bind so the call site is a
         ;; single `.invokeExact` with a fixed `(Object[]) Object` signature.
         ;; `invokeWithArguments` re-derives the spreader and its MethodType
@@ -1610,9 +1632,10 @@
                           (ThreadLocal/withInitial
                            (reify java.util.function.Supplier
                              (get [_] (object-array arity)))))
-     :gen-base-offset base-offset
-     :gen-n-base      n-base
-     :i128-ret?       i128-ret?}))
+      :gen-base-offset base-offset
+      :gen-n-base      n-base
+      :has-mutable-args? has-mutable-args?
+      :i128-ret?       i128-ret?}))
 
 ;; --- Thread-local arena pooling for the call path ------------------------
 ;; With the arena pool on (the default), a thread-local confined arena is
@@ -1691,7 +1714,8 @@
                 scalar? enum? enum-coercions scalar-coercions carriers-tl
                 slice? slice-writers slice-counts slice-chain slice-carriers-tl
                 stream? eu-struct? owned-rec? owned-slice? opt-struct? struct-ret?
-                gen-carriers-tl gen-copybacks-tl gen-base-offset gen-n-base]}
+                gen-carriers-tl gen-copybacks-tl gen-base-offset gen-n-base
+                has-mutable-args?]}
         (bind-context spec library-path)]
     (cond
       scalar?
@@ -1741,42 +1765,47 @@
         (with-pooled-arena
          (fn [^Arena arena]
            (let [^objects carriers (.get ^ThreadLocal gen-carriers-tl)
-                 ^objects copybacks (.get ^ThreadLocal gen-copybacks-tl)
                  base-offset (long gen-base-offset)]
-             ;; Fill the base carriers, collecting copy-back thunks into
-             ;; `copybacks`; the helper reads `cb-count` to know how many
-             ;; to run. The loop advances the write offset by each param's
-             ;; carrier count without realizing a per-arg map or vector.
-             (let [cb-count (loop [i (long 0) off base-offset cb (long 0)]
-                              (if (>= i (long arity))
-                                cb
-                                (let [param (nth params i)
-                                      arg   (nth args i)
-                                      copy-back (marshal-arg-into! arena param arg carriers off)]
-                                  (when copy-back
-                                    (aset copybacks cb copy-back))
-                                  (recur (inc i)
-                                         (+ off (param-carrier-count param))
-                                         (if copy-back (inc cb) cb)))))]
-               ;; The copy-back thunk runs each collected thunk once. Built
-               ;; per call (no closed-over marshalled vec), but its body is
-               ;; a tight loop over the pre-sized array.
-               (let [copy-back! (fn []
-                                  (loop [i (long 0)]
-                                    (when (< i cb-count)
-                                      ((aget copybacks i))
-                                      (recur (inc i)))))]
-                 (cond
-                   stream?                      (let [iter-addr (.invokeExact ^MethodHandle spreader ^objects carriers)]
-                                                  (copy-back!)
-                                                  (make-stream-reducible iter-addr next-h free-h ret elem-lay))
-                   eu-struct?                   (invoke-eu-struct   invoke-ctx arena carriers copy-back!)
-                   (= :error-union (:kind ret)) (invoke-error-union invoke-ctx arena carriers copy-back!)
-                   owned-rec?                   (invoke-owned-record invoke-ctx arena carriers copy-back!)
-                   owned-slice?                 (invoke-owned-slice  invoke-ctx arena carriers copy-back!)
-                   opt-struct?                  (invoke-optional-struct invoke-ctx arena carriers copy-back!)
-                   struct-ret?                  (invoke-struct-return invoke-ctx arena carriers copy-back!)
-                   :else                        (invoke-scalar       invoke-ctx arena carriers copy-back!)))))))))))
+             ;; Fill the base carriers. When no param can produce a
+             ;; copy-back thunk, skip the per-call cb-count loop and use a
+             ;; constant noop for copy-back!, saving the per-call closure
+             ;; allocation. When any param may copy back, count and
+             ;; collect the thunks; the copy-back! body is a tight loop
+             ;; over the pre-sized array.
+             (let [copy-back! (if has-mutable-args?
+                                (let [^objects copybacks (.get ^ThreadLocal gen-copybacks-tl)
+                                      cb-count (loop [i (long 0) off base-offset cb (long 0)]
+                                                 (if (>= i (long arity))
+                                                   cb
+                                                   (let [param (nth params i)
+                                                         arg   (nth args i)
+                                                         copy-back (marshal-arg-into! arena param arg carriers off)]
+                                                     (when copy-back
+                                                       (aset copybacks cb copy-back))
+                                                     (recur (inc i)
+                                                            (+ off (param-carrier-count param))
+                                                            (if copy-back (inc cb) cb)))))]
+                                  (fn []
+                                    (loop [i (long 0)]
+                                      (when (< i cb-count)
+                                        ((aget copybacks i))
+                                        (recur (inc i))))))
+                                (do (loop [i (long 0) off base-offset]
+                                      (when (< i (long arity))
+                                        (marshal-arg-into! arena (nth params i) (nth args i) carriers off)
+                                        (recur (inc i) (+ off (param-carrier-count (nth params i))))))
+                                    noop-copy-back!))]
+               (cond
+                 stream?                      (let [iter-addr (.invokeExact ^MethodHandle spreader ^objects carriers)]
+                                                (copy-back!)
+                                                (make-stream-reducible iter-addr next-h free-h ret elem-lay))
+                 eu-struct?                   (invoke-eu-struct   invoke-ctx arena carriers copy-back!)
+                 (= :error-union (:kind ret)) (invoke-error-union invoke-ctx arena carriers copy-back!)
+                 owned-rec?                   (invoke-owned-record invoke-ctx arena carriers copy-back!)
+                 owned-slice?                 (invoke-owned-slice  invoke-ctx arena carriers copy-back!)
+                 opt-struct?                  (invoke-optional-struct invoke-ctx arena carriers copy-back!)
+                 struct-ret?                  (invoke-struct-return invoke-ctx arena carriers copy-back!)
+                 :else                        (invoke-scalar       invoke-ctx arena carriers copy-back!))))))))))
 
 (comment
   ;; A whole small pipeline: build, compile, bind, call.
