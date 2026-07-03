@@ -814,10 +814,12 @@
   the call needs no confined arena. A scalar param coerces straight to its
   carrier with `to-carrier` (no native segment is allocated), and a scalar
   or `:void` return reads back with no out-pointer. Anything that touches
-  the arena -- a slice, pointer, array, struct, enum, handle, optional, a
-  128-bit integer (a 16-byte segment, and a by-value return prepends a
-  SegmentAllocator to the handle), or an error-union/owned/struct return
-  -- is excluded and takes the general path. (`:void` normalizes to
+  the arena -- a slice, pointer, array, struct, enum (the enum-aware path
+  of `enum-aware-scalar?` covers it), handle, optional, a 128-bit integer
+  (a 16-byte segment, and a by-value return prepends a SegmentAllocator to
+  the handle), or an error-union/owned/struct return -- is excluded. The
+  enum-aware path picks up signatures over only scalars and enums; everything
+  else takes the general arena-backed path. (`:void` normalizes to
   `{:kind :scalar :name :void}`, so the return test covers it.)"
   [params ret]
   (and (every? (fn [p] (and (= :scalar (-> p :type :kind))
@@ -825,6 +827,62 @@
                params)
        (= :scalar (:kind ret))
        (not (i128-type? ret))))
+
+(defn- enum-aware-scalar?
+  "True when every param and the return cross as a plain scalar carrier OR
+  a named enum, so the call needs no confined arena, AND the signature is
+  not pure-scalar (`scalar-only?` covers that case). An enum crosses the C
+  ABI as its backing scalar, so a signature over only scalars and enums
+  lowers to the same `(int|long) -> (int|long)` ABI the scalar hot path
+  already serves; only the per-arg and per-return coercion differs (a
+  keyword lookup for enums). The not-pure-scalar guard keeps the scalar
+  hot path single-shape; bind checks `scalar-only?` first."
+  [params ret]
+  (and (not (scalar-only? params ret))
+       (every? (fn [p] (or (and (= :scalar (-> p :type :kind))
+                               (not (i128-type? (:type p))))
+                          (and (= :named (-> p :type :kind))
+                               (enum-type? (:type p)))))
+               params)
+       (or (and (= :scalar (:kind ret)) (not (i128-type? ret)))
+           (and (= :named (:kind ret)) (enum-type? ret)))))
+
+(defn- enum-param-coerce
+  "Build a per-call coercion fn for one enum param: keyword to backing
+  scalar carrier. Throws `:clj-zig/unknown-enum-member` for a non-member."
+  [layout]
+  (let [backing (:backing layout)]
+    (fn enum-coerce [arg]
+      (let [value (enum-member->value layout arg)]
+        (when (nil? value)
+          (throw (ex-info (str arg " is not a member of enum " (:name layout) ".")
+                          {:level :error
+                           :error/code :clj-zig/unknown-enum-member
+                           :type (:name layout) :member arg})))
+        (to-carrier {:type backing} value)))))
+
+(defn- enum-return-coerce
+  "Build a per-call return coercion fn for an enum return: backing scalar
+  to keyword (or the raw integer when no member carries it, total per
+  ADR 20)."
+  [layout]
+  (fn enum-ret [result]
+    (enum-value->member layout (long result))))
+
+(defn- enum-aware-coercions
+  "Build `[param-coercions return-coercion]` for an enum-aware signature:
+  one coercion fn per param (scalar uses `to-carrier`, enum uses the
+  keyword-to-backing lookup) and one return fn (scalar uses `from-return`,
+  enum uses the int-to-keyword lookup)."
+  [params ret]
+  [(vec (for [p params]
+          (let [type (:type p)]
+            (cond
+              (= :scalar (:kind type)) #(to-carrier p %)
+              (enum-type? type)        (enum-param-coerce (:layout type))))))
+   (if (= :named (:kind ret))
+     (enum-return-coerce (:layout ret))
+     #(from-return ret %))])
 
 (defn- safe-free
   "Invoke the free shim with `args`, swallowing a fault so a failure in the
@@ -1142,6 +1200,7 @@
         ;; out-seg slots after that. base-offset is 1 only for an i128
         ;; return, where FFM prepends the arena as SegmentAllocator.
         scalar-path? (scalar-only? params ret)
+        enum-path?   (enum-aware-scalar? params ret)
         i128-ret?    (i128-type? ret)
         base-offset  (if i128-ret? 1 0)
         n-base       (reduce + (map param-carrier-count params))
@@ -1170,23 +1229,27 @@
      ;; interop (ADR 10) means a call cannot re-enter itself on the same
      ;; thread, so reuse is safe.
      :scalar?      scalar-path?
-     :carriers-tl  (when scalar-path?
-                     (ThreadLocal/withInitial
-                      (reify java.util.function.Supplier
-                        (get [_] (object-array arity)))))
-     ;; The general invoker's thread-local state: the pre-sized carrier
-     ;; array (`total` slots) and a copy-back slot array sized for the
-     ;; arity (the worst case is one copy-back per param). Reused across
-     ;; calls on the same thread; safe for the same one-directional-interop
-     ;; reason the scalar hot path is (ADR 10).
-     :gen-carriers-tl (when-not scalar-path?
-                        (ThreadLocal/withInitial
-                         (reify java.util.function.Supplier
-                           (get [_] (object-array total)))))
-     :gen-copybacks-tl (when-not scalar-path?
+      :enum?        enum-path?
+      :carriers-tl  (when (or scalar-path? enum-path?)
+                      (ThreadLocal/withInitial
+                       (reify java.util.function.Supplier
+                         (get [_] (object-array arity)))))
+      ;; The enum-aware path's per-arg and per-return coercion fns, built
+      ;; once at bind time. nil for the scalar and general paths.
+      :enum-coercions (when enum-path? (enum-aware-coercions params ret))
+      ;; The general invoker's thread-local state: the pre-sized carrier
+      ;; array (`total` slots) and a copy-back slot array sized for the
+      ;; arity (the worst case is one copy-back per param). Reused across
+      ;; calls on the same thread; safe for the same one-directional-interop
+      ;; reason the scalar hot path is (ADR 10).
+      :gen-carriers-tl (when (and (not scalar-path?) (not enum-path?))
                          (ThreadLocal/withInitial
                           (reify java.util.function.Supplier
-                            (get [_] (object-array arity)))))
+                            (get [_] (object-array total)))))
+      :gen-copybacks-tl (when (and (not scalar-path?) (not enum-path?))
+                          (ThreadLocal/withInitial
+                           (reify java.util.function.Supplier
+                             (get [_] (object-array arity)))))
      :gen-base-offset base-offset
      :gen-n-base      n-base
      :i128-ret?       i128-ret?}))
@@ -1261,11 +1324,12 @@
   out-segments themselves, and any owned/buffer resource the body allocates."
   [spec library-path]
   (let [{:keys [handle params ret arity invoke-ctx next-h free-h elem-lay var-sym
-                scalar? carriers-tl stream? eu-struct? owned-rec? owned-slice?
-                opt-struct? struct-ret?
+                scalar? enum? enum-coercions carriers-tl stream? eu-struct?
+                owned-rec? owned-slice? opt-struct? struct-ret?
                 gen-carriers-tl gen-copybacks-tl gen-base-offset gen-n-base]}
         (bind-context spec library-path)]
-    (if scalar?
+    (cond
+      scalar?
       (fn [& args]
         (when (not= (count args) arity)
           (throw (wrong-arity-ex var-sym arity (count args))))
@@ -1275,6 +1339,20 @@
               (aset carriers i (to-carrier (nth params i) (first as)))
               (recur (inc i) (next as))))
           (from-return ret (.invokeWithArguments ^MethodHandle handle carriers))))
+
+      enum?
+      (let [[param-coercions return-coerce] enum-coercions]
+        (fn [& args]
+          (when (not= (count args) arity)
+            (throw (wrong-arity-ex var-sym arity (count args))))
+          (let [^objects carriers (.get ^ThreadLocal carriers-tl)]
+            (loop [i (long 0) as args]
+              (when (< i (long arity))
+                (aset carriers i ((nth param-coercions i) (first as)))
+                (recur (inc i) (next as))))
+            (return-coerce (.invokeWithArguments ^MethodHandle handle carriers)))))
+
+      :else
       (fn [& args]
         (when (not= (count args) arity)
           (throw (wrong-arity-ex var-sym arity (count args))))

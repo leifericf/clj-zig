@@ -138,7 +138,7 @@
     (is (scalar? #'f/swallow)  "scalar in, :void out")
     (is (not (scalar? #'f/sum-f64))    "a slice arg needs the arena")
     (is (not (scalar? #'f/echo-point)) "a struct return needs the out-pointer")
-    (is (not (scalar? #'f/echo-suit))  "an enum crosses through the named path")
+    (is (not (scalar? #'f/echo-suit))  "an enum takes the enum-aware path, not the scalar path")
     (is (not (scalar? #'f/box))        "a handle return takes the general path")))
 
 (deftest scalar-hot-path-round-trips-in-volume
@@ -157,6 +157,44 @@
                           (every? true?
                                   (map (fn [i] (let [v (+ (* (long t) 1000000) i)]
                                                  (= v (f/echo-i64 v))))
+                                       (range per)))))
+                      (range threads))]
+    (is (every? true? (map deref futs)))))
+
+;; --- the enum-aware hot path -------------------------------------------
+;; A signature over only scalars and enums also skips the confined arena:
+;; an enum crosses the C ABI as its backing scalar, so the call is a scalar
+;; round-trip plus a per-arg keyword lookup. The selection includes enum
+;; args and enum returns alongside plain scalars; a slice, struct, handle,
+;; or pointer still needs the general path.
+
+(deftest enum-aware-selects-the-enum-path
+  (let [enum-aware? (fn [v] (let [s (zig/spec v)]
+                              (#'ffm/enum-aware-scalar? (:params s) (:ret s))))]
+    (is (enum-aware? #'f/echo-suit) "enum in, enum out")
+    (is (not (enum-aware? #'f/echo-i64))  "a scalar-only sig takes the scalar path, not the enum path")
+    (is (not (enum-aware? #'f/sum-f64))   "a slice arg needs the arena")
+    (is (not (enum-aware? #'f/echo-point)) "a struct return needs the out-pointer")
+    (is (not (enum-aware? #'f/box))        "a handle return takes the general path")))
+
+(deftest enum-aware-path-round-trips-in-volume
+  ;; No arena and a reused carrier array: an enum call driven hard must
+  ;; stay correct call after call, both directions of the keyword/int map.
+  (let [suits [:clubs :diamonds :hearts :spades]]
+    (is (every? #(= % (f/echo-suit %)) (take 100000 (cycle suits))))))
+
+(deftest enum-aware-path-is-thread-safe
+  ;; The carrier array is thread-local, so concurrent callers never corrupt
+  ;; each other's arguments: each thread echoes a disjoint enum cycle and
+  ;; must get its own values back, never another thread's.
+  (let [threads 8
+        per     20000
+        suits   [:clubs :diamonds :hearts :spades]
+        futs    (mapv (fn [t]
+                        (future
+                          (every? true?
+                                  (map (fn [i] (let [v (nth suits (mod (+ t i) 4))]
+                                                 (= v (f/echo-suit v))))
                                        (range per)))))
                       (range threads))]
     (is (every? true? (map deref futs)))))
