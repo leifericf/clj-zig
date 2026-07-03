@@ -202,3 +202,38 @@ Phase 1 is foundational (touches every call). Phases 2, 3, 4, 5, 8, 9,
 and 7 share per-bind eval machinery; land together.
 
 Recommended order: 1, 3, 4, 2, 5, 6+7, 8, 9, 10.
+
+## Results
+
+All ten phases landed on `perf/general-path-carrier-array`. Round-1
+baseline vs round-2 measurement (ns per call, defnz median; floor is
+the direct-handle path clj-zig.foreign binds):
+
+| Shape            | Round 1 | Round 2 | Floor | Overhead |
+|------------------|---------|---------|-------|----------|
+| scalar-passthrough | 194   | 68      | 59    | 8 ns     |
+| enum              | 197    | 83      | 56    | 27 ns    |
+| slice-arg         | 232    | 180     | 58    | 122 ns   |
+| struct-by-value   | 388    | 331     | 58    | 272 ns   |
+| handle            | 347    | 146     | 128   | 17 ns    |
+| string            | 810    | 788     | 5234  | (body-alloc-dominated) |
+| owned-return      | 1750   | 1803    | 5257  | (body-alloc-dominated) |
+
+The three pure-overhead shapes (scalar, enum, handle) now sit within
+8-27 ns of the direct-handle floor. The slice and struct shapes
+improved 22-58% but a structural floor remains (the segment allocation
+and bulk copy the contract requires). The body-alloc-dominated shapes
+(string, owned-return) are unchanged; the wrapper's per-call cost is no
+longer visible against the body's allocation.
+
+The cached spreader (Phase 1) was the largest single lever; the
+no-arena path for handle args (Phase 3) collapsed the handle bench from
+347 to 146 ns by sending `free-box`'s no-arena path; the noop
+copy-back! (Phase 8) and the deftype Handle (Phase 9) trimmed the
+remaining per-call allocations. The per-bind coercions (Phases 4 and
+5), unrolled loops (Phases 6+7), default-on arena pool (Phase 2), and
+single-count arity check (Phase 10) each removed a small constant.
+
+The fresh profile evidence that motivated these phases lives under
+`~/.agentic-sdk/clj-zig/artifacts/perf/round2/*.jfr`; the post-round-2
+numbers record lives alongside as `perf-<millis>.edn`.
