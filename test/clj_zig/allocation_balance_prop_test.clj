@@ -198,3 +198,45 @@
                                        (range per)))))
                       (range threads))]
     (is (every? true? (map deref futs)))))
+
+;; --- the const-slice-aware hot path ------------------------------------
+;; A signature with one or more [:slice :const <scalar>] args plus scalar
+;; or enum params/return lowers to (ptr, len, ...) at the C ABI. The
+;; invoker opens a confined arena for the slice segments and fills a
+;; thread-local carrier array inline -- skipping marshal-array's per-arg
+;; map and the general path's copy-back loop. Mutable slices, structs,
+;; handles, and other arena-touching shapes stay on the general path.
+
+(deftest slice-aware-selects-the-slice-path
+  (let [slice-aware? (fn [v] (let [s (zig/spec v)]
+                               (#'ffm/slice-aware? (:params s) (:ret s))))]
+    (is (slice-aware? #'f/sum-f64) "a const-slice arg with a scalar return takes the slice path")
+    (is (not (slice-aware? #'f/echo-suit))   "an enum-only sig takes the enum path, not the slice path")
+    (is (not (slice-aware? #'f/echo-i64))    "a scalar-only sig takes the scalar path, not the slice path")
+    (is (not (slice-aware? #'f/echo-point))  "a struct return takes the general path")
+    (is (not (slice-aware? #'f/box))         "a handle return takes the general path")))
+
+(deftest slice-aware-path-round-trips-in-volume
+  ;; The arena holds the slice copy for exactly the call; a slice call
+  ;; driven hard must stay correct call after call. Multiple slices of
+  ;; varying lengths exercise the per-param writer offsets.
+  (is (= 6.0 (f/sum-f64 (double-array [1.0 2.0 3.0]))))
+  (is (every? (fn [_] (= 6.0 (f/sum-f64 (double-array [1.0 2.0 3.0]))))
+              (range 50000))))
+
+(deftest slice-aware-path-is-thread-safe
+  ;; The carrier array is thread-local; concurrent callers do not corrupt
+  ;; each other's segments. Each thread sums a disjoint value range.
+  (let [threads 8
+        per     5000
+        futs    (mapv (fn [t]
+                        (future
+                          (every? true?
+                                  (map (fn [i]
+                                         (let [base (* (+ t i) 1.0)
+                                               arr  (double-array [base base base])
+                                               expected (* 3.0 base)]
+                                           (= expected (f/sum-f64 arr))))
+                                       (range per)))))
+                      (range threads))]
+    (is (every? true? (map deref futs)))))

@@ -847,6 +847,82 @@
        (or (and (= :scalar (:kind ret)) (not (i128-type? ret)))
            (and (= :named (:kind ret)) (enum-type? ret)))))
 
+(defn- const-slice-of-scalar?
+  "True when `param`'s type is `[:slice :const <scalar>]` for a carrier
+  scalar (the shape that lowers to `(ptr, len)` with one bulk copy and no
+  copy-back). Excludes bool slices (no bulk-copy primitive), mutable slices
+  (which need copy-back), and struct-element slices (which need
+  per-element marshalling)."
+  [param]
+  (let [t (:type param)]
+    (and (= :slice (:kind t))
+         (:const? t)
+         (= :scalar (-> t :of :kind))
+         (not= :bool (:category (type/scalar-info (-> t :of :name)))))))
+
+(defn- slice-aware?
+  "True when the signature has at least one const-slice-of-scalar arg and
+  every other param and the return is a plain scalar, named enum, or
+  const-slice-of-scalar. The slice-aware invoker opens a confined arena
+  for the slice segments and fills a thread-local carrier array inline,
+  skipping marshal-array's per-arg map and the general path's loop
+  overhead. Mutable slices, structs, handles, and other arena-touching
+  shapes stay on the general path."
+  [params ret]
+  (and (some const-slice-of-scalar? params)
+       (every? (fn [p] (or (and (= :scalar (-> p :type :kind))
+                                (not (i128-type? (:type p))))
+                           (and (= :named (-> p :type :kind))
+                                (enum-type? (:type p)))
+                           (const-slice-of-scalar? p)))
+               params)
+       (or (and (= :scalar (:kind ret)) (not (i128-type? ret)))
+           (and (= :named (:kind ret)) (enum-type? ret)))))
+
+(defn- slice-aware-writers
+  "Build per-param writer closures for a slice-aware signature. Each
+  writer takes `(arena, carriers, off, arg)` and writes the param's
+  carriers starting at `off`. A scalar/enum writer writes one slot; a
+  const-slice writer allocates a segment from `arena`, bulk-copies the
+  primitive array in, and writes (seg, len-long) at `off` and `(inc off)`.
+  Returns `[writers carrier-counts]` so the invoker's loop can advance
+  its offset without rederiving the count per call."
+  [params]
+  (let [entries
+        (for [p params]
+          (let [t (:type p)]
+            (cond
+              (and (= :scalar (:kind t)) (not (i128-type? t)))
+              {:n 1
+               :write (fn [_arena ^objects cs ^long off arg]
+                        (aset cs off (to-carrier p arg)))}
+
+              (and (= :named (:kind t)) (enum-type? t))
+              (let [layout  (:layout t)
+                    backing (:backing layout)]
+                {:n 1
+                 :write (fn [_arena ^objects cs ^long off arg]
+                          (let [value (enum-member->value layout arg)]
+                            (when (nil? value)
+                              (throw (ex-info (str arg " is not a member of enum " (:name layout) ".")
+                                              {:level :error
+                                               :error/code :clj-zig/unknown-enum-member
+                                               :type (:name layout) :member arg})))
+                            (aset cs off (to-carrier {:type backing} value))))})
+
+              (const-slice-of-scalar? p)
+              (let [elem  (:of t)
+                    bl    (value-layout elem)
+                    bytes (.byteSize bl)]
+                {:n 2
+                 :write (fn [^Arena arena ^objects cs ^long off arg]
+                          (let [len (Array/getLength arg)
+                                seg ^MemorySegment (.allocate arena (* len bytes) bytes)]
+                            (MemorySegment/copy arg (int 0) seg bl (long 0) (int len))
+                            (aset cs off seg)
+                            (aset cs (inc off) (Long/valueOf (long len)))))}))))]
+    [(mapv :write entries) (mapv :n entries)]))
+
 (defn- enum-param-coerce
   "Build a per-call coercion fn for one enum param: keyword to backing
   scalar carrier. Throws `:clj-zig/unknown-enum-member` for a non-member."
@@ -1201,6 +1277,10 @@
         ;; return, where FFM prepends the arena as SegmentAllocator.
         scalar-path? (scalar-only? params ret)
         enum-path?   (enum-aware-scalar? params ret)
+        slice-path?  (and (not scalar-path?) (not enum-path?)
+                          (slice-aware? params ret))
+        slice-setup  (when slice-path? (slice-aware-writers params))
+        slice-total  (when slice-path? (reduce + (second slice-setup)))
         i128-ret?    (i128-type? ret)
         base-offset  (if i128-ret? 1 0)
         n-base       (reduce + (map param-carrier-count params))
@@ -1230,10 +1310,19 @@
      ;; thread, so reuse is safe.
      :scalar?      scalar-path?
       :enum?        enum-path?
+      :slice?       slice-path?
+      :slice-writers (when slice-path? (first slice-setup))
+      :slice-counts  (when slice-path? (second slice-setup))
       :carriers-tl  (when (or scalar-path? enum-path?)
                       (ThreadLocal/withInitial
                        (reify java.util.function.Supplier
                          (get [_] (object-array arity)))))
+      ;; The slice-aware path's own carrier array, sized for the sum of
+      ;; per-param carrier counts (a slice takes two slots).
+      :slice-carriers-tl (when slice-path?
+                           (ThreadLocal/withInitial
+                            (reify java.util.function.Supplier
+                              (get [_] (object-array slice-total)))))
       ;; The enum-aware path's per-arg and per-return coercion fns, built
       ;; once at bind time. nil for the scalar and general paths.
       :enum-coercions (when enum-path? (enum-aware-coercions params ret))
@@ -1242,11 +1331,11 @@
       ;; arity (the worst case is one copy-back per param). Reused across
       ;; calls on the same thread; safe for the same one-directional-interop
       ;; reason the scalar hot path is (ADR 10).
-      :gen-carriers-tl (when (and (not scalar-path?) (not enum-path?))
+      :gen-carriers-tl (when (and (not scalar-path?) (not enum-path?) (not slice-path?))
                          (ThreadLocal/withInitial
                           (reify java.util.function.Supplier
                             (get [_] (object-array total)))))
-      :gen-copybacks-tl (when (and (not scalar-path?) (not enum-path?))
+      :gen-copybacks-tl (when (and (not scalar-path?) (not enum-path?) (not slice-path?))
                           (ThreadLocal/withInitial
                            (reify java.util.function.Supplier
                              (get [_] (object-array arity)))))
@@ -1324,8 +1413,9 @@
   out-segments themselves, and any owned/buffer resource the body allocates."
   [spec library-path]
   (let [{:keys [handle params ret arity invoke-ctx next-h free-h elem-lay var-sym
-                scalar? enum? enum-coercions carriers-tl stream? eu-struct?
-                owned-rec? owned-slice? opt-struct? struct-ret?
+                scalar? enum? enum-coercions carriers-tl
+                slice? slice-writers slice-counts slice-carriers-tl
+                stream? eu-struct? owned-rec? owned-slice? opt-struct? struct-ret?
                 gen-carriers-tl gen-copybacks-tl gen-base-offset gen-n-base]}
         (bind-context spec library-path)]
     (cond
@@ -1351,6 +1441,24 @@
                 (aset carriers i ((nth param-coercions i) (first as)))
                 (recur (inc i) (next as))))
             (return-coerce (.invokeWithArguments ^MethodHandle handle carriers)))))
+
+      slice?
+      (let [writers slice-writers
+            counts  slice-counts
+            return-coerce (if (= :named (:kind ret))
+                            (enum-return-coerce (:layout ret))
+                            #(from-return ret %))]
+        (fn [& args]
+          (when (not= (count args) arity)
+            (throw (wrong-arity-ex var-sym arity (count args))))
+          (with-pooled-arena
+           (fn [^Arena arena]
+             (let [^objects carriers (.get ^ThreadLocal slice-carriers-tl)]
+               (loop [i (long 0) off (long 0)]
+                 (when (< i (long arity))
+                   ((nth writers i) arena carriers off (nth args i))
+                   (recur (inc i) (+ off (nth counts i)))))
+               (return-coerce (.invokeWithArguments ^MethodHandle handle carriers)))))))
 
       :else
       (fn [& args]
