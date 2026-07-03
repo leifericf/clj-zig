@@ -101,46 +101,70 @@ Run the measurement, then stop the recording:
 The `.jfr` file opens in Java Mission Control or any JFR viewer. The
 `profile` settings sample at higher frequency than the default; it is
 heavier but captures the native and FFM frames a clj-zig investigation
-needs. A recording with no duration and a manual `JFR.stop` is the form
-above because the bench's measured window is what you want to capture,
-not a fixed duration.
+needs.
+
+The recording flushes to the filename on JVM exit, so a `JFR.stop`
+issued after the bench exits errors harmlessly (jcmd reports no such
+process) and the file is already written. Pairing `JFR.start` with a
+generous `duration=300s` and letting the bench exit is the simplest
+form for the bench, which exits immediately after printing its summary.
+A manual `JFR.stop` is still useful for the REPL redefine below, where
+the JVM stays alive.
 
 ## Profile a defnz redefine (authoring pipeline)
 
 The bench measures the per-call cost after a wrapper exists. A separate
 question is what a redefine costs: the cache lookup, the Zig source
 generation, and the `zig build-lib` subprocess. Those frames live in
-`clj-zig.cache`, `clj-zig.source`, and `clj-zig.toolchain`.
+`clj-zig.cache`, `clj-zig.source`, and `clj-zig.toolchain` (driven by
+`clj-zig.compile`).
+
+A single cold redefine is subprocess-dominated. The clj-zig authoring
+code runs for milliseconds; the `zig build-lib` wait takes the bulk of
+the roughly one-second wall-clock. JFR at its default sampling period
+captures zero authoring frames from one redefine. To see the pipeline
+you must amplify: loop cold redefines so the authoring code accumulates
+sample time, and tighten the execution-sample period.
 
 Start a REPL with native access:
 
     clojure -M:repl
 
-In the REPL, print the pid, then redefine a `defnz` form while a
-recording runs against that pid:
+In the REPL, print the pid, then loop cold redefines (distinct bodies
+force cache misses, ADR 12, so each redefine exercises the whole
+pipeline) while a recording runs against that pid:
 
-    (clojure.main/repl)
-    ;; => evaluate, in order:
     (require '[clj-zig.core :as clj-zig])
     (printf "repl pid %d%n" (.pid (java.lang.ProcessHandle/current)))
+    (dotimes [i 15]
+      (let [body (format "return x + %d;" i)
+            sym  (symbol (str "amp" i))]
+        (eval `(clj-zig/defnz ~sym [x :i64 :ret :i64] ~body))))
 
-From a second shell, start a JFR recording against that pid:
+From a second shell, start a JFR recording against that pid with a
+tightened execution-sample period (the `jdk.ExecutionSample#period=1ms`
+override raises the Java-frame sample rate twentyfold over the profile
+default):
 
-    jcmd <pid> JFR.start name=redefine settings=profile filename=~/.agentic-sdk/clj-zig/artifacts/perf/redefine.jfr
+    jcmd <pid> JFR.start name=redefine settings=profile filename=~/.agentic-sdk/clj-zig/artifacts/perf/redefine.jfr duration=300s jdk.ExecutionSample#period=1ms
 
-Back in the REPL, evaluate the redefine (the form a user would re-send
-on a cache miss):
-
-    (clj-zig/defnz echo [x :i64 :ret :i64] "return x;")
-
-Then stop the recording from the second shell:
+Run the redefine loop in the REPL, then stop the recording from the
+second shell (optional: the recording flushes to the filename on JVM
+exit, so a `JFR.stop` that races the exit is harmless):
 
     jcmd <pid> JFR.stop name=redefine
 
-The recording shows the authoring-pipeline frames: `cache.clj` for the
-content-addressed lookup, `source.clj` for the generated wrapper, and
-`toolchain.clj` driving the `zig build-lib` subprocess. A cache hit
-skips `source` and `toolchain`; a cold redefine exercises all three.
+The recording shows the authoring-pipeline frames: `clj_zig.cache` for
+the content-addressed lookup, `clj_zig.compile` driving the
+`zig build-lib` subprocess, and `clj_zig.toolchain` for the zig binary
+hand-off. A cache hit skips `compile` and `toolchain`; a cold redefine
+exercises all three.
+
+`clj_zig.source` does not appear as a distinct frame in the loop. The
+JIT inlines its small generation functions into `clj_zig.core` once the
+loop is hot, so the stack reports `core`, not `source`. To capture
+`source` frames specifically, run with `-XX:-Inline` on the REPL JVM,
+or use async-profiler at a higher sample rate than JFR.
 
 ## Where artifacts land
 
