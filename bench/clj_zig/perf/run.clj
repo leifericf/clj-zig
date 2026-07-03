@@ -499,14 +499,30 @@
                (when (:body-leak-suspect e) "(body-leak-suspect)"))))
   nil)
 
+(defn- select-shapes
+  "The shapes to drive for this run. An optional `kind-arg` (a shape kind
+  keyword string like \"enum\") narrows the run to one shape -- the lever
+  the p3-t2 error-isolation smoke pulls: break one body, re-run just that
+  shape, confirm one diagnostic. With no arg, every shape runs."
+  [kind-arg]
+  (if kind-arg
+    (let [kw (keyword kind-arg)]
+      (when-not (contains? shape/shapes kw)
+        (throw (ex-info (str "Unknown shape kind: " (pr-str kind-arg)
+                             "; expected one of " (sort (keys shape/shapes)))
+                        {:kind kind-arg})))
+      [(shape/shapes kw)])
+    (shape/shape-list)))
+
 (defn -main
   "The bench entry point. Drives every shape from clj-zig.perf.shape in
-  canonical order, isolating per-shape failures, shapes each entry
-  through stats, builds the numbers record, and writes it to the perf
-  artifacts dir."
-  [& _args]
+  canonical order (or one shape when a kind arg is passed), isolating
+  per-shape failures so one broken body yields one :errored entry and
+  the run continues the rest. Shapes each entry through stats, builds
+  the numbers record, and writes it to the perf artifacts dir."
+  [& args]
   (ensure-dir! artifacts-dir)
-  (let [shapes  (shape/shape-list)
+  (let [shapes  (select-shapes (first args))
         entries (mapv measure-one shapes)
         record  (stats/numbers-record entries (meta-inputs))
         out     (io/file artifacts-dir
