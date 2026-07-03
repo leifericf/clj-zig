@@ -24,6 +24,19 @@
    :exec-fn cognitect.test-runner.api/test
    :jvm-opts ["--enable-native-access=ALL-UNNAMED"]}
 
+  ;; The perf lane. ADDITIVE over :test: it adds Criterium (NOT a :test
+  ;; dependency) and points main-opts at the imperative bench shell
+  ;; clj-zig.perf.run, the ONLY namespace that requires Criterium. The
+  ;; lane compiles real Zig and writes numbers to gitignored
+  ;; ~/.agentic-sdk/clj-zig/artifacts/perf/; it is tracking, never a
+  ;; gate, so it stays out of the project's :lanes. Native access is
+  ;; required: every JVM that loads a clj-zig library needs the flag.
+  :bench
+  {:extra-paths ["bench"]
+   :extra-deps {criterium/criterium {:mvn/version "0.4.6"}}
+   :jvm-opts ["--enable-native-access=ALL-UNNAMED"]
+   :main-opts ["-m" "clj-zig.perf.run"]}
+
   ;; Release build. Packages and publishes clj-zig to Clojars; `deploy`
   ;; is run by the maintainer with Clojars credentials. The git-dep path
   ;; stays available for contributors regardless of a published release.
