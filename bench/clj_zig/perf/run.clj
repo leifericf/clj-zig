@@ -646,7 +646,9 @@
 (defn- time-axis1-sample
   "Time one defnz redefine of `spec` with `body` and `gen` via the
   clj-zig.core/establish! path, returning a map of:
-    :wall-ms        the total redefine wall-clock (ms)
+    :wall-ms        the total redefine wall-clock (ms, sub-ms precision
+                    so a sub-millisecond clj-zig-cache-hit sample reports
+                    a real value rather than truncating to zero)
     :subprocess-ms  the zig build-lib subprocess wall-clock (ms), or nil
                     when no subprocess ran (the clj-zig-cache-hit tier)
   The cache clear runs OUTSIDE the timed region (only the establish!
@@ -658,7 +660,7 @@
         start   (System/nanoTime)
         _       (binding [compile/*subprocess-ms-box* sub-box]
                   (clj-zig/establish! spec body gen))
-        wall-ms (quot (- (System/nanoTime) start) 1000000)]
+        wall-ms (/ (double (- (System/nanoTime) start)) 1000000.0)]
     {:wall-ms wall-ms
      :subprocess-ms @sub-box}))
 
@@ -759,10 +761,10 @@
     (println "wrote" (str out) "--" (count entries) "axis1 shapes")
     (doseq [e entries]
       (println "  " (:kind e)
-               "cold" (int (:cold e)) "ms"
-               "gch" (int (:global-cache-hit e)) "ms"
-               "czh" (int (:clj-zig-cache-hit e)) "ms"
-               "sub" (when-let [s (:subprocess-ms e)] (int s)) "ms"
+               "cold" (format "%.1f" (:cold e)) "ms"
+               "gch" (format "%.1f" (:global-cache-hit e)) "ms"
+               "czh" (format "%.2f" (:clj-zig-cache-hit e)) "ms"
+               "sub" (when-let [s (:subprocess-ms e)] (format "%.0f" s)) "ms"
                (when (:tier-contaminated e) "(tier-contaminated)")))
     nil))
 
