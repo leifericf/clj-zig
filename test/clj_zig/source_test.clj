@@ -232,7 +232,14 @@
           "the counter delegates to c_allocator.rawAlloc"))
     (testing "the per-symbol count fns the bench reads are emitted"
       (is (str/includes? wrapped "export fn clj_zig_app_2e_core_box__alloc_count_get() usize {"))
-      (is (str/includes? wrapped "export fn clj_zig_app_2e_core_box__alloc_count_reset() void {")))))
+      (is (str/includes? wrapped "export fn clj_zig_app_2e_core_box__alloc_count_reset() void {")))
+    (testing "resize counts only when rawResize succeeds (ADR 60 grow semantics)"
+      (is (str/includes? wrapped "const ok = __clj_zig_tstd.heap.c_allocator.rawResize(")
+          "resize binds rawResize before counting")
+      (is (str/includes? wrapped "if (ok and new_len > memory.len) __clj_zig_alloc_count += 1;")
+          "a failed in-place grow is not counted")
+      (is (not (re-find #"if \(new_len > memory\.len\) __clj_zig_alloc_count \+= 1;" wrapped))
+          "the pre-success increment form is gone"))))
 
 (deftest tracking-wrap-default-source-is-unchanged
   ;; Regression guard for ADR 12: the default path (flag off) never calls
