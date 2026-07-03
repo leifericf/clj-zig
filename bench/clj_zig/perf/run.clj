@@ -34,13 +34,15 @@
             [clj-zig.compile :as compile]
             [clj-zig.foreign :as foreign]
             [clj-zig.layout :as layout]
+            [clj-zig.perf.opts :as opts]
             [clj-zig.perf.shape :as shape]
             [clj-zig.perf.stats :as stats]
             [clj-zig.spec :as spec]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [criterium.core :as criterium])
-  (:import (java.lang.foreign Arena MemorySegment ValueLayout)
+  (:import (java.lang ProcessHandle)
+           (java.lang.foreign Arena MemorySegment ValueLayout)
            (java.nio.charset StandardCharsets)))
 
 ;; --- output location -----------------------------------------------------
@@ -460,6 +462,30 @@
     {:defnz (measure defnz-call)
      :floor (measure floor-call)}))
 
+;; --- profiler attach window ---------------------------------------------
+;;
+;; An opt-in attach window so an external profiler can attach against a
+;; stable pid before the measured run. The window is OFF by default: a
+;; run without --attach-window (and without CLJ_ZIG_ATTACH_WINDOW) prints
+;; no pid line and never sleeps, so the captured baseline numbers and the
+;; default-run stdout are unchanged. When set, the shell prints the pid
+;; and sleeps that many seconds; an external async-profiler (asprof) or
+;; the JDK's jcmd JFR.start attaches against the printed pid in that
+;; window. See bench/RUNBOOK.md for the full capture procedure.
+
+(defn- attach-profiler!
+  "When `opts` carries an :attach-window, print the process id and sleep
+  that many seconds so an external profiler can attach before the
+  measured run. No-op when :attach-window is nil, so a default run is
+  unchanged. The pid print and the sleep are the attach window: the
+  contributor reads the pid, starts the profiler against it, and the
+  bench waits."
+  [opts]
+  (when-let [secs (:attach-window opts)]
+    (let [pid (.pid (ProcessHandle/current))]
+      (println "bench pid" pid "-- attach within" (long secs) "s"))
+    (Thread/sleep (* 1000 (long secs)))))
+
 ;; --- the numbers record write ------------------------------------------
 
 (defn- write-record!
@@ -518,10 +544,17 @@
   canonical order (or one shape when a kind arg is passed), isolating
   per-shape failures so one broken body yields one :errored entry and
   the run continues the rest. Shapes each entry through stats, builds
-  the numbers record, and writes it to the perf artifacts dir."
+  the numbers record, and writes it to the perf artifacts dir.
+
+  An optional --attach-window <secs> (or CLJ_ZIG_ATTACH_WINDOW) opens a
+  profiler attach window before the measured run: the bench prints its
+  pid and sleeps, so an external profiler can attach. Off by default;
+  see bench/RUNBOOK.md."
   [& args]
   (ensure-dir! artifacts-dir)
-  (let [shapes  (select-shapes (first args))
+  (let [opts    (opts/parse-args args (System/getenv))
+        _       (attach-profiler! opts)
+        shapes  (select-shapes (:kind opts))
         entries (mapv measure-one shapes)
         record  (stats/numbers-record entries (meta-inputs))
         out     (io/file artifacts-dir
