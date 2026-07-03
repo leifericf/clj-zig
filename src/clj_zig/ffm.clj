@@ -13,7 +13,7 @@
   (:import (java.lang IllegalCallerException)
            (java.lang.foreign Arena FunctionDescriptor Linker$Option
                               MemoryLayout MemorySegment ValueLayout)
-           (java.lang.invoke MethodHandle)
+           (java.lang.invoke MethodHandle MethodType)
            (java.lang.reflect Array)
            (java.math BigInteger)
            (java.nio.charset StandardCharsets)))
@@ -1153,7 +1153,7 @@
   Carriers is the thread-local base array of size `(:n-base ctx) + 3`; the
   trailing three slots are filled with errbuf, errlen, and out before the
   invoke, then cleared so the next call on this thread starts clean."
-  [{:keys [^MethodHandle handle ret record-factory free-handle error-buffer-bytes n-base]}
+  [{:keys [^MethodHandle spreader ret record-factory free-handle error-buffer-bytes n-base]}
    ^Arena arena ^objects carriers copy-back!]
   (let [desc   (-> ret :of :layout)
         out    ^MemorySegment (.allocate arena (long (:size desc)) (long (:align desc)))
@@ -1165,7 +1165,7 @@
     (aset carriers i0 errbuf)
     (aset carriers i1 errlen)
     (aset carriers i2 out)
-    (.invokeWithArguments handle carriers)
+    (.invokeExact spreader ^objects carriers)
     (let [n (.get errlen ValueLayout/JAVA_LONG 0)]
       (if (zero? n)
         (try
@@ -1186,7 +1186,7 @@
 
   Carriers is the thread-local base array of size `base-count + 2`; the
   trailing two slots are filled with errbuf and errlen before the invoke."
-  [{:keys [^MethodHandle handle ret error-buffer-bytes n-base]} ^Arena arena
+  [{:keys [^MethodHandle spreader ret error-buffer-bytes n-base]} ^Arena arena
    ^objects carriers copy-back!]
   (let [errbuf ^MemorySegment (.allocate arena error-buffer-bytes 1)
         errlen ^MemorySegment (.allocate arena 8 8)
@@ -1194,7 +1194,7 @@
         i1     (inc i0)]
     (aset carriers i0 errbuf)
     (aset carriers i1 errlen)
-    (let [result (.invokeWithArguments handle carriers)
+    (let [result (.invokeExact spreader ^objects carriers)
           n      (do (copy-back!) (.get errlen ValueLayout/JAVA_LONG 0))]
       (if (zero? n)
         (let [value-t (:of ret)]
@@ -1215,13 +1215,13 @@
 
   Carriers is the thread-local base array of size `base-count + 1`; the
   trailing slot is filled with the out-segment before the invoke."
-  [{:keys [^MethodHandle handle ret record-factory free-handle n-base]} ^Arena arena
+  [{:keys [^MethodHandle spreader ret record-factory free-handle n-base]} ^Arena arena
    ^objects carriers copy-back!]
   (let [desc (-> ret :of :layout)
         out  ^MemorySegment (.allocate arena (long (:size desc)) (long (:align desc)))
         i0   (int n-base)]
     (aset carriers i0 out)
-    (.invokeWithArguments handle carriers)
+    (.invokeExact spreader ^objects carriers)
     (try
       (copy-back!)
       (let [m (read-struct out desc)]
@@ -1242,7 +1242,7 @@
 
   Carriers is the thread-local base array of size `(:n-base ctx) + 2`; the
   trailing two slots are filled with pout and lout before the invoke."
-  [{:keys [^MethodHandle handle ret free-handle n-base]} ^Arena arena
+  [{:keys [^MethodHandle spreader ret free-handle n-base]} ^Arena arena
    ^objects carriers copy-back!]
   (let [pout ^MemorySegment (.allocate arena 8 8)
         lout ^MemorySegment (.allocate arena 8 8)
@@ -1250,7 +1250,7 @@
         i1   (inc i0)]
     (aset carriers i0 pout)
     (aset carriers i1 lout)
-    (.invokeWithArguments handle carriers)
+    (.invokeExact spreader ^objects carriers)
     (let [addr (.get pout ValueLayout/JAVA_LONG 0)
           len  (.get lout ValueLayout/JAVA_LONG 0)]
       (try
@@ -1271,13 +1271,13 @@
 
   Carriers is the thread-local base array of size `(:n-base ctx) + 1`; the
   trailing slot is filled with the out-segment before the invoke."
-  [{:keys [^MethodHandle handle ret record-factory n-base]} ^Arena arena
+  [{:keys [^MethodHandle spreader ret record-factory n-base]} ^Arena arena
    ^objects carriers copy-back!]
   (let [desc (:layout ret)
         out  ^MemorySegment (.allocate arena (long (:size desc)) (long (:align desc)))
         i0   (int n-base)]
     (aset carriers i0 out)
-    (.invokeWithArguments handle carriers)
+    (.invokeExact spreader ^objects carriers)
     (copy-back!)
     (let [m (read-struct out desc)]
       (if record-factory (record-factory m) m))))
@@ -1291,11 +1291,11 @@
 
   Carriers is the thread-local base array of size `(:n-base ctx)` (no
   trailing slots; the optional return is the FFM return value)."
-  [{:keys [^MethodHandle handle ret record-factory free-handle]} _arena
+  [{:keys [^MethodHandle spreader ret record-factory free-handle]} _arena
    ^objects carriers copy-back!]
   ;; base-count names the array length; nothing is appended, and the array
   ;; is already in invoke order.
-  (let [result (.invokeWithArguments handle carriers)
+  (let [result (.invokeExact spreader ^objects carriers)
         addr   (.address ^MemorySegment result)]
     (if (zero? addr)
       (do (copy-back!) nil)
@@ -1320,11 +1320,11 @@
   leading slot (the arena as SegmentAllocator) plus the base carriers, the
   loop wrote them at indices 1..n-base, and this fn fills index 0 with the
   arena before invoking."
-  [{:keys [^MethodHandle handle ret]} ^Arena arena ^objects carriers copy-back!]
+  [{:keys [^MethodHandle spreader ret]} ^Arena arena ^objects carriers copy-back!]
   (let [result (if (i128-type? ret)
                  (do (aset carriers 0 arena)
-                     (.invokeWithArguments handle carriers))
-                 (.invokeWithArguments handle carriers))]
+                     (.invokeExact spreader ^objects carriers))
+                 (.invokeExact spreader ^objects carriers))]
     (copy-back!)
     (from-return ret result)))
 
@@ -1451,14 +1451,30 @@
                            owned-slice? 2
                            (or owned-rec? struct-ret?) 1
                            :else 0)
-        total        (+ base-offset n-base n-trailing)]
-    {:handle handle :params params :ret ret :arity arity
+        total        (+ base-offset n-base n-trailing)
+        ;; Cache a spreader handle once per bind so the call site is a
+        ;; single `.invokeExact` with a fixed `(Object[]) Object` signature.
+        ;; `invokeWithArguments` re-derives the spreader and its MethodType
+        ;; and Class[] on every call; `asType` widens the return to Object
+        ;; (a primitive return boxes once at the seam, a constant cost well
+        ;; under the re-derivation) so one Clojure call site covers every
+        ;; return shape.
+        spreader-arity (cond
+                         (or scalar-path? enum-path?) arity
+                         slice-path?                 (int slice-total)
+                         :else                       (int total))
+        spreader     (let [obj-array-class (class (object-array 0))]
+                       (-> (.asSpreader ^MethodHandle handle obj-array-class
+                                        ^int spreader-arity)
+                           (.asType (MethodType/methodType
+                                     Object (into-array Class [obj-array-class])))))]
+    {:handle handle :spreader spreader :params params :ret ret :arity arity
      :stream? stream? :eu-struct? eu-struct? :owned-rec? owned-rec?
      :owned-slice? owned-slice? :opt-struct? opt-struct? :struct-ret? struct-ret?
      ;; The per-bind return context the general-path dispatch threads into
-     ;; each `invoke-*` helper: the bound handle and the return shape's
+     ;; each `invoke-*` helper: the bound spreader and the return shape's
      ;; once-computed metadata.
-     :invoke-ctx {:handle handle :ret ret :record-factory record-factory
+     :invoke-ctx {:spreader spreader :ret ret :record-factory record-factory
                   :free-handle free-handle :error-buffer-bytes error-buffer-bytes
                   :n-base n-base}
      :next-h next-h :free-h free-h :elem-lay elem-lay
@@ -1573,7 +1589,7 @@
   helper used to do; the per-call allocation surface is now the arena, the
   out-segments themselves, and any owned/buffer resource the body allocates."
   [spec library-path]
-  (let [{:keys [handle params ret arity invoke-ctx next-h free-h elem-lay var-sym
+  (let [{:keys [spreader params ret arity invoke-ctx next-h free-h elem-lay var-sym
                 scalar? enum? enum-coercions carriers-tl
                 slice? slice-writers slice-counts slice-carriers-tl
                 stream? eu-struct? owned-rec? owned-slice? opt-struct? struct-ret?
@@ -1589,7 +1605,7 @@
             (when (< i (long arity))
               (aset carriers i (to-carrier (nth params i) (first as)))
               (recur (inc i) (next as))))
-          (from-return ret (.invokeWithArguments ^MethodHandle handle carriers))))
+          (from-return ret (.invokeExact ^MethodHandle spreader ^objects carriers))))
 
       enum?
       (let [[param-coercions return-coerce] enum-coercions]
@@ -1601,7 +1617,7 @@
               (when (< i (long arity))
                 (aset carriers i ((nth param-coercions i) (first as)))
                 (recur (inc i) (next as))))
-            (return-coerce (.invokeWithArguments ^MethodHandle handle carriers)))))
+            (return-coerce (.invokeExact ^MethodHandle spreader ^objects carriers)))))
 
       slice?
       (let [writers slice-writers
@@ -1619,7 +1635,7 @@
                  (when (< i (long arity))
                    ((nth writers i) arena carriers off (nth args i))
                    (recur (inc i) (+ off (nth counts i)))))
-               (return-coerce (.invokeWithArguments ^MethodHandle handle carriers)))))))
+               (return-coerce (.invokeExact ^MethodHandle spreader ^objects carriers)))))))
 
       :else
       (fn [& args]
@@ -1657,7 +1673,7 @@
                                       ((aget copybacks i))
                                       (recur (inc i)))))]
                  (cond
-                   stream?                      (let [iter-addr (.invokeWithArguments ^MethodHandle handle carriers)]
+                   stream?                      (let [iter-addr (.invokeExact ^MethodHandle spreader ^objects carriers)]
                                                   (copy-back!)
                                                   (make-stream-reducible iter-addr next-h free-h ret elem-lay))
                    eu-struct?                   (invoke-eu-struct   invoke-ctx arena carriers copy-back!)
