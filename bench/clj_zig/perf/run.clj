@@ -562,9 +562,10 @@
 
 (def ^:private axis1-artifact-cache-root
   "The clj-zig content-addressed artifact cache root the bench clears.
-  Defaults to clj-zig.cache/artifact-paths's default so the bench clears
-  exactly the directory clj-zig writes libraries into."
-  ".clj-zig/cache")
+  Reuses clj-zig.cache/default-cache-root so the bench clears exactly
+  the directory clj-zig writes libraries into, and a move of the
+  default stays in one place."
+  cache/default-cache-root)
 
 (defn- axis1-global-cache-dir
   "The zig global cache directory clj-zig.compile points every compile

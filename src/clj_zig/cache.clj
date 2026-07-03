@@ -175,12 +175,18 @@
    :name   (segment :name (:name coords))
    :hash   (segment :hash (:hash coords))})
 
+(def default-cache-root
+  "The default artifact cache root. Public so the bench (Axis-1
+  tier-clearing) reuses the same root the build writes, and a future
+  move of the default stays in one place."
+  ".clj-zig/cache")
+
 (defn artifact-paths
   "The artifact directory and file paths for a build, under `root`
   (default `.clj-zig/cache`). Each path component is checked, so a malformed
   spec cannot write outside the cache."
   [{:keys [root] :as coords}]
-  (let [root              (or root ".clj-zig/cache")
+  (let [root              (or root default-cache-root)
         {:keys [target ns name hash]} (segment-coords coords)
         dir               (str root "/" target "/" ns "/" name "-" hash)]
     {:dir           dir
@@ -357,7 +363,7 @@
   Also clears the module-fingerprint memo so a post-clean build re-reads
   module contents rather than reusing a fingerprint for a tree the cache
   no longer holds."
-  ([] (clean! ".clj-zig/cache"))
+  ([] (clean! default-cache-root))
   ([root]
    (reset! module-fingerprint-cache {})
    (let [d (io/file root)]
