@@ -88,16 +88,28 @@
   the flag). Returns a map with :kind, :name, :defnz-median,
   :floor-median, :overhead-ns, :body-leak-suspect, and
   :native-allocations. The count is pure data the shell threads in, so
-  this namespace stays JVM-free and unit-testable without Criterium."
+  this namespace stays JVM-free and unit-testable without Criterium.
+  Throws ex-info listing the missing Criterium results when :defnz or
+  :floor lacks a :median point estimate, so a partial result is surfaced
+  at shaping time rather than an opaque NPE in the double coercion."
   [ctx results]
-  (let [defnz-med (median (:defnz results))
-        floor-med (median (:floor results))]
-    (assoc ctx
-           :defnz-median        defnz-med
-           :floor-median        floor-med
-           :overhead-ns         (- (double defnz-med) (double floor-med))
-           :body-leak-suspect   (body-leak? defnz-med floor-med)
-           :native-allocations  (:native-allocations results))))
+  (let [defnz-result (:defnz results)
+        floor-result (:floor results)
+        missing (vec (sort (for [[k r] [[:defnz defnz-result]
+                                       [:floor floor-result]]
+                                  :when (nil? (:median r))]
+                              k)))]
+    (when (seq missing)
+      (throw (ex-info (str "shape-entry missing required Criterium results: " missing)
+                      {:missing missing})))
+    (let [defnz-med (median defnz-result)
+          floor-med (median floor-result)]
+      (assoc ctx
+             :defnz-median        defnz-med
+             :floor-median        floor-med
+             :overhead-ns         (- (double defnz-med) (double floor-med))
+             :body-leak-suspect   (body-leak? defnz-med floor-med)
+             :native-allocations  (:native-allocations results)))))
 
 ;; --- the meta block -------------------------------------------------------
 

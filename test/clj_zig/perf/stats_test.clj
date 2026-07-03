@@ -114,6 +114,19 @@
     (is (:body-leak-suspect above)
         "a floor above the threshold fraction fires")))
 
+(deftest shape-entry-rejects-missing-results
+  ;; A partial result (no :median point estimate) is a measurement bug;
+  ;; shape-entry throws ex-info listing the missing side rather than an
+  ;; opaque NPE in the double coercion, mirroring meta-block.
+  (is (thrown-with-msg?
+       clojure.lang.ExceptionInfo #"missing required Criterium results"
+       (stats/shape-entry {:kind :scalar-passthrough :name "echo-i64"}
+                          {:defnz {} :floor clean-floor})))
+  (is (thrown-with-msg?
+       clojure.lang.ExceptionInfo #"missing required Criterium results"
+       (stats/shape-entry {:kind :scalar-passthrough :name "echo-i64"}
+                          {:defnz clean-defnz}))))
+
 (deftest meta-block-built-from-fixture-inputs
   (let [meta (stats/meta-block fixture-meta-inputs)]
     (is (= "26.0.1+9"          (:jdk meta)))
