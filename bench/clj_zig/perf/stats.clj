@@ -38,14 +38,26 @@
   per-call invoke cost; a floor above it flags the entry as
   :body-leak-suspect.
 
-  Chosen at 1/10: the clj-zig.foreign direct-handle invoke path
-  allocates nothing per call (foreign.clj PERFORMANCE), so it is well
-  under 10% of even the cheapest defnz median (the ADR 39 scalar hot
-  path, which still boxes its carriers and pays the & args sequence).
-  Named as a constant so a maintainer tunes it without editing the
-  predicate, and so a unit test can assert the boundary without
-  copying a magic number."
-  1/10)
+  Recalibrated at 2/5 (was 1/10) when p2-t2 first wired the floor and
+  measured the scalar shape. The original 1/10 assumed the IDEAL
+  alloc-free Java-direct-invoke floor of foreign.clj PERFORMANCE (a
+  caller invokes the cached handle with typed primitive arguments),
+  projected at roughly 1-2 ns -- well under 10% of any defnz median.
+  Clojure's compiler cannot emit that call site: a primitive-hinted
+  defn around `(.invoke h x)` fails AbstractMethodError, and an inline
+  `(.invoke h (long x))` fails ClassCastException (Clojure emits the
+  call against `invoke(Object[])`). The reliable alloc-frugal Clojure
+  path is `invokeWithArguments` against a reused object-array -- the
+  same discipline clj-zig's own ADR 39 scalar hot path uses -- and on
+  JDK 26 that floors at roughly 50 ns, which is ~30% of the cheapest
+  defnz median (~170 ns, the ADR 39 scalar hot path including the &
+  args sequence and carrier boxing). The 2/5 threshold clears the
+  scalar shape's ~30% ratio with margin while still flagging a floor
+  whose body work pushes the ratio past 40% (the allocating shapes
+  measured in p3). Named as a constant so a maintainer tunes it
+  without editing the predicate, and so a unit test can assert the
+  boundary without copying a magic number."
+  2/5)
 
 (defn- body-leak?
   "True when the floor median is more than body-leak-fraction of the
