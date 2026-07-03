@@ -990,23 +990,23 @@
        (not (i128-type? ret))))
 
 (defn- enum-aware-scalar?
-  "True when every param and the return cross as a plain scalar carrier OR
-  a named enum, so the call needs no confined arena, AND the signature is
-  not pure-scalar (`scalar-only?` covers that case). An enum crosses the C
-  ABI as its backing scalar, so a signature over only scalars and enums
-  lowers to the same `(int|long) -> (int|long)` ABI the scalar hot path
-  already serves; only the per-arg and per-return coercion differs (a
-  keyword lookup for enums). The not-pure-scalar guard keeps the scalar
-  hot path single-shape; bind checks `scalar-only?` first."
+  "True when every param and the return cross as a plain scalar carrier,
+  a named enum, or a `[:handle Type]` return, so the call needs no
+  confined arena, AND the signature is not pure-scalar (`scalar-only?`
+  covers that case). An enum crosses the C ABI as its backing scalar; a
+  handle return is a pointer with no out-seg. Both lower to the same
+  `(int|long|ptr) -> ...` ABI the scalar hot path serves. The
+  not-pure-scalar guard keeps the scalar hot path single-shape."
   [params ret]
   (and (not (scalar-only? params ret))
        (every? (fn [p] (or (and (= :scalar (-> p :type :kind))
-                               (not (i128-type? (:type p))))
-                          (and (= :named (-> p :type :kind))
-                               (enum-type? (:type p)))))
+                                (not (i128-type? (:type p))))
+                           (and (= :named (-> p :type :kind))
+                                (enum-type? (:type p)))))
                params)
        (or (and (= :scalar (:kind ret)) (not (i128-type? ret)))
-           (and (= :named (:kind ret)) (enum-type? ret)))))
+           (and (= :named (:kind ret)) (enum-type? ret))
+           (= :handle (:kind ret)))))
 
 (defn- const-slice-of-scalar?
   "True when `param`'s type is `[:slice :const <scalar>]` for a carrier

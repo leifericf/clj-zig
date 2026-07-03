@@ -172,10 +172,10 @@
   (let [enum-aware? (fn [v] (let [s (zig/spec v)]
                               (#'ffm/enum-aware-scalar? (:params s) (:ret s))))]
     (is (enum-aware? #'f/echo-suit) "enum in, enum out")
+    (is (enum-aware? #'f/box)        "a handle return with scalar args takes the no-arena path")
     (is (not (enum-aware? #'f/echo-i64))  "a scalar-only sig takes the scalar path, not the enum path")
     (is (not (enum-aware? #'f/sum-f64))   "a slice arg needs the arena")
-    (is (not (enum-aware? #'f/echo-point)) "a struct return needs the out-pointer")
-    (is (not (enum-aware? #'f/box))        "a handle return takes the general path")))
+    (is (not (enum-aware? #'f/echo-point)) "a struct return needs the out-pointer")))
 
 (deftest enum-aware-path-round-trips-in-volume
   ;; No arena and a reused carrier array: an enum call driven hard must
