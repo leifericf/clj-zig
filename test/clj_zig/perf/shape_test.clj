@@ -3,8 +3,11 @@
   canonical contract kinds are present, each record is well-formed pure
   data with the required keys, the bodies are trivial, the floor
   descriptors carry C ABI layouts in the clj-zig.foreign c-* shorthand
-  vocabulary, and the namespace source requires neither Criterium nor
-  any clj-zig native namespace (ADR 16)."
+  vocabulary (including the :out-args count and the optional
+  :free-shim/:free-shim-args the leak-free floor discipline consumes),
+  the floor-args-fn arity matches the INPUT floor args, and the
+  namespace source requires neither Criterium nor any clj-zig native
+  namespace (ADR 16)."
   (:require [clojure.test :refer [deftest is testing]]
             [clj-zig.perf.shape :as shape]))
 
@@ -21,6 +24,27 @@
   the bench shell resolves the keyword to the ValueLayout var at bind
   time, keeping the pure core free of clj-zig.foreign."
   #{:c-byte :c-short :c-int :c-long :c-float :c-double :c-ptr :void})
+
+(def ^:private floor-args-tags
+  "The set of carrier-descriptor tags a floor-args-fn may emit for a
+  POINTER input. A scalar input is a raw number (boxed per the arg
+  layout by the shell); only :c-ptr inputs carry a tagged descriptor.
+  The shell dispatches on the tag, never on the shape kind."
+  #{:ptr-bytes :ptr-doubles :ptr-struct})
+
+(defn- input-args-count
+  "The number of INPUT floor args for `shape`: the floor's total arg
+  count minus the trailing out-args."
+  [shape]
+  (let [floor (:floor shape)]
+    (- (count (:args floor)) (:out-args floor 0))))
+
+(defn- carrier-descriptor?
+  "True when `x` is a tagged pointer-input descriptor (a vector whose
+  first element is a known ptr tag). A raw scalar number is NOT a
+  descriptor -- the shell boxes it per the arg layout."
+  [x]
+  (and (vector? x) (contains? floor-args-tags (first x))))
 
 (deftest seven-canonical-kinds-present
   (is (= expected-kinds (set (keys shape/shapes)))
@@ -61,8 +85,10 @@
   ;; most the body does. The string, owned, and handle bodies allocate
   ;; because their CONTRACTS require a buffer or a Box; the c_allocator
   ;; calls in those bodies are the minimal contract-required allocation
-  ;; and not a defect -- the body-leak guard will flag those shapes'
-  ;; measurements as :body-leak-suspect, which is the expected outcome.
+  ;; and not a defect -- their floors invoke the free shim per call so
+  ;; the Criterium loop leaks nothing, and the body-leak guard still
+  ;; flags their floor measurements as :body-leak-suspect, which is the
+  ;; expected outcome.
   (doseq [s (shape/shape-list)]
     (testing (str "body of " (:kind s))
       (is (< (count (:body s)) 240))
@@ -97,11 +123,48 @@
       (is (contains? c-layout-vocabulary (:ret floor))
           (str "floor :ret " (:ret floor) " is not in the c-* vocabulary"))
       (is (seq (:args floor)) "floor :args is non-empty")
+      (is (nat-int? (:out-args floor))
+          "floor :out-args is a non-negative integer")
       (doseq [a (:args floor)]
         (is (contains? c-layout-vocabulary a)
             (str "floor arg " a " is not in the c-* vocabulary")))
       (when (contains? floor :free-shim)
-        (is (string? (:free-shim floor)))))))
+        (is (string? (:free-shim floor)))
+        (is (seq (:free-shim-args floor))
+            ":free-shim carries its own arg layouts")
+        (doseq [a (:free-shim-args floor)]
+          (is (contains? c-layout-vocabulary a)
+              (str "free-shim arg " a " is not in the c-* vocabulary")))))))
+
+(deftest out-args-count-is-bounded-by-args-length
+  (doseq [s (shape/shape-list)
+          :let [floor (:floor s)]]
+    (testing (str "out-args of " (:kind s))
+      (is (<= (:out-args floor 0) (count (:args floor)))
+          ":out-args never exceeds the arg count"))))
+
+(deftest floor-args-fn-arity-matches-input-args
+  ;; The floor-args-fn describes INPUT carriers only; the trailing
+  ;; out-args are allocated by the shell, not described here. Its arity
+  ;; must therefore equal (total args - out-args).
+  (doseq [s (shape/shape-list)]
+    (testing (str "floor-args-fn of " (:kind s))
+      (let [descriptors ((:floor-args-fn s))
+            expected    (input-args-count s)]
+        (is (= expected (count descriptors))
+            (str "floor-args-fn returned " (count descriptors)
+                 " carriers for " expected " input args"))))))
+
+(deftest floor-args-descriptors-use-the-carrier-vocabulary
+  ;; A floor-args element is either a raw scalar number (the shell boxes
+  ;; it per the arg layout) or a tagged pointer descriptor (the shell
+  ;; builds a MemorySegment). Assert every element is one or the other.
+  (doseq [s (shape/shape-list)
+          desc ((:floor-args-fn s))]
+    (testing (str "floor-args element of " (:kind s))
+      (is (or (number? desc) (carrier-descriptor? desc))
+          (str "a floor-args element must be a number or a tagged "
+               "pointer descriptor; got " (pr-str desc))))))
 
 (deftest setup-declarations-are-pure-data
   (doseq [s (shape/shape-list)
@@ -114,6 +177,31 @@
         :defrecordz (is (vector? (:fields decl)))
         :defenumz (is (vector? (:members decl)))
         :defz (is (string? (:body decl)))))))
+
+(deftest free-body-is-pure-data-when-present
+  ;; Only :handle carries a :free-body (its wrapper emits no auto-free
+  ;; shim, so the bench establishes a sibling free-box defnz). When
+  ;; present it is a defnz triple: a name, a signature vector, and a
+  ;; Zig body string.
+  (doseq [s (shape/shape-list)]
+    (when (contains? s :free-body)
+      (testing (str "free-body of " (:kind s))
+        (let [fb (:free-body s)]
+          (is (string? (:name fb)) "free-body :name is a string")
+          (is (vector? (:signature fb)) "free-body :signature is a vector")
+          (is (= :ret (last (butlast (:signature fb))))
+              "free-body signature has shape [<param>... :ret <type>]")
+          (is (string? (:body fb)) "free-body :body is a string of Zig source"))))))
+
+(deftest allocating-shapes-carry-a-free-shim
+  ;; The leak-free floor discipline turns on :free-shim presence. The
+  ;; three allocating shapes (:string, :owned-return, :handle) MUST
+  ;; carry one or the Criterium loop leaks native memory unboundedly.
+  (doseq [k [:string :owned-return :handle]
+          :let [s (shape/shapes k)]]
+    (testing (str "allocating shape " k)
+      (is (contains? (:floor s) :free-shim)
+          (str k " floor must carry a :free-shim so the floor loop frees")))))
 
 (deftest shape-source-is-pure
   ;; Source-level purity check: the pure core must not require Criterium
