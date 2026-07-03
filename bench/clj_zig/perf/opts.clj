@@ -19,14 +19,21 @@
 (def ^:private axis1-flag "--axis1")
 (def ^:private axis1-env "CLJ_ZIG_AXIS1")
 
+(def ^:private max-attach-window-secs
+  "The largest whole-second attach window whose millisecond conversion
+  (* 1000 secs in attach-profiler!) stays within a long. A value above
+  this overflows the multiplication, so parse-attach-window treats it as
+  off (nil) for the same robustness reason as a non-positive value."
+  (quot Long/MAX_VALUE 1000))
+
 (defn- parse-attach-window
   "Parse `s` as the whole-second attach window, returning the integer
-  only when it is a positive long. nil otherwise (absent, non-numeric,
-  or non-positive), so a malformed or non-positive invocation is off
-  rather than an IllegalArgumentException from Thread/sleep."
+  only when it is a positive long that does not overflow the millisecond
+  conversion. nil otherwise (absent, non-numeric, non-positive, or too
+  large), so a malformed invocation is off rather than an exception."
   [s]
   (when-let [secs (parse-long s)]
-    (when (pos? secs) secs)))
+    (when (<= 1 secs max-attach-window-secs) secs)))
 
 (defn- parse-attach-window-flag
   "Walk `args` and return the integer value of the --attach-window flag,

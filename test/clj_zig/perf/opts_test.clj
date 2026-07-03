@@ -54,6 +54,12 @@
   (is (nil? (:attach-window (opts/parse-args ["scalar" "--attach-window" "-1"] {}))))
   (is (nil? (:attach-window (opts/parse-args [] {"CLJ_ZIG_ATTACH_WINDOW" "-3"})))))
 
+(deftest huge-flag-value-is-off
+  ;; A value whose ms conversion overflows a long would throw
+  ;; ArithmeticException in attach-profiler!; the parse treats it as off.
+  (is (nil? (:attach-window (opts/parse-args ["--attach-window" "9223372036854775807"] {}))))
+  (is (nil? (:attach-window (opts/parse-args [] {"CLJ_ZIG_ATTACH_WINDOW" "99999999999999999"})))))
+
 (deftest track-allocations-off-by-default
   ;; The profiling build is OFF by default: a run with no option compiles
   ;; the default library and matches the baseline. Pinned so a regression
