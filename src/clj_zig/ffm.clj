@@ -1575,14 +1575,16 @@
      :i128-ret?       i128-ret?}))
 
 ;; --- Thread-local arena pooling for the call path ------------------------
-;; With -Dclj-zig.arena-pool=true, a thread-local confined arena is reused
-;; across calls instead of creating and closing one per call. The arena is
-;; refreshed (closed and replaced) every refresh-interval calls to bound its
-;; growth. Disabled by default; enable for latency-sensitive workloads where
-;; the per-call arena overhead dominates.
+;; With the arena pool on (the default), a thread-local confined arena is
+;; reused across calls instead of creating and closing one per call. The
+;; arena is refreshed (closed and replaced) every refresh-interval calls
+;; to bound its growth. The pool defaults on because the per-call
+;; open/close is a measurable fraction of the call once the downcall
+;; spreader is cached; pass -Dclj-zig.arena-pool=false to disable.
 
 (def ^:private pool-enabled
-  (Boolean/getBoolean "clj-zig.arena-pool"))
+  (let [v (System/getProperty "clj-zig.arena-pool")]
+    (if (some? v) (Boolean/parseBoolean v) true)))
 
 (def ^:private refresh-interval 1024)
 
@@ -1605,11 +1607,11 @@
       entry)))
 
 (defn- with-pooled-arena
-  "Run `f` with an Arena. When pooling is enabled, reuses a thread-local
-  confined arena, incrementing its call counter (the arena is refreshed
-  every `refresh-interval` calls to bound memory growth). When disabled,
-  allocates a fresh confined arena per call (the default, matching the
-  existing `with-open` pattern)."
+  "Run `f` with an Arena. When pooling is enabled (the default), reuses a
+  thread-local confined arena, incrementing its call counter (the arena
+  is refreshed every `refresh-interval` calls to bound memory growth).
+  When disabled with -Dclj-zig.arena-pool=false, allocates a fresh
+  confined arena per call (matching the existing `with-open` pattern)."
   [f]
   (if pool-enabled
     (let [entry (refresh-if-needed)
@@ -1641,7 +1643,9 @@
   the per-call `mapv` of marshalled maps, the `mapcat :carriers` lazy seq,
   the `copy-back!` closure, and the `concat`+`object-array` alloc each
   helper used to do; the per-call allocation surface is now the arena, the
-  out-segments themselves, and any owned/buffer resource the body allocates."
+  out-segments themselves, and any owned/buffer resource the body allocates.
+  The arena pool defaults on; `-Dclj-zig.arena-pool=false` restores the
+  per-call confined arena."
   [spec library-path]
   (let [{:keys [spreader params ret arity invoke-ctx next-h free-h elem-lay var-sym
                 scalar? enum? enum-coercions scalar-coercions carriers-tl

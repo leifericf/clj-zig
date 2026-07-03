@@ -384,15 +384,17 @@
   "The data the meta block consumes, supplied by the shell so
   clj-zig.perf.stats stays JVM- and working-copy-free. Records the JDK,
   OS, arch, the clj-zig compile optimize mode (the default, ReleaseSafe),
-  the arena-pool flag (-Dclj-zig.arena-pool, off by default), and the
-  current commit SHA. Every field is required by stats/meta-block."
+  the arena-pool flag (-Dclj-zig.arena-pool, on by default; mirrors
+  clj-zig.ffm's pool-enabled parsing), and the current commit SHA. Every
+  field is required by stats/meta-block."
   []
   {:jdk           (System/getProperty "java.version")
-   :os            (System/getProperty "os.name")
-   :arch          (System/getProperty "os.arch")
-   :optimize-mode compile/default-optimize-mode
-   :arena-pool?   (Boolean/getBoolean "clj-zig.arena-pool")
-   :commit        (git-head-sha)})
+    :os            (System/getProperty "os.name")
+    :arch          (System/getProperty "os.arch")
+    :optimize-mode compile/default-optimize-mode
+    :arena-pool?   (let [v (System/getProperty "clj-zig.arena-pool")]
+                     (if (some? v) (Boolean/parseBoolean v) true))
+    :commit        (git-head-sha)})
 
 ;; --- per-shape measurement ----------------------------------------------
 
