@@ -62,7 +62,8 @@
       pattern)))
 
 (declare marshal-struct read-struct-field read-bytes read-slice-values
-         read-utf8-string write-scalar enum-member->value enum-value->member)
+         read-utf8-string write-scalar enum-member->value enum-value->member
+         coerce-scalar)
 
 ;; An opaque native resource handle: the symbol naming its Zig type and
 ;; the native pointer. The caller threads it back across calls and frees
@@ -181,6 +182,37 @@
                           32 (unchecked-int l) 64 l))
       :float (case bits 32 (unchecked-float v) 64 (double v))
       :bool  (boolean v))))
+
+(defn- scalar-param-coerce
+  "Build a per-call coercion fn for one scalar param, hoisting the
+  `type/scalar-info` lookup to bind time so the per-call body is only the
+  category-and-bits case dispatch with no map lookup. The scalar hot path
+  calls the returned fn per arg per call."
+  [param]
+  (let [{:keys [category bits]} (type/scalar-info (-> param :type :name))]
+    (case category
+      :int   (case (long bits)
+               8  (fn int8-coerce [v] (let [l (.longValue (biginteger v))]
+                                        (unchecked-byte l)))
+               16 (fn int16-coerce [v] (let [l (.longValue (biginteger v))]
+                                         (unchecked-short l)))
+               32 (fn int32-coerce [v] (let [l (.longValue (biginteger v))]
+                                         (unchecked-int l)))
+               64 (fn int64-coerce [v] (.longValue (biginteger v))))
+      :float (case (long bits)
+               32 (fn f32-coerce [v] (unchecked-float v))
+               64 (fn f64-coerce [v] (double v)))
+      :bool  (fn bool-coerce [v] (boolean v)))))
+
+(defn- scalar-return-coerce
+  "Build a per-call return coercion fn for a scalar-or-void return. The
+  void case returns a constant-nil fn; the scalar case is `coerce-scalar`
+  with the return type captured at bind time. Mirrors the scalar hot
+  path's pre-bound param coercions."
+  [ret]
+  (if (type/void-type? ret)
+    (fn void-ret [_] nil)
+    (fn scalar-ret [v] (coerce-scalar ret v))))
 
 (declare marshal-struct-into! marshal-buffer-field buffer-field-element marshal-array
          compiled-struct-writer compiled-struct-reader)
@@ -1504,11 +1536,14 @@
      ;; The native call does not retain the array, and one-directional
      ;; interop (ADR 10) means a call cannot re-enter itself on the same
      ;; thread, so reuse is safe.
-     :scalar?      scalar-path?
-      :enum?        enum-path?
-      :slice?       slice-path?
-      :slice-writers (when slice-path? (first slice-setup))
-      :slice-counts  (when slice-path? (second slice-setup))
+      :scalar?      scalar-path?
+       :enum?        enum-path?
+       :slice?       slice-path?
+       :slice-writers (when slice-path? (first slice-setup))
+       :slice-counts  (when slice-path? (second slice-setup))
+       :scalar-coercions (when scalar-path?
+                           [(mapv scalar-param-coerce params)
+                            (scalar-return-coerce ret)])
       :carriers-tl  (when (or scalar-path? enum-path?)
                       (ThreadLocal/withInitial
                        (reify java.util.function.Supplier
@@ -1609,22 +1644,23 @@
   out-segments themselves, and any owned/buffer resource the body allocates."
   [spec library-path]
   (let [{:keys [spreader params ret arity invoke-ctx next-h free-h elem-lay var-sym
-                scalar? enum? enum-coercions carriers-tl
+                scalar? enum? enum-coercions scalar-coercions carriers-tl
                 slice? slice-writers slice-counts slice-carriers-tl
                 stream? eu-struct? owned-rec? owned-slice? opt-struct? struct-ret?
                 gen-carriers-tl gen-copybacks-tl gen-base-offset gen-n-base]}
         (bind-context spec library-path)]
     (cond
       scalar?
-      (fn [& args]
-        (when (not= (count args) arity)
-          (throw (wrong-arity-ex var-sym arity (count args))))
-        (let [^objects carriers (.get ^ThreadLocal carriers-tl)]
-          (loop [i 0 as args]
-            (when (< i (long arity))
-              (aset carriers i (to-carrier (nth params i) (first as)))
-              (recur (inc i) (next as))))
-          (from-return ret (.invokeExact ^MethodHandle spreader ^objects carriers))))
+      (let [[param-coercions return-coerce] scalar-coercions]
+        (fn [& args]
+          (when (not= (count args) arity)
+            (throw (wrong-arity-ex var-sym arity (count args))))
+          (let [^objects carriers (.get ^ThreadLocal carriers-tl)]
+            (loop [i 0 as args]
+              (when (< i (long arity))
+                (aset carriers i ((nth param-coercions i) (first as)))
+                (recur (inc i) (next as))))
+            (return-coerce (.invokeExact ^MethodHandle spreader ^objects carriers)))))
 
       enum?
       (let [[param-coercions return-coerce] enum-coercions]
