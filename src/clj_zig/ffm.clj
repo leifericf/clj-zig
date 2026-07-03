@@ -182,7 +182,8 @@
       :float (case bits 32 (unchecked-float v) 64 (double v))
       :bool  (boolean v))))
 
-(declare marshal-struct-into! marshal-buffer-field buffer-field-element marshal-array)
+(declare marshal-struct-into! marshal-buffer-field buffer-field-element marshal-array
+         compiled-struct-writer compiled-struct-reader)
 
 (defn- marshal-arg-into!
   "Marshal one boundary `arg` for `param` directly into `carriers` at
@@ -491,12 +492,167 @@
   struct `descriptor`, each at its C-ABI offset. A scalar field is
   written directly; a buffer field copies the caller's value into the call
   arena and writes the `{ptr, len}` pair; a nested struct field recurses
-  into a sub-segment at the field's offset."
+  into a sub-segment at the field's offset. An all-scalar struct uses a
+  compiled writer that captures each field's offset and scalar writer at
+  build time, eliminating the per-field type dispatch the generic path
+  does; structs with buffer or nested fields fall back to that path."
   [arena descriptor m]
-  (let [seg ^MemorySegment (.allocate ^Arena arena (long (:size descriptor))
-                                      (long (:align descriptor)))]
-    (marshal-struct-into! arena seg descriptor m)
-    seg))
+  (if-let [writer (compiled-struct-writer descriptor)]
+    (writer arena m)
+    (let [seg ^MemorySegment (.allocate ^Arena arena (long (:size descriptor))
+                                        (long (:align descriptor)))]
+      (marshal-struct-into! arena seg descriptor m)
+      seg)))
+
+(def ^:private struct-writer-cache (atom {}))
+(def ^:private struct-reader-cache (atom {}))
+
+(defn- throw-missing-field
+  "Throw the `:clj-zig/missing-field` diagnostic for a nil field value,
+  matching the generic path's message."
+  [descriptor-name field-name]
+  (throw (ex-info (str "Struct " descriptor-name " is missing field " field-name ".")
+                  {:level :error :error/code :clj-zig/missing-field
+                   :type descriptor-name :field field-name})))
+
+(defn- build-struct-writer
+  "Build a tight writer closure for an all-scalar struct, or nil if any
+  field is a buffer field, a nested struct, or an enum field (those need
+  the generic path's per-field dispatch). The closure captures each
+  field's keyword, byte offset, and a scalar-specialized `.set` call so
+  the per-call cost is one segment alloc plus a tight scalar write per
+  field with no `case` dispatch and no `to-carrier` call. Honors the
+  unsigned-int range via `unchecked-byte`/`unchecked-short`/etc., and
+  throws `:clj-zig/missing-field` for a nil field value, mirroring the
+  generic path."
+  [descriptor]
+  (when (every? (fn [f]
+                  (and (not (:target f))
+                       (not (:nested f))
+                       (= :scalar (-> f :type :kind))
+                       (not (get-in f [:type :layout :enum]))))
+                (:fields descriptor))
+    (let [size   (:size descriptor)
+          align  (:align descriptor)
+          descriptor-name (:name descriptor)
+          field-writers
+          (vec
+           (for [f (:fields descriptor)]
+             (let [t        (:type f)
+                   {:keys [category bits]} (type/scalar-info (:name t))
+                   off      (:offset f)
+                   kw       (keyword (:name f))
+                   field-name (:name f)]
+               (case category
+                 :int   (case bits
+                          8  (fn field-set [^MemorySegment seg ^java.util.Map m]
+                               (let [v (.get m kw)]
+                                 (when (nil? v) (throw-missing-field descriptor-name field-name))
+                                 (.set seg ValueLayout/JAVA_BYTE    (long off) (unchecked-byte (.longValue (biginteger v))))))
+                          16 (fn field-set [^MemorySegment seg ^java.util.Map m]
+                               (let [v (.get m kw)]
+                                 (when (nil? v) (throw-missing-field descriptor-name field-name))
+                                 (.set seg ValueLayout/JAVA_SHORT   (long off) (unchecked-short (.longValue (biginteger v))))))
+                          32 (fn field-set [^MemorySegment seg ^java.util.Map m]
+                               (let [v (.get m kw)]
+                                 (when (nil? v) (throw-missing-field descriptor-name field-name))
+                                 (.set seg ValueLayout/JAVA_INT     (long off) (unchecked-int (.longValue (biginteger v))))))
+                          64 (fn field-set [^MemorySegment seg ^java.util.Map m]
+                               (let [v (.get m kw)]
+                                 (when (nil? v) (throw-missing-field descriptor-name field-name))
+                                 (.set seg ValueLayout/JAVA_LONG    (long off) (.longValue (biginteger v))))))
+                 :float (case bits
+                          32 (fn field-set [^MemorySegment seg ^java.util.Map m]
+                               (let [v (.get m kw)]
+                                 (when (nil? v) (throw-missing-field descriptor-name field-name))
+                                 (.set seg ValueLayout/JAVA_FLOAT   (long off) (unchecked-float v))))
+                          64 (fn field-set [^MemorySegment seg ^java.util.Map m]
+                               (let [v (.get m kw)]
+                                 (when (nil? v) (throw-missing-field descriptor-name field-name))
+                                 (.set seg ValueLayout/JAVA_DOUBLE  (long off) (double v)))))
+                 :bool  (fn field-set [^MemorySegment seg ^java.util.Map m]
+                          (let [v (.get m kw)]
+                            (when (nil? v) (throw-missing-field descriptor-name field-name))
+                            (.set seg ValueLayout/JAVA_BOOLEAN (long off) (boolean v))))))))]
+      (fn struct-writer [^Arena arena m]
+        (let [seg ^MemorySegment (.allocate arena (long size) (long align))
+              n (count field-writers)]
+          (loop [i (int 0)]
+            (when (< i n)
+              ((nth field-writers i) seg m)
+              (recur (inc i))))
+          seg)))))
+
+(defn- build-struct-reader
+  "Build a tight reader closure for an all-scalar struct, or nil if any
+  field is a buffer field, a nested struct, or an enum field. The closure
+  captures each field's keyword, byte offset, and a scalar-specialized
+  `.get` plus coercion, so the per-call cost is one transient map build
+  plus a tight scalar read per field with no `case` dispatch and no
+  `coerce-scalar` call."
+  [descriptor]
+  (when (every? (fn [f]
+                  (and (not (:target f))
+                       (not (:nested f))
+                       (= :scalar (-> f :type :kind))
+                       (not (get-in f [:type :layout :enum]))))
+                (:fields descriptor))
+    (let [field-readers
+          (vec
+           (for [f (:fields descriptor)]
+             (let [t        (:type f)
+                   {:keys [category bits signed?]} (type/scalar-info (:name t))
+                   off      (:offset f)
+                   kw       (keyword (:name f))]
+               (case category
+                 :int   (case bits
+                          8  (if signed?
+                               (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (.get seg ValueLayout/JAVA_BYTE    (long off))))
+                               (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (bit-and (.get seg ValueLayout/JAVA_BYTE (long off)) 0xff))))
+                          16 (if signed?
+                               (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (.get seg ValueLayout/JAVA_SHORT   (long off))))
+                               (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (bit-and (.get seg ValueLayout/JAVA_SHORT (long off)) 0xffff))))
+                          32 (if signed?
+                               (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (.get seg ValueLayout/JAVA_INT     (long off))))
+                               (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (bit-and (.get seg ValueLayout/JAVA_INT (long off)) 0xffffffff))))
+                          64 (let [unsigned-ret (fn [v] (let [l (long v)]
+                                                          (if (neg? l)
+                                                            (.add (biginteger l) two-to-64)
+                                                            l)))]
+                               (if signed?
+                                 (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (.get seg ValueLayout/JAVA_LONG (long off))))
+                                 (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (unsigned-ret (.get seg ValueLayout/JAVA_LONG (long off))))))))
+                 :float (case bits
+                          32 (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (double (.get seg ValueLayout/JAVA_FLOAT  (long off)))))
+                          64 (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (double (.get seg ValueLayout/JAVA_DOUBLE (long off))))))
+                 :bool  (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (boolean (.get seg ValueLayout/JAVA_BOOLEAN (long off)))))))))]
+      (fn struct-reader [^MemorySegment seg]
+        (loop [i (int 0)
+               acc (transient {})]
+          (if (< i (count field-readers))
+            (recur (inc i)
+                   ((nth field-readers i) seg acc))
+            (persistent! acc)))))))
+
+(defn- compiled-struct-writer
+  "The compiled writer for `descriptor`, or nil. Cached by descriptor so
+  the build happens once per struct shape."
+  [descriptor]
+  (if-let [e (find @struct-writer-cache descriptor)]
+    (val e)
+    (let [w (build-struct-writer descriptor)]
+      (swap! struct-writer-cache assoc descriptor w)
+      w)))
+
+(defn- compiled-struct-reader
+  "The compiled reader for `descriptor`, or nil. Cached by descriptor so
+  the build happens once per struct shape."
+  [descriptor]
+  (if-let [e (find @struct-reader-cache descriptor)]
+    (val e)
+    (let [r (build-struct-reader descriptor)]
+      (swap! struct-reader-cache assoc descriptor r)
+      r)))
 
 (defn- marshal-struct-into!
   "Write the fields of Clojure map `m` into the existing segment `seg`
@@ -577,11 +733,16 @@
   out as a `byte[]`, a vector, or a `String` per its `:target`. Each
   buffer read copies exactly `len` bytes (the bound), so a corrupt length
   never drives an unbounded dereference; a zero-length buffer copies
-  nothing and never dereferences the pointer."
+  nothing and never dereferences the pointer. An all-scalar struct uses a
+  compiled reader that captures each field's offset and scalar getter at
+  build time, eliminating the per-field type dispatch the generic path
+  does; structs with buffer or nested fields fall back to that path."
   [^MemorySegment seg descriptor]
-  (reduce (fn [acc field]
-            (assoc acc (keyword (:name field)) (read-struct-field seg field)))
-          {} (:fields descriptor)))
+  (if-let [reader (compiled-struct-reader descriptor)]
+    (reader seg)
+    (reduce (fn [acc field]
+              (assoc acc (keyword (:name field)) (read-struct-field seg field)))
+            {} (:fields descriptor))))
 
 (defn- read-struct-field
   "Read one field of a wire struct segment. Dispatches on the field's
