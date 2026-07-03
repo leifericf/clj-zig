@@ -1131,7 +1131,7 @@
 ;; --- track-allocations profiling build (ADR 12, ADR 41) -------------------
 
 (def ^:private tracking-allocator-block
-  "The hand-rolled counting allocator the profiling build routes every
+  "The counting allocator the profiling build routes every
   c_allocator call through. Zig 0.16.0 ships no
   std.heap.TrackingAllocator (it was removed after 0.13), so this is the
   sanctioned fallback: a std.mem.Allocator vtable wrapper over
@@ -1205,7 +1205,7 @@
   "Wrap the rendered wrapper source `src` for the profiling build (the
   :zig/track-allocations flag). Returns `src` with three changes:
 
-  1. Prepends a hand-rolled counting allocator over c_allocator (Zig
+   1. Prepends a counting allocator over c_allocator (Zig
      0.16.0 has no std.heap.TrackingAllocator; this is the fallback).
   2. Rewrites every `std.heap.c_allocator` reference in `src` to route
      through the counter, so both the wrapper-generated code AND the

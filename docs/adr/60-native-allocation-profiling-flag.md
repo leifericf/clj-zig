@@ -11,7 +11,7 @@ change moves the count. The count must never reach a production library.
 
 The plan's first lever was `std.heap.TrackingAllocator`. The pinned compiler
 (Zig 0.16.0) ships no such allocator (it was removed after 0.13; nothing
-named tracking exists under `std/`), so a hand-rolled counter is mandatory.
+named tracking exists under `std/`), so a dedicated counter is mandatory.
 
 ## Decision
 
@@ -51,7 +51,7 @@ for a production allocator abstraction.
 ## Alternatives
 
 `std.heap.TrackingAllocator`. Rejected: unavailable in Zig 0.16.0 (the pinned
-compiler); the hand-rolled counter is the plan's sanctioned fallback, pulled
+compiler); this counter is the plan's sanctioned fallback, pulled
 forward when the standard library lacked the API.
 
 Thread an allocator-identifier parameter through every node constructor in
