@@ -81,17 +81,23 @@
 
   `ctx` carries the shape's identity ({:kind, :name, ...}); `results`
   is a map of {:defnz criterium-result :floor criterium-result} as
-  produced by the bench shell's two Criterium runs. Returns a map with
-  :kind, :name, :defnz-median, :floor-median, :overhead-ns, and
-  :body-leak-suspect."
+  produced by the bench shell's two Criterium runs, plus an optional
+  :native-allocations count (the per-shape native allocation count the
+  profiling build supplies when the bench runs under the
+  :zig/track-allocations flag; nil when the shape was not measured under
+  the flag). Returns a map with :kind, :name, :defnz-median,
+  :floor-median, :overhead-ns, :body-leak-suspect, and
+  :native-allocations. The count is pure data the shell threads in, so
+  this namespace stays JVM-free and unit-testable without Criterium."
   [ctx results]
   (let [defnz-med (median (:defnz results))
         floor-med (median (:floor results))]
     (assoc ctx
-           :defnz-median      defnz-med
-           :floor-median      floor-med
-           :overhead-ns       (- (double defnz-med) (double floor-med))
-           :body-leak-suspect (body-leak? defnz-med floor-med))))
+           :defnz-median        defnz-med
+           :floor-median        floor-med
+           :overhead-ns         (- (double defnz-med) (double floor-med))
+           :body-leak-suspect   (body-leak? defnz-med floor-med)
+           :native-allocations  (:native-allocations results))))
 
 ;; --- the meta block -------------------------------------------------------
 

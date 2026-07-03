@@ -49,6 +49,25 @@
     (is (= 60.0 (:defnz-median entry)))
     (is (= 5.0  (:floor-median entry)))))
 
+(deftest shape-entry-carries-native-allocations-when-supplied
+  ;; The pure core threads the count as DATA the shell supplies, so it
+  ;; stays JVM-free and unit-testable without Criterium or a native lib.
+  (let [entry (stats/shape-entry
+               {:kind :string :name "string-identity"}
+               {:defnz clean-defnz :floor clean-floor :native-allocations 1042})]
+    (is (= 1042 (:native-allocations entry))
+        "the count threads straight through as a pure data field")))
+
+(deftest shape-entry-nils-native-allocations-when-absent
+  ;; A shape measured WITHOUT the track-allocations flag supplies no
+  ;; count; the entry carries nil so every entry has a consistent shape
+  ;; and a reader can tell measured-under-flag from not at a glance.
+  (let [entry (stats/shape-entry
+               {:kind :scalar-passthrough :name "echo-i64"}
+               {:defnz clean-defnz :floor clean-floor})]
+    (is (nil? (:native-allocations entry))
+        "an absent count is nil, never a missing key")))
+
 (deftest overhead-entry-carries-shape-and-name
   (let [entry (stats/shape-entry
                {:kind :scalar-passthrough :name "echo-i64"}
