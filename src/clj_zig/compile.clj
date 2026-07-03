@@ -18,7 +18,8 @@
   build-inputs default and this fallback share one source of truth."
   "ReleaseSafe")
 
-(def ^:dynamic ^{:doc
+(def ^:dynamic
+  *subprocess-ms-box*
   "Measurement seam for the perf harness: when bound to a volatile, the
   build-lib subprocess records its wall-clock (in milliseconds) into the
   box just before the result is returned. Default nil -- the binding is
@@ -27,9 +28,8 @@
   perf Axis-1 authoring-latency harness binds this to separate the zig
   build-lib subprocess wall-clock from JVM-side time (p1 found a single
   redefine is subprocess-dominated: the clj-zig authoring code runs for
-  milliseconds, the zig build-lib wait dominates the ~1s wall-clock)."}
-  *subprocess-ms-box* nil)
-
+  milliseconds, the zig build-lib wait dominates the ~1s wall-clock)."
+  nil)
 
 (defn dynamic-library-extension
   "The platform's shared-library suffix, without the dot."
