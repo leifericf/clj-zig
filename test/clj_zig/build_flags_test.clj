@@ -1,5 +1,6 @@
 (ns clj-zig.build-flags-test
   (:require [clojure.test :refer [deftest is testing]]
+            [clj-zig.cache :as cache]
             [clj-zig.core :as core :refer [defnz zig-deps]]
             [clj-zig.descriptor :as descriptor]
             [clj-zig.compile :as compile]))
@@ -20,6 +21,45 @@
   (testing "false flags are omitted"
     (let [opts (descriptor/descriptor-options {:zig/single-threaded false})]
       (is (nil? (:single-threaded opts))))))
+
+(deftest track-allocations-lowers-to-options
+  (testing ":zig/track-allocations true lowers to {:track-allocations true}"
+    (let [opts (descriptor/descriptor-options {:zig/track-allocations true})]
+      (is (= true (:track-allocations opts)))))
+  (testing "the flag defaults off: an absent flag adds no :track-allocations key"
+    (let [opts (descriptor/descriptor-options {})]
+      (is (or (nil? opts) (nil? (:track-allocations opts)))
+          "the default descriptor carries no track-allocations entry")))
+  (testing "false is omitted, like the other boolean build flags"
+    (let [opts (descriptor/descriptor-options {:zig/track-allocations false})]
+      (is (nil? (:track-allocations opts))))))
+
+(deftest track-allocations-yields-a-distinct-cache-key
+  ;; ADR 12 (content-addressed artifacts): the flag enters the options
+  ;; map, and cache-key hashes the whole options map, so a profiling
+  ;; build gets its own key by construction and never reuses a default
+  ;; library. Pinned here so a regression that drops the flag from the
+  ;; hash surfaces as a test failure, not a polluted default library.
+  (let [base {:spec     {:ns 'app.core :name 'boxed}
+              :body     "return x;"
+              :source   "export fn x() void {}"
+              :zig-version "0.16.0"
+              :target   "macos-aarch64"}
+        key-off  (cache/cache-key (assoc base :options {:optimize "ReleaseSafe"}))
+        key-on   (cache/cache-key (assoc base
+                                         :options {:optimize "ReleaseSafe"
+                                                   :track-allocations true}))]
+    (is (not= key-off key-on)
+        "the profiling build's cache key must differ from the default's"))
+  (testing "an absent flag leaves the default options map and key intact"
+    (let [base {:spec     {:ns 'app.core :name 'boxed}
+                :body     "return x;"
+                :source   "export fn x() void {}"
+                :zig-version "0.16.0"
+                :target   "macos-aarch64"}]
+      (is (= (cache/cache-key (assoc base :options {:optimize "ReleaseSafe"}))
+             (cache/cache-key (assoc base :options {:optimize "ReleaseSafe"})))
+          "the default path's key is stable"))))
 
 (deftest build-arguments-includes-zig-flags
   (let [args (compile/build-arguments "zig"

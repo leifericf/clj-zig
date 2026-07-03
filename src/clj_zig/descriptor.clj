@@ -43,22 +43,49 @@
                        :mode mode})))
     {:optimize (name mode)}))
 
+(defn- track-allocations-option
+  "The `{:track-allocations true}` entry for a descriptor's
+  `:zig/track-allocations`, or nil when it is absent or false. The flag
+  is a profiling-build switch parallel to `:zig/optimize` (ADR 41): when
+  true the codegen wraps the wrapper's allocator in a counting allocator
+  and emits a per-shape allocation count the bench reads. The flag MUST
+  enter the content hash (ADR 12) so a profiling build gets its own cache
+  key and never pollutes a default library; that isolation holds by
+  construction because `cache/cache-key` hashes the whole :options map.
+  Defaults off (nil), so a production library never sees the wrap. The
+  value must be a boolean; a non-boolean throws
+  `:clj-zig/bad-track-allocations` so a typo (a string, a number) fails
+  before the compile rather than silently behaving as truthy."
+  [descriptor]
+  (let [v (:zig/track-allocations descriptor)]
+    (when (some? v)
+      (when-not (boolean? v)
+        (throw (ex-info (str ":zig/track-allocations must be a boolean; got "
+                             (pr-str v) ".")
+                        {:level :error
+                         :error/code :clj-zig/bad-track-allocations
+                         :value v})))
+      (when v {:track-allocations true}))))
+
 (defn descriptor-options
   "The compile options a descriptor carries: its C-interop flags, its
-  optimize mode, and its Zig build flags (`:zig/single-threaded`,
-  `:zig/pic`, `:zig/stack-check`, `:zig/panic-fn`). Returns nil when it
-  carries none. Shared by a per-function descriptor and a namespace-level
-  `zig-deps`, so both paths layer options the same way."
+  optimize mode, its track-allocations flag, and its Zig build flags
+  (`:zig/single-threaded`, `:zig/pic`, `:zig/stack-check`,
+  `:zig/panic-fn`). Returns nil when it carries none. Shared by a
+  per-function descriptor and a namespace-level `zig-deps`, so both
+  paths layer options the same way."
   [descriptor]
   (not-empty (merge (c-options descriptor)
                     (optimize-option descriptor)
+                    (track-allocations-option descriptor)
                     (zig-build-flags descriptor))))
 
 (def ^:private recognized-zig-keys
   "The curated `:zig/*` keys ADR 48 reserves. Unknown `:zig/*` keys are
   rejected at macro expansion time with `:clj-zig/unknown-zig-option`."
   #{:zig/optimize :zig/file :zig/fn :zig/raw :zig/symbol :zig/modules
-    :zig/panic-fn :zig/single-threaded :zig/pic :zig/stack-check})
+    :zig/panic-fn :zig/single-threaded :zig/pic :zig/stack-check
+    :zig/track-allocations})
 
 (defn- zig-build-flags
   "The Zig build flags a descriptor carries beyond optimize mode:
