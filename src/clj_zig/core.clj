@@ -121,15 +121,24 @@
                          :file (source/file-nodes spec entry)
                          (source/inline-nodes spec body))
          all-nodes   (vec (concat preamble body-nodes wrapper-nodes))
-         src         (str (zig/render all-nodes) "\n")]
-      (cond-> {:spec        spec
-               :body        body
-               :source      src
-               :deps        (zig/render preamble)
-               :options     (merge {:optimize compile/default-optimize-mode}
-                                   (deps-in (:ns spec)) options-extra)
-               :zig-version toolchain/pinned-version
-               :target      (cache/target-triple)}
+         rendered    (str (zig/render all-nodes) "\n")
+         options     (merge {:optimize compile/default-optimize-mode}
+                            (deps-in (:ns spec)) options-extra)
+         ;; Under :zig/track-allocations (ADR 41), wrap the wrapper's
+         ;; allocator in a counting allocator and emit per-symbol count
+         ;; fns. The flag is in :options, which cache/cache-key hashes,
+         ;; so a profiling build gets its own cache key by construction
+         ;; (ADR 12) and never reuses a default library. Default off.
+         src         (if (:track-allocations options)
+                       (source/tracking-wrap rendered (:symbol spec))
+                       rendered)]
+     (cond-> {:spec        spec
+              :body        body
+              :source      src
+              :deps        (zig/render preamble)
+              :options     options
+              :zig-version toolchain/pinned-version
+              :target      (cache/target-triple)}
        aux-files (assoc :aux-files aux-files)
        mods      (assoc :modules      (cache/modules-fingerprint mods)
                        :module-roots (cache/module-roots mods))))))

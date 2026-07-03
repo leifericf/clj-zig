@@ -209,3 +209,37 @@
       (is (str/includes? src "std.heap.c_allocator.free(__slice);")))
     (testing "the generated source is canonical Zig"
       (is (zig-fmt-clean? src)))))
+
+;; --- track-allocations profiling build (ADR 12, ADR 41) -------------------
+;;
+;; The :zig/track-allocations flag wraps the wrapper's allocator in a
+;; counting allocator and emits per-symbol count fns the bench reads.
+;; Default path (flag off) is byte-for-byte the plain c_allocator codegen.
+
+(deftest tracking-wrap-routes-c-allocator-through-counter
+  (let [plain "export fn clj_zig_app_2e_core_box(v: i64) usize {\n    const b = std.heap.c_allocator.create(Box) catch @panic(\"oom\");\n    return @intFromPtr(b);\n}\n"
+        wrapped (source/tracking-wrap plain "clj_zig_app_2e_core_box")]
+    (testing "the counting allocator block is present"
+      (is (str/includes? wrapped "__clj_zig_alloc_count")
+          "the per-library allocation counter is declared"))
+    (testing "the user body's c_allocator call is rewritten to the counter"
+      (is (str/includes? wrapped "__clj_zig_alloc.create(Box)")
+          "the body routes through the counting allocator")
+      (is (not (re-find #"std\.heap\.c_allocator\.create" wrapped))
+          "no bare c_allocator call remains in the body"))
+    (testing "the counting allocator itself still reaches c_allocator"
+      (is (re-find #"c_allocator\.rawAlloc" wrapped)
+          "the counter delegates to c_allocator.rawAlloc"))
+    (testing "the per-symbol count fns the bench reads are emitted"
+      (is (str/includes? wrapped "export fn clj_zig_app_2e_core_box__alloc_count_get() usize {"))
+      (is (str/includes? wrapped "export fn clj_zig_app_2e_core_box__alloc_count_reset() void {")))))
+
+(deftest tracking-wrap-default-source-is-unchanged
+  ;; Regression guard for ADR 12: the default path (flag off) never calls
+  ;; tracking-wrap, so its source is byte-for-byte the plain c_allocator
+  ;; codegen -- no counter, no wrap, no count fns.
+  (let [src (source/generate add-spec "return x + y;")]
+    (is (not (str/includes? src "__clj_zig_alloc"))
+        "the default scalar wrapper has no tracking allocator")
+    (is (not (str/includes? src "__alloc_count_get"))
+        "the default wrapper emits no count fns")))

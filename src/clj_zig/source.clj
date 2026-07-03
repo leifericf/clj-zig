@@ -1118,8 +1118,8 @@
 
 (defn generate
   "Render the Zig wrapper source for `spec` as text. In the default inline
-  mode the user's `body` string is spliced in. In file mode
-  (`opts {:mode :file :entry \"name\"}`) the wrapper reconstructs its
+  mode the user's `body` string is spliced into the function body. In file
+  mode (`opts {:mode :file :entry \"name\"}`) the wrapper reconstructs its
   arguments and calls the user's `pub fn`."
   ([spec body] (generate spec body {:mode :inline}))
   ([spec body {:keys [mode entry]}]
@@ -1127,6 +1127,103 @@
                       (generate-file spec entry)
                       (generate-inline spec body)))
         "\n")))
+
+;; --- track-allocations profiling build (ADR 12, ADR 41) -------------------
+
+(def ^:private tracking-allocator-block
+  "The hand-rolled counting allocator the profiling build routes every
+  c_allocator call through. Zig 0.16.0 ships no
+  std.heap.TrackingAllocator (it was removed after 0.13), so this is the
+  sanctioned fallback: a std.mem.Allocator vtable wrapper over
+  c_allocator that increments a counter on each allocation event (alloc,
+  or a resize/remap that grows or relocates). Free does not decrement:
+  the bench reads the count after its measured loop to learn how many
+  native allocations the shape issued, not the net live count. The
+  counter is a process-global the per-symbol reset fn zeroes before each
+  shape's measured loop.
+
+  The block uses a private std import (`__clj_zig_tstd`) so it is
+  self-contained whether or not the wrapper already imports std at top
+  level (a non-allocating shape's wrapper has no top-level std). Its
+  c_allocator references spell `__clj_zig_tstd.heap.c_allocator`, NOT
+  `std.heap.c_allocator`, so the body+wrapper rewrite below leaves them
+  untouched."
+  (str "const __clj_zig_tstd = @import(\"std\");\n"
+       "var __clj_zig_alloc_count: usize = 0;\n"
+       "\n"
+       "const __clj_zig_Track = struct {\n"
+       "    fn alloc(_: *anyopaque, len: usize, alignment: __clj_zig_tstd.mem.Alignment, ret_addr: usize) ?[*]u8 {\n"
+       "        __clj_zig_alloc_count += 1;\n"
+       "        return __clj_zig_tstd.heap.c_allocator.rawAlloc(len, alignment, ret_addr);\n"
+       "    }\n"
+       "    fn resize(_: *anyopaque, memory: []u8, alignment: __clj_zig_tstd.mem.Alignment, new_len: usize, ret_addr: usize) bool {\n"
+       "        if (new_len > memory.len) __clj_zig_alloc_count += 1;\n"
+       "        return __clj_zig_tstd.heap.c_allocator.rawResize(memory, alignment, new_len, ret_addr);\n"
+       "    }\n"
+       "    fn remap(_: *anyopaque, memory: []u8, alignment: __clj_zig_tstd.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {\n"
+       "        const grew = new_len > memory.len;\n"
+       "        const r = __clj_zig_tstd.heap.c_allocator.rawRemap(memory, alignment, new_len, ret_addr);\n"
+       "        if (r != null) {\n"
+       "            if (grew or r.? != memory.ptr) __clj_zig_alloc_count += 1;\n"
+       "        }\n"
+       "        return r;\n"
+       "    }\n"
+       "    fn free(_: *anyopaque, memory: []u8, alignment: __clj_zig_tstd.mem.Alignment, ret_addr: usize) void {\n"
+       "        __clj_zig_tstd.heap.c_allocator.rawFree(memory, alignment, ret_addr);\n"
+       "    }\n"
+       "};\n"
+       "\n"
+       "const __clj_zig_alloc_vtable: __clj_zig_tstd.mem.Allocator.VTable = .{\n"
+       "    .alloc = __clj_zig_Track.alloc,\n"
+       "    .resize = __clj_zig_Track.resize,\n"
+       "    .remap = __clj_zig_Track.remap,\n"
+       "    .free = __clj_zig_Track.free,\n"
+       "};\n"
+       "\n"
+       "const __clj_zig_alloc: __clj_zig_tstd.mem.Allocator = .{\n"
+       "    .ptr = undefined,\n"
+       "    .vtable = &__clj_zig_alloc_vtable,\n"
+       "};"))
+
+(defn- count-fn-block
+  "The per-symbol exported get/reset fns the bench binds to read the
+  per-shape native allocation count. `sym` is the wrapper's export
+  symbol; the fns name themselves `<sym>__alloc_count_get` and
+  `<sym>__alloc_count_reset` so the bench derives them from the symbol
+  it already holds."
+  [sym]
+  (str "export fn " sym "__alloc_count_get() usize {\n"
+       "    return __clj_zig_alloc_count;\n"
+       "}\n"
+       "\n"
+       "export fn " sym "__alloc_count_reset() void {\n"
+       "    __clj_zig_alloc_count = 0;\n"
+       "}"))
+
+(defn tracking-wrap
+  "Wrap the rendered wrapper source `src` for the profiling build (the
+  :zig/track-allocations flag). Returns `src` with three changes:
+
+  1. Prepends a hand-rolled counting allocator over c_allocator (Zig
+     0.16.0 has no std.heap.TrackingAllocator; this is the fallback).
+  2. Rewrites every `std.heap.c_allocator` reference in `src` to route
+     through the counter, so both the wrapper-generated code AND the
+     user body's c_allocator calls (the bench shapes' bodies spell
+     `std.heap.c_allocator` directly) are counted.
+  3. Appends per-symbol `__alloc_count_get` / `__alloc_count_reset`
+     export fns the bench reads after each shape's measured loop.
+
+  `symbol` is the wrapper's export symbol. Pure.
+
+  The default codegen path (flag off) never calls this fn, so its output
+  is byte-for-byte unchanged: a production library never sees the wrap,
+  the counting allocator, or the count fns. A profiling build's cache
+  key (ADR 12) is distinct from the default's because
+  :track-allocations enters the options map cache/cache-key hashes, AND
+  the wrapped source differs, so the isolation is double."
+  [src symbol]
+  (let [rewritten (str/replace src "std.heap.c_allocator" "__clj_zig_alloc")]
+    (str tracking-allocator-block "\n\n" rewritten "\n\n" (count-fn-block symbol) "\n")))
 
 (comment
   (require '[clj-zig.spec :as spec])
