@@ -606,14 +606,20 @@
                           (let [v (.get m kw)]
                             (when (nil? v) (throw-missing-field descriptor-name field-name))
                             (.set seg ValueLayout/JAVA_BOOLEAN (long off) (boolean v))))))))]
-      (fn struct-writer [^Arena arena m]
-        (let [seg ^MemorySegment (.allocate arena (long size) (long align))
-              n (count field-writers)]
-          (loop [i (int 0)]
-            (when (< i n)
-              ((nth field-writers i) seg m)
-              (recur (inc i))))
-          seg)))))
+       (let [;; Replace the per-call loop over `(nth field-writers i)` with a
+             ;; reduce-built chain so each field-writer is captured directly
+             ;; in a closure (no per-call nth, no loop counter). The chain
+             ;; threads `(seg, m)` through each writer.
+             chain (reduce (fn [next-k fw]
+                             (fn [seg m]
+                               (fw seg m)
+                               (next-k seg m)))
+                           (fn [_seg _m] nil)
+                           (reverse field-writers))]
+         (fn struct-writer [^Arena arena m]
+           (let [seg ^MemorySegment (.allocate arena (long size) (long align))]
+             (chain seg m)
+             seg))))))
 
 (defn- build-struct-reader
   "Build a tight reader closure for an all-scalar struct, or nil if any
@@ -657,14 +663,20 @@
                  :float (case bits
                           32 (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (double (.get seg ValueLayout/JAVA_FLOAT  (long off)))))
                           64 (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (double (.get seg ValueLayout/JAVA_DOUBLE (long off))))))
-                 :bool  (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (boolean (.get seg ValueLayout/JAVA_BOOLEAN (long off)))))))))]
-      (fn struct-reader [^MemorySegment seg]
-        (loop [i (int 0)
-               acc (transient {})]
-          (if (< i (count field-readers))
-            (recur (inc i)
-                   ((nth field-readers i) seg acc))
-            (persistent! acc)))))))
+                  :bool  (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (boolean (.get seg ValueLayout/JAVA_BOOLEAN (long off)))))))))]
+       (let [;; Replace the per-call loop over `(nth field-readers i)` with a
+             ;; reduce-built chain so each field-reader is captured directly
+             ;; in a closure (no per-call nth, no loop counter). The chain
+             ;; threads `(seg, acc)` through each reader; the JIT sees a
+             ;; monomorphic call at every level and can inline the body.
+             chain (reduce (fn [next-k fr]
+                             (fn [seg acc]
+                               (let [acc' (fr seg acc)]
+                                 (next-k seg acc'))))
+                           (fn [_seg acc] acc)
+                           (reverse field-readers))]
+         (fn struct-reader [^MemorySegment seg]
+           (persistent! (chain seg (transient {}))))))))
 
 (defn- compiled-struct-writer
   "The compiled writer for `descriptor`, or nil. Cached by descriptor so
@@ -1080,8 +1092,8 @@
   carriers starting at `off`. A scalar/enum writer writes one slot; a
   const-slice writer allocates a segment from `arena`, bulk-copies the
   primitive array in, and writes (seg, len-long) at `off` and `(inc off)`.
-  Returns `[writers carrier-counts]` so the invoker's loop can advance
-  its offset without rederiving the count per call."
+  Returns `[writers carrier-counts]` so the invoker can advance its
+  offset without rederiving the count per call."
   [params]
   (let [entries
         (for [p params]
@@ -1094,10 +1106,11 @@
 
               (and (= :named (:kind t)) (enum-type? t))
               (let [layout  (:layout t)
-                    backing (:backing layout)]
+                    backing (:backing layout)
+                    kw->val (:kw->value (enum-index layout))]
                 {:n 1
                  :write (fn [_arena ^objects cs ^long off arg]
-                          (let [value (enum-member->value layout arg)]
+                          (let [value (get kw->val arg)]
                             (when (nil? value)
                               (throw (ex-info (str arg " is not a member of enum " (:name layout) ".")
                                               {:level :error
@@ -1117,6 +1130,22 @@
                             (aset cs off seg)
                             (aset cs (inc off) (Long/valueOf (long len)))))}))))]
     [(mapv :write entries) (mapv :n entries)]))
+
+(defn- slice-aware-chain
+  "Build a 3-arg `(arena, carriers, args)` fn that runs each slice-aware
+  writer at its pre-computed offset, replacing the invoker's per-call
+  loop over `(nth writers i)` and the offset accumulator. Each writer is
+  captured directly in a closure so the JIT sees a monomorphic call at
+  every level."
+  [writers counts]
+  (let [offs (reductions (fn [acc c] (+ acc c)) 0 (drop-last (seq counts)))
+        indexed (map vector writers offs (range))]
+    (reduce (fn [next-k [writer off idx]]
+              (fn [^Arena arena ^objects carriers args]
+                (writer arena carriers (long off) (nth args idx))
+                (next-k arena carriers args)))
+            (fn [_arena _carriers _args] nil)
+            (reverse indexed))))
 
 (defn- enum-param-coerce
   "Build a per-call coercion fn for one enum param: keyword to backing
@@ -1496,10 +1525,13 @@
         ;; return, where FFM prepends the arena as SegmentAllocator.
         scalar-path? (scalar-only? params ret)
         enum-path?   (enum-aware-scalar? params ret)
-        slice-path?  (and (not scalar-path?) (not enum-path?)
-                          (slice-aware? params ret))
-        slice-setup  (when slice-path? (slice-aware-writers params))
-        slice-total  (when slice-path? (reduce + (second slice-setup)))
+         slice-path?  (and (not scalar-path?) (not enum-path?)
+                           (slice-aware? params ret))
+         slice-setup  (when slice-path? (slice-aware-writers params))
+         slice-writers (when slice-path? (first slice-setup))
+         slice-counts  (when slice-path? (second slice-setup))
+         slice-chain   (when slice-path? (slice-aware-chain slice-writers slice-counts))
+         slice-total  (when slice-path? (reduce + slice-counts))
         i128-ret?    (i128-type? ret)
         base-offset  (if i128-ret? 1 0)
         n-base       (reduce + (map param-carrier-count params))
@@ -1546,8 +1578,9 @@
       :scalar?      scalar-path?
        :enum?        enum-path?
        :slice?       slice-path?
-       :slice-writers (when slice-path? (first slice-setup))
-       :slice-counts  (when slice-path? (second slice-setup))
+       :slice-writers (when slice-path? slice-writers)
+       :slice-counts  (when slice-path? slice-counts)
+       :slice-chain   slice-chain
        :scalar-coercions (when scalar-path?
                            [(mapv scalar-param-coerce params)
                             (scalar-return-coerce ret)])
@@ -1656,7 +1689,7 @@
   [spec library-path]
   (let [{:keys [spreader params ret arity invoke-ctx next-h free-h elem-lay var-sym
                 scalar? enum? enum-coercions scalar-coercions carriers-tl
-                slice? slice-writers slice-counts slice-carriers-tl
+                slice? slice-writers slice-counts slice-chain slice-carriers-tl
                 stream? eu-struct? owned-rec? owned-slice? opt-struct? struct-ret?
                 gen-carriers-tl gen-copybacks-tl gen-base-offset gen-n-base]}
         (bind-context spec library-path)]
@@ -1686,9 +1719,7 @@
             (return-coerce (.invokeExact ^MethodHandle spreader ^objects carriers)))))
 
       slice?
-      (let [writers slice-writers
-            counts  slice-counts
-            return-coerce (if (= :named (:kind ret))
+      (let [return-coerce (if (= :named (:kind ret))
                             (enum-return-coerce (:layout ret))
                             #(from-return ret %))]
         (fn [& args]
@@ -1697,10 +1728,7 @@
           (with-pooled-arena
            (fn [^Arena arena]
              (let [^objects carriers (.get ^ThreadLocal slice-carriers-tl)]
-               (loop [i (long 0) off (long 0)]
-                 (when (< i (long arity))
-                   ((nth writers i) arena carriers off (nth args i))
-                   (recur (inc i) (+ off (nth counts i)))))
+               (slice-chain arena carriers args)
                (return-coerce (.invokeExact ^MethodHandle spreader ^objects carriers)))))))
 
       :else
