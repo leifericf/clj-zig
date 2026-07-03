@@ -31,8 +31,10 @@
   first optimization is a later backlog item, not pickable until this
   feature and its baseline land."
   (:require [clj-zig.core :as clj-zig]
+            [clj-zig.cache :as cache]
             [clj-zig.compile :as compile]
             [clj-zig.foreign :as foreign]
+            [clj-zig.fs :as fs]
             [clj-zig.layout :as layout]
             [clj-zig.perf.opts :as opts]
             [clj-zig.perf.shape :as shape]
@@ -527,6 +529,254 @@
       (pr record)))
   file)
 
+;; --- Axis-1: authoring-latency harness ----------------------------------
+;;
+;; Axis-1 measures a defnz redefine's wall-clock across three cache tiers
+;; and separates the zig build-lib subprocess wall-clock from JVM-side
+;; time. p1 found a single redefine is subprocess-dominated: the clj-zig
+;; authoring code (cache lookup, source generation, toolchain hand-off)
+;; runs for milliseconds, while the zig build-lib subprocess wait
+;; dominates the roughly one-second wall-clock. The separation lets
+;; optimization see where redefine time actually goes.
+;;
+;; TIERS (the cache state each tier's timed loop sees):
+;;   cold                clj-zig artifact cache (.clj-zig/cache) AND the
+;;                       zig global cache (.clj-zig/global-cache) cleared.
+;;                       The redefine recompiles from scratch.
+;;   global-cache-hit    clj-zig artifact cache cleared; zig global cache
+;;                       KEPT. The recompile reuses the prior std/preamble
+;;                       build in the zig global cache but relinks the
+;;                       wrapper (clj-zig re-links).
+;;   clj-zig-cache-hit   both KEPT. The redefine hits the clj-zig artifact
+;;                       cache and runs no subprocess. The fastest path.
+;;
+;; CACHE-SCOPING INVARIANT (ADR 35, load-bearing): clearing is scoped
+;; strictly to the bench-owned .clj-zig/ roots. The bench NEVER touches
+;; the machine's per-user zig cache (clj-zig does not use it post-ADR-35;
+;; every compile passes --global-cache-dir at .clj-zig/global-cache), and
+;; never touches any other clj-zig project on the machine. ADR 35's
+;; "persistent" qualifier on the global cache is about NOT scattering one
+;; project's intermediate artifacts into a shared per-user location; the
+;; project-local .clj-zig/global-cache/ the bench clears shares the
+;; .clj-zig/ lifecycle the toolchain and cache already own.
+
+(def ^:private axis1-artifact-cache-root
+  "The clj-zig content-addressed artifact cache root the bench clears.
+  Defaults to clj-zig.cache/artifact-paths's default so the bench clears
+  exactly the directory clj-zig writes libraries into."
+  ".clj-zig/cache")
+
+(defn- axis1-global-cache-dir
+  "The zig global cache directory clj-zig.compile points every compile
+  at. Reuses compile/global-cache-dir so the bench clears exactly what
+  clj-zig fills, never a sibling."
+  []
+  (io/file (compile/global-cache-dir)))
+
+(defn- clear-tier-cache!
+  "Clear the cache roots `tier`'s redefine must not see. Scoped strictly
+  to the bench-owned .clj-zig/ roots; never touches the machine's per-user
+  zig cache (ADR 35)."
+  [tier]
+  (case tier
+    :cold              (do (cache/clean! axis1-artifact-cache-root)
+                           (let [g (axis1-global-cache-dir)]
+                             (when (.exists g)
+                               (fs/delete-recursively! g))))
+    :global-cache-hit  (cache/clean! axis1-artifact-cache-root)
+    :clj-zig-cache-hit nil))
+
+(defn- tier-cache-state
+  "Gather the observed cache state at the predicted artifact path for
+  `inputs` (the spec/body/gen the bench is about to compile) and the
+  zig global cache. Returns a map the contamination check consumes. The
+  shell computes the predicted path through the same build-inputs +
+  artifact-paths pipeline establish! uses, so 'stale entry surviving a
+  clear' means 'the predicted artifact path exists when the tier
+  intended it gone'."
+  [inputs]
+  (let [artifact-dir (io/file (:dir (cache/artifact-paths
+                                      {:root axis1-artifact-cache-root
+                                       :target (:target inputs)
+                                       :ns     (-> inputs :spec :ns)
+                                       :name   (-> inputs :spec :name)
+                                       :hash   (cache/cache-key inputs)})))]
+    {:artifact-exists?     (.exists artifact-dir)
+     :artifact-path        (.getAbsolutePath artifact-dir)
+     :global-cache-exists? (.exists (axis1-global-cache-dir))
+     :global-cache-empty?  (let [g (axis1-global-cache-dir)]
+                             (when (.exists g)
+                               (empty? (.listFiles g))))}))
+
+(defn- axis1-tier-contaminated?
+  "True when the observed cache state does not match the intended state
+  for `tier`. A stale entry that survives a clear is contamination: the
+  timed loop would hit the cache and report a clean cold number when the
+  cold tier in fact ran warm. The detection runs AFTER a clear and
+  BEFORE the tier's first timed sample. Inline here; the same decision
+  table lands as a pure fn in stats.clj in the next task so a Tier-0
+  test can pin it."
+  [tier observed]
+  (case tier
+    :cold              (or (:artifact-exists? observed)
+                           (and (:global-cache-exists? observed)
+                                (not (:global-cache-empty? observed))))
+    :global-cache-hit  (or (:artifact-exists? observed)
+                           (not (:global-cache-exists? observed))
+                           (:global-cache-empty? observed))
+    :clj-zig-cache-hit (not (:artifact-exists? observed))))
+
+(def ^:private axis1-tier-order
+  "The tier run order. Cold first establishes a fresh global cache the
+  global-cache-hit tier then hits; global-cache-hit populates the
+  clj-zig artifact cache the clj-zig-cache-hit tier then hits. Running
+  in any other order would leave a tier without the cache state its
+  contract assumes."
+  [:cold :global-cache-hit :clj-zig-cache-hit])
+
+(def ^:private axis1-sample-count
+  "The number of redefine samples per tier. A redefine is subprocess-
+  dominated (~1s per cold sample per p1); a handful of samples bounds
+  each tier's wall-clock cost while still yielding a stable median. Five
+  samples rejects a one-off GC pause or filesystem hiccup without paying
+  for statistical tightness the subprocess variance dwarfs."
+  5)
+
+(defn- median-of
+  "The median of a seq of numbers as a double, or nil for an empty seq
+  so a tier that did not run reports nil rather than dividing by zero."
+  [xs]
+  (when (seq xs)
+    (let [sorted (sort xs)
+          n      (count sorted)
+          mid    (quot n 2)]
+      (if (odd? n)
+        (double (nth sorted mid))
+        (double (/ (+ (nth sorted (dec mid)) (nth sorted mid)) 2.0))))))
+
+(defn- time-axis1-sample
+  "Time one defnz redefine of `spec` with `body` and `gen` via the
+  clj-zig.core/establish! path, returning a map of:
+    :wall-ms        the total redefine wall-clock (ms)
+    :subprocess-ms  the zig build-lib subprocess wall-clock (ms), or nil
+                    when no subprocess ran (the clj-zig-cache-hit tier)
+  The cache clear runs OUTSIDE the timed region (only the establish!
+  call is timed) so the sample measures redefine cost, not clear cost.
+  compile/*subprocess-ms-box* is bound to a fresh volatile so the
+  subprocess-ms is the build-lib wall-clock apart from JVM-side time."
+  [spec body gen]
+  (let [sub-box (volatile! nil)
+        start   (System/nanoTime)
+        _       (binding [compile/*subprocess-ms-box* sub-box]
+                  (clj-zig/establish! spec body gen))
+        wall-ms (quot (- (System/nanoTime) start) 1000000)]
+    {:wall-ms wall-ms
+     :subprocess-ms @sub-box}))
+
+(defn- measure-axis1-tier
+  "Measure `tier`'s redefine wall-clock and subprocess wall-clock over
+  axis1-sample-count samples. Returns a map of:
+    :wall-ms        the median redefine wall-clock (ms) across samples
+    :subprocess-ms  the median zig build-lib subprocess wall-clock (ms),
+                    or nil when the tier runs no subprocess
+    :contaminated   truthy when the cache state after the tier's clear
+                    did not match the tier's intended state
+  The clear and the contamination check run ONCE per tier, before the
+  first sample; each cold/global-cache-hit sample then re-clears so
+  every sample sees the tier's intended state. clj-zig-cache-hit samples
+  do not clear (the tier's contract keeps both caches)."
+  [tier spec body gen inputs]
+  (clear-tier-cache! tier)
+  (let [contaminated (axis1-tier-contaminated? tier (tier-cache-state inputs))
+        samples      (vec (for [_ (range axis1-sample-count)]
+                            (do (when (#{:cold :global-cache-hit} tier)
+                                  (clear-tier-cache! tier))
+                                (time-axis1-sample spec body gen))))
+        walls        (mapv :wall-ms samples)
+        subs         (remove nil? (mapv :subprocess-ms samples))]
+    {:wall-ms       (median-of walls)
+     :subprocess-ms (when (seq subs) (median-of subs))
+     :contaminated  contaminated}))
+
+(defn- axis1-build-inputs
+  "The clj-zig.cache build-inputs map for `shape`'s redefine, used to
+  compute the predicted artifact path the contamination check probes.
+  Reuses the same clj-zig.core/build-inputs path establish! takes, so
+  the predicted path matches the path establish! writes to."
+  [shape shape-ns]
+  (clj-zig/build-inputs
+   (build-spec-for shape shape-ns)
+   (:body shape)
+   {:mode :inline}))
+
+(defn- measure-axis1-shape
+  "Measure `shape`'s redefine across all three tiers. Returns the
+  stats/tier-entry map (the pure-shape the numbers record consumes).
+  Tiers run in axis1-tier-order so each tier's cache contract is
+  reachable: cold establishes a fresh global cache the global-cache-hit
+  tier then hits; global-cache-hit populates the clj-zig artifact cache
+  the clj-zig-cache-hit tier then hits. The cold-tier subprocess-ms is
+  the entry's :subprocess-ms (the dominant term per p1); the entry's
+  :tier-contaminated flag is true when any tier detected cache-state
+  contamination."
+  [shape]
+  (let [identity (shape-identity shape)
+        shape-ns (shape-ns shape)
+        _        (register-setup! shape-ns (:setup shape))
+        inputs   (axis1-build-inputs shape shape-ns)
+        spec     (:spec inputs)
+        body     (:body inputs)
+        gen      {:mode :inline}
+        per-tier (fn [tier]
+                   (measure-axis1-tier tier spec body gen inputs))
+        results  (into {} (for [tier axis1-tier-order]
+                            [tier (per-tier tier)]))
+        cold     (:cold results)
+        gch      (:global-cache-hit results)
+        czh      (:clj-zig-cache-hit results)]
+    (stats/tier-entry
+     identity
+     {:cold              (:wall-ms cold)
+      :global-cache-hit  (:wall-ms gch)
+      :clj-zig-cache-hit (:wall-ms czh)
+      :subprocess-ms     (:subprocess-ms cold)
+      :tier-contaminated (or (:contaminated cold)
+                             (:contaminated gch)
+                             (:contaminated czh))})))
+
+(defn- axis1-artifact-file
+  "The gitignored output file for an Axis-1 run on `date`. The bench
+  writes axis1-<millis>.edn alongside the per-call records so a future
+  reader diffing two Axis-1 runs sees the tier medians side by side."
+  [date]
+  (io/file artifacts-dir (str "axis1-" (.getTime date) ".edn")))
+
+(defn- run-axis1
+  "Drive the Axis-1 authoring-latency harness over `shapes`. For each
+  shape: establish! once per tier per sample (cold clears both caches;
+  global-cache-hit clears the clj-zig cache only; clj-zig-cache-hit
+  keeps both), separate the zig build-lib subprocess wall-clock from
+  JVM-side time, detect tier contamination, and shape the result via
+  stats/tier-entry. Writes the record to the gitignored perf dir and
+  prints one line per shape so a manual run sees the tier ordering at a
+  glance."
+  [shapes opts]
+  (ensure-dir! artifacts-dir)
+  (attach-profiler! opts)
+  (let [entries (mapv measure-axis1-shape shapes)
+        record  (stats/numbers-record entries (meta-inputs))
+        out     (axis1-artifact-file (java.util.Date.))]
+    (write-record! out record)
+    (println "wrote" (str out) "--" (count entries) "axis1 shapes")
+    (doseq [e entries]
+      (println "  " (:kind e)
+               "cold" (int (:cold e)) "ms"
+               "gch" (int (:global-cache-hit e)) "ms"
+               "czh" (int (:clj-zig-cache-hit e)) "ms"
+               "sub" (when-let [s (:subprocess-ms e)] (int s)) "ms"
+               (when (:tier-contaminated e) "(tier-contaminated)")))
+    nil))
+
 (defn- measure-one
   "Measure one shape with error isolation: a compile, floor-bind, or
   Criterium fault is caught and shaped into an :errored entry via
@@ -590,18 +840,29 @@
   allocation count for the defnz path (0 for non-allocating shapes,
   >0 for allocating ones). Off by default; a run without the option
   builds the default library and matches the baseline, and the
-  profiling build's cache key is distinct from the default's (ADR 12)."
+  profiling build's cache key is distinct from the default's (ADR 12).
+
+  An optional --axis1 (or CLJ_ZIG_AXIS1=1) selects the Axis-1
+  authoring-latency harness in place of the per-call overhead run.
+  Axis-1 times a defnz redefine across three cache tiers (cold,
+  global-cache-hit, clj-zig-cache-hit), separates the zig build-lib
+  subprocess wall-clock from JVM-side time, and flags any tier whose
+  cache state did not match its contract. The optional kind positional
+  narrows the run to one shape, as in the default mode. Off by default;
+  a run without the option takes the per-call path unchanged."
   [& args]
   (ensure-dir! artifacts-dir)
-  (let [opts    (opts/parse-args args (System/getenv))
-        _       (attach-profiler! opts)
-        shapes  (select-shapes (:kind opts))
-        track?  (:track-allocations opts)
-        entries (mapv #(measure-one % track?) shapes)
-        record  (stats/numbers-record entries (meta-inputs))
-        out     (io/file artifacts-dir
-                         (str "perf-" (.getTime (java.util.Date.)) ".edn"))]
-    (write-record! out record)
-    (println "wrote" (str out) "--" (count entries) "shapes"
-             (when track? "(track-allocations)"))
-    (print-summary entries)))
+  (let [opts   (opts/parse-args args (System/getenv))
+        shapes (select-shapes (:kind opts))]
+    (if (:axis1 opts)
+      (run-axis1 shapes opts)
+      (let [_       (attach-profiler! opts)
+            track?  (:track-allocations opts)
+            entries (mapv #(measure-one % track?) shapes)
+            record  (stats/numbers-record entries (meta-inputs))
+            out     (io/file artifacts-dir
+                             (str "perf-" (.getTime (java.util.Date.)) ".edn"))]
+        (write-record! out record)
+        (println "wrote" (str out) "--" (count entries) "shapes"
+                 (when track? "(track-allocations)"))
+        (print-summary entries)))))

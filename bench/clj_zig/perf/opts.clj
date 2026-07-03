@@ -16,6 +16,8 @@
 (def ^:private attach-window-env "CLJ_ZIG_ATTACH_WINDOW")
 (def ^:private track-allocations-flag "--track-allocations")
 (def ^:private track-allocations-env "CLJ_ZIG_TRACK_ALLOCATIONS")
+(def ^:private axis1-flag "--axis1")
+(def ^:private axis1-env "CLJ_ZIG_AXIS1")
 
 (defn- parse-attach-window-flag
   "Walk `args` and return the integer value of the --attach-window flag,
@@ -44,6 +46,21 @@
   (let [v (some-> (get env track-allocations-env) str/lower-case str/trim)]
     (boolean (and v (#{ "1" "true" "yes" "on"} v)))))
 
+(defn- axis1-from-args?
+  "True when `args` carries the --axis1 bare switch. The switch selects
+  the Axis-1 authoring-latency harness instead of the default per-call
+  overhead run."
+  [args]
+  (boolean (some #(= % axis1-flag) args)))
+
+(defn- axis1-from-env?
+  "True when the CLJ_ZIG_AXIS1 env var is set to a truthy value (1, true,
+  yes, on, case-insensitive). Any other value (0, empty, unset) keeps
+  Axis-1 off so the default run is unchanged."
+  [env]
+  (let [v (some-> (get env axis1-env) str/lower-case str/trim)]
+    (boolean (and v (#{ "1" "true" "yes" "on"} v)))))
+
 (defn- positional-kind
   "The first positional arg in `args`: one that neither starts with `--`
   nor is consumed as a flag's value. nil when absent."
@@ -63,6 +80,8 @@
     :kind                the optional shape-kind positional arg, nil absent
     :attach-window       the attach window in whole seconds, nil absent
     :track-allocations   truthy when the profiling build is on (see below)
+    :axis1               truthy when the Axis-1 authoring-latency harness
+                         is selected (see below)
 
   The attach window reads from the --attach-window <secs> flag or the
   CLJ_ZIG_ATTACH_WINDOW env var; the flag wins when both are set. :kind
@@ -74,11 +93,21 @@
   after each measured loop. OFF by default (no flag, no env, or a falsy
   env value), so a run without the option builds the default library and
   matches the baseline. Set via the --track-allocations bare switch or
-  CLJ_ZIG_TRACK_ALLOCATIONS=1; the flag wins when both are set. Pure: no io."
+  CLJ_ZIG_TRACK_ALLOCATIONS=1; the flag wins when both are set. Pure: no io.
+
+  :axis1 selects the Axis-1 authoring-latency harness in place of the
+  default per-call overhead run. Axis-1 times a defnz redefine across
+  three cache tiers (cold, global-cache-hit, clj-zig-cache-hit) and
+  separates the zig build-lib subprocess wall-clock from JVM-side time.
+  OFF by default; set via the --axis1 bare switch or CLJ_ZIG_AXIS1=1.
+  The optional :kind positional narrows the run to one shape, as in the
+  default mode."
   [args env]
   (let [from-flag (parse-attach-window-flag args)
         from-env  (some-> (get env attach-window-env) parse-long)]
     (cond-> {:kind (positional-kind args)}
       (or from-flag from-env)        (assoc :attach-window (or from-flag from-env))
       (or (track-allocations-from-args? args)
-          (track-allocations-from-env? env)) (assoc :track-allocations true))))
+          (track-allocations-from-env? env)) (assoc :track-allocations true)
+      (or (axis1-from-args? args)
+          (axis1-from-env? env)) (assoc :axis1 true))))

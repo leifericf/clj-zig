@@ -75,6 +75,30 @@
     (is (= "string" (:kind m)))
     (is (= 5 (:attach-window m)))))
 
+(deftest axis1-off-by-default
+  ;; The Axis-1 harness is OFF by default: a run with no option takes the
+  ;; default per-call overhead path. Pinned so a regression that flips the
+  ;; default surfaces as a test failure.
+  (let [m (opts/parse-args [] {})]
+    (is (not (:axis1 m)))))
+
+(deftest axis1-set-via-flag
+  (is (:axis1 (opts/parse-args ["--axis1"] {}))))
+
+(deftest axis1-set-via-env
+  (is (:axis1 (opts/parse-args [] {"CLJ_ZIG_AXIS1" "1"}))))
+
+(deftest axis1-env-falsy-stays-off
+  (is (not (:axis1 (opts/parse-args [] {"CLJ_ZIG_AXIS1" "0"}))))
+  (is (not (:axis1 (opts/parse-args [] {"CLJ_ZIG_AXIS1" ""})))))
+
+(deftest axis1-with-kind-positional
+  ;; The optional kind positional narrows Axis-1 to one shape, parallel to
+  ;; the default mode.
+  (let [m (opts/parse-args ["--axis1" "scalar-passthrough"] {})]
+    (is (:axis1 m))
+    (is (= "scalar-passthrough" (:kind m)))))
+
 (deftest opts-source-is-pure
   ;; Source-level purity: the parse namespace requires neither Criterium
   ;; nor clj-zig native edges, so the :test lane can load it.
