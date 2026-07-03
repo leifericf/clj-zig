@@ -1120,11 +1120,15 @@
 
 (defn- enum-param-coerce
   "Build a per-call coercion fn for one enum param: keyword to backing
-  scalar carrier. Throws `:clj-zig/unknown-enum-member` for a non-member."
+  scalar carrier. Throws `:clj-zig/unknown-enum-member` for a non-member.
+  The enum index map is captured at bind time so the per-call body is a
+  single map lookup with no atom dereference."
   [layout]
-  (let [backing (:backing layout)]
+  (let [backing (:backing layout)
+        idx     (enum-index layout)
+        kw->val (:kw->value idx)]
     (fn enum-coerce [arg]
-      (let [value (enum-member->value layout arg)]
+      (let [value (get kw->val arg)]
         (when (nil? value)
           (throw (ex-info (str arg " is not a member of enum " (:name layout) ".")
                           {:level :error
@@ -1135,10 +1139,13 @@
 (defn- enum-return-coerce
   "Build a per-call return coercion fn for an enum return: backing scalar
   to keyword (or the raw integer when no member carries it, total per
-  ADR 20)."
+  ADR 20). The enum index map is captured at bind time so the per-call
+  body is a single map lookup with no atom dereference."
   [layout]
-  (fn enum-ret [result]
-    (enum-value->member layout (long result))))
+  (let [val->kw (:value->kw (enum-index layout))]
+    (fn enum-ret [result]
+      (let [v (long result)]
+        (or (get val->kw v) v)))))
 
 (defn- handle-param-coerce
   "Build a per-call coercion fn for one [:handle Type] param: validate the
