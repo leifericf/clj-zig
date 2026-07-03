@@ -856,6 +856,10 @@
   (ensure-dir! artifacts-dir)
   (let [opts   (opts/parse-args args (System/getenv))
         shapes (select-shapes (:kind opts))]
+    (when (and (:axis1 opts) (:track-allocations opts))
+      (println "note: --track-allocations is ignored under --axis1 (Axis-1"
+               "measures authoring latency, not per-call allocations);"
+               "running axis1."))
     (if (:axis1 opts)
       (run-axis1 shapes opts)
       (let [_       (attach-profiler! opts)
