@@ -5,7 +5,7 @@
   probe needed), the diagnostic-entry shaper, and the source-level
   purity of clj-zig.perf.stats (no Criterium, no clj-zig native
   require)."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
             [clj-zig.perf.stats :as stats]))
 
 ;; --- fixture inputs ------------------------------------------------------

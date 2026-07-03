@@ -91,7 +91,7 @@
            :defnz-median      defnz-med
            :floor-median      floor-med
            :overhead-ns       (- (double defnz-med) (double floor-med))
-           :body-leak-suspect (boolean (body-leak? defnz-med floor-med)))))
+           :body-leak-suspect (body-leak? defnz-med floor-med))))
 
 ;; --- the meta block -------------------------------------------------------
 

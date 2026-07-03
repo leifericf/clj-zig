@@ -40,8 +40,7 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [criterium.core :as criterium])
-  (:import (java.lang.invoke MethodHandle)
-           (java.lang.foreign Arena MemorySegment ValueLayout)
+  (:import (java.lang.foreign Arena MemorySegment ValueLayout)
            (java.nio.charset StandardCharsets)))
 
 ;; --- output location -----------------------------------------------------
