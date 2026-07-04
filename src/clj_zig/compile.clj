@@ -143,12 +143,9 @@
     ;; untouched and resurfaces as the authoritative build error
     ;; below, so this exit code is deliberately ignored.
     (sh/sh zig "fmt" src-abs :dir (.getParent src-file))
-    ;; Link libc: owned and handle returns back their memory with
-    ;; `std.heap.c_allocator`, whose free is the one deallocation that is
-    ;; safe to call across the boundary. macOS links libc implicitly;
-    ;; Linux needs it requested, and a body may reach for libc anywhere.
-    ;; build-arguments adds the cross-compile target, C-interop flags, the
-    ;; external-module imports, and the persistent global cache dir.
+    ;; Link libc: owned and handle returns free through std.heap.c_allocator,
+    ;; the one deallocation safe across the boundary. macOS links libc
+    ;; implicitly; Linux needs it requested, and a body may reach anywhere.
     (let [build-args (conj (build-arguments zig {:source-abs src-abs
                                                  :library-abs lib-abs
                                                  :options options
