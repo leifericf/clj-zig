@@ -388,6 +388,89 @@
 
 ;; Multi-arity binding (ADR 51)
 
+(defn- try-establish-arity
+  "Compile one arity of a multi-arity defnz, returning a result map:
+  `{:status :ok ...}` with the invoke fn and inspection info on success,
+  or `{:status :failed ...}` with the rendered diagnostic data on failure.
+  The catch isolates a failed arity so its siblings can still compile and
+  keep their previous bindings."
+  [{:keys [spec body wrap arity-count]}]
+  (try
+    (let [result (establish! spec body)
+          invoke (wrap (:invoke result))
+          info   (-> (merge (dissoc result :invoke) {:source-mode :inline})
+                     (nested-info spec))]
+      {:status :ok :arity-count arity-count
+       :invoke invoke :info info
+       :spec spec :body body})
+    (catch Throwable e
+      (let [data (if (instance? clojure.lang.ExceptionInfo e)
+                   (assoc (ex-data e) :body body)
+                   {:level :error
+                    :error/code :clj-zig/shell-failure
+                    :message (.getMessage e)
+                    :cause e :body body})]
+        {:status :failed :arity-count arity-count
+         :error e :error-data data
+         :spec spec :body body}))))
+
+(defn- arity-invoke-table
+  "The arity-count to invoke-fn table from the per-arity results: a
+  successful arity's new invoke, or the previous invoke kept for a failed
+  arity so it stays callable."
+  [results prev-table]
+  (into {}
+        (map (fn [{:keys [arity-count status] :as r}]
+               [arity-count
+                (if (= :ok status) (:invoke r) (get prev-table arity-count))])
+             results)))
+
+(defn- arity-dispatch-fn
+  "The Var's root fn: dispatch by argument count to each arity's invoke
+  fn, throwing :clj-zig/arity for a count no arity owns."
+  [arity-specs new-table]
+  (let [var-sym  (symbol (str (-> arity-specs first :spec :ns))
+                         (str (-> arity-specs first :spec :name)))
+        expected (sort (keys new-table))]
+    (fn [& args]
+      (let [n (count args)]
+        (if-let [invk (get new-table n)]
+          (apply invk args)
+          (throw (ex-info (str "Wrong number of arguments to " var-sym
+                               ": expected one of " expected ", got " n)
+                          {:level :error
+                           :error/code :clj-zig/arity
+                           :var var-sym
+                           :expected expected
+                           :actual n})))))))
+
+(defn- multi-arity-info
+  "The inspection info for a multi-arity Var from the per-arity results.
+  Each arity's info is keyed by count under :lifecycle :arities; a failed
+  arity that kept its previous invoke carries its new failure data. The
+  flat top-level info is the first successful arity's; any failure also
+  records its diagnostic under :lifecycle for `explain`."
+  [results prev-table prev-arities]
+  (let [arities-info (into {}
+                           (map (fn [{:keys [arity-count status] :as r}]
+                                  [arity-count
+                                   (cond
+                                     (= :ok status) (:info r)
+                                     (get prev-table arity-count)
+                                     (-> (or (get prev-arities arity-count) {})
+                                         (assoc :failed-attempt (:error-data r)))
+                                     :else {})]))
+                                results)
+        first-ok  (first (filter #(= :ok (:status %)) results))
+        flat-info (or (:info first-ok)
+                      (-> (get prev-arities (:arity-count first-ok))
+                          (dissoc :failed-attempt)))
+        any-fail? (some #(= :failed (:status %)) results)]
+    (cond-> (assoc flat-info :lifecycle {:arities arities-info})
+      any-fail?
+      (assoc-in [:lifecycle :failed-attempt]
+                (:error-data (first (filter #(= :failed (:status %)) results)))))))
+
 (defn establish-multi-binding!
   "Establish a multi-arity `defnz` function (ADR 51). Each arity is
   compiled independently into its own native library with its own invoke
@@ -399,27 +482,7 @@
   (let [prev-entry  (get @multi-rebinders the-var)
         prev-table  (:invoke-table prev-entry)
         prev-arities (get-in (meta the-var) [:clj-zig/info :lifecycle :arities] {})
-        results     (mapv (fn [{:keys [spec body wrap arity-count]}]
-                             (try
-                               (let [result (establish! spec body)
-                                     invoke (wrap (:invoke result))
-                                     info   (-> (merge (dissoc result :invoke)
-                                                       {:source-mode :inline})
-                                                (nested-info spec))]
-                                 {:status :ok :arity-count arity-count
-                                  :invoke invoke :info info
-                                  :spec spec :body body})
-                               (catch Throwable e
-                                 (let [data (if (instance? clojure.lang.ExceptionInfo e)
-                                              (assoc (ex-data e) :body body)
-                                              {:level :error
-                                               :error/code :clj-zig/shell-failure
-                                               :message (.getMessage e)
-                                               :cause e :body body})]
-                                 {:status :failed :arity-count arity-count
-                                  :error e :error-data data
-                                  :spec spec :body body}))))
-                           arity-specs)
+        results     (mapv try-establish-arity arity-specs)
         first-hard-fail (first (filter #(and (= :failed (:status %))
                                              (nil? (get prev-table (:arity-count %))))
                                        results))]
@@ -427,49 +490,13 @@
       (let [data (:error-data first-hard-fail)]
         (alter-meta! the-var assoc :clj-zig/failed-attempt data)
         (throw (ex-info (diagnostics/render data) data (:error first-hard-fail)))))
-    (let [var-sym   (symbol (str (-> arity-specs first :spec :ns))
-                            (str (-> arity-specs first :spec :name)))
-          new-table (into {}
-                          (map (fn [{:keys [arity-count status] :as r}]
-                                 [arity-count
-                                  (if (= :ok status)
-                                    (:invoke r)
-                                    (get prev-table arity-count))])
-                               results))
-          expected  (sort (keys new-table))
-          dispatch  (fn [& args]
-                      (let [n (count args)]
-                        (if-let [invk (get new-table n)]
-                          (apply invk args)
-                          (throw (ex-info (str "Wrong number of arguments to " var-sym
-                                                ": expected one of " expected ", got " n)
-                                          {:level :error
-                                           :error/code :clj-zig/arity
-                                           :var var-sym
-                                           :expected expected
-                                           :actual n})))))]
+    (let [new-table (arity-invoke-table results prev-table)
+          dispatch  (arity-dispatch-fn arity-specs new-table)]
       (alter-var-root the-var (constantly dispatch))
       (swap! multi-rebinders assoc the-var
              {:arity-specs arity-specs :invoke-table new-table})
-      (let [arities-info (into {}
-                               (map (fn [{:keys [arity-count status] :as r}]
-                                      [arity-count
-                                       (cond
-                                         (= :ok status) (:info r)
-                                         (get prev-table arity-count)
-                                         (-> (or (get prev-arities arity-count) {})
-                                             (assoc :failed-attempt (:error-data r)))
-                                         :else {})]))
-                               results)
-            first-ok  (first (filter #(= :ok (:status %)) results))
-            flat-info (or (:info first-ok)
-                          (-> (get prev-arities (:arity-count first-ok))
-                              (dissoc :failed-attempt)))
-            any-fail? (some #(= :failed (:status %)) results)
-            info      (cond-> (assoc flat-info :lifecycle {:arities arities-info})
-                        any-fail?
-                        (assoc-in [:lifecycle :failed-attempt]
-                                  (:error-data (first (filter #(= :failed (:status %)) results)))))]
+      (let [info      (multi-arity-info results prev-table prev-arities)
+            any-fail? (some #(= :failed (:status %)) results)]
         (swap! rebinders assoc the-var :multi-arity)
         (alter-meta! the-var
                      #(-> (merge % var-meta {:clj-zig/info info})
