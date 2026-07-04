@@ -16,7 +16,8 @@
            (java.lang.invoke MethodHandle MethodType)
            (java.lang.reflect Array)
            (java.math BigInteger)
-           (java.nio.charset StandardCharsets)))
+           (java.nio.charset StandardCharsets)
+           (clojure.lang PersistentArrayMap RT)))
 
 (def ^:private two-to-64 (.shiftLeft BigInteger/ONE 64))
 (def ^:private two-to-64-minus-1 (.subtract two-to-64 BigInteger/ONE))
@@ -802,9 +803,18 @@
   "Build a tight reader closure for an all-scalar struct, or nil if any
   field is a buffer field, a nested struct, or an enum field. The closure
   captures each field's keyword, byte offset, and a scalar-specialized
-  `.get` plus coercion, so the per-call cost is one transient map build
+  `.get` plus coercion, so the per-call cost is one `object-array` alloc
   plus a tight scalar read per field with no `case` dispatch and no
-  `coerce-scalar` call."
+  `coerce-scalar` call.
+
+  Each field-writer takes `(seg, arr, idx)` and writes its keyword at
+  `arr[idx*2]` and its value at `arr[idx*2+1]`, replacing the prior
+  transient-map `assoc!` path (one map alloc instead of two, no
+  `TransientArrayMap.indexOf` per field). The reader closure allocates
+  the array, runs the chain, and constructs the map via
+  `PersistentArrayMap/createWithCheck` (a duplicate-key check that's
+  O(n²) but trivially cheap for the small all-scalar structs this
+  path serves)."
   [descriptor]
   (when (every? (fn [f]
                   (and (not (:target f))
@@ -812,48 +822,80 @@
                        (= :scalar (-> f :type :kind))
                        (not (get-in f [:type :layout :enum]))))
                 (:fields descriptor))
-    (let [field-readers
+    (let [field-writers
           (vec
            (for [f (:fields descriptor)]
              (let [t        (:type f)
                    {:keys [category bits signed?]} (type/scalar-info (:name t))
                    off      (:offset f)
                    kw       (keyword (:name f))]
+               ;; The `^Object` hint on each value expression is load-bearing:
+               ;; `aset` on `^objects` has multiple `RT/aset` overloads (one
+               ;; per primitive array type plus the Object[] one), and the
+               ;; Clojure compiler cannot disambiguate from a primitive value
+               ;; without the explicit cast to Object. Without the hint, the
+               ;; call resolves reflectively per call (a 50x slowdown).
                (case category
                  :int   (case bits
                           8  (if signed?
-                               (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (.get seg ValueLayout/JAVA_BYTE    (long off))))
-                               (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (bit-and (.get seg ValueLayout/JAVA_BYTE (long off)) 0xff))))
+                               (fn field-write [^MemorySegment seg ^objects arr ^long idx]
+                                 (aset arr idx kw)
+                                 (aset arr (inc idx) ^Object (.get seg ValueLayout/JAVA_BYTE (long off))))
+                               (fn field-write [^MemorySegment seg ^objects arr ^long idx]
+                                 (aset arr idx kw)
+                                 (aset arr (inc idx) ^Object (bit-and (.get seg ValueLayout/JAVA_BYTE (long off)) 0xff))))
                           16 (if signed?
-                               (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (.get seg ValueLayout/JAVA_SHORT   (long off))))
-                               (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (bit-and (.get seg ValueLayout/JAVA_SHORT (long off)) 0xffff))))
+                               (fn field-write [^MemorySegment seg ^objects arr ^long idx]
+                                 (aset arr idx kw)
+                                 (aset arr (inc idx) ^Object (.get seg ValueLayout/JAVA_SHORT (long off))))
+                               (fn field-write [^MemorySegment seg ^objects arr ^long idx]
+                                 (aset arr idx kw)
+                                 (aset arr (inc idx) ^Object (bit-and (.get seg ValueLayout/JAVA_SHORT (long off)) 0xffff))))
                           32 (if signed?
-                               (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (.get seg ValueLayout/JAVA_INT     (long off))))
-                               (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (bit-and (.get seg ValueLayout/JAVA_INT (long off)) 0xffffffff))))
+                               (fn field-write [^MemorySegment seg ^objects arr ^long idx]
+                                 (aset arr idx kw)
+                                 (aset arr (inc idx) ^Object (.get seg ValueLayout/JAVA_INT (long off))))
+                               (fn field-write [^MemorySegment seg ^objects arr ^long idx]
+                                 (aset arr idx kw)
+                                 (aset arr (inc idx) ^Object (bit-and (.get seg ValueLayout/JAVA_INT (long off)) 0xffffffff))))
                           64 (let [unsigned-ret (fn [v] (let [l (long v)]
                                                           (if (neg? l)
                                                             (.add (biginteger l) two-to-64)
                                                             l)))]
                                (if signed?
-                                 (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (.get seg ValueLayout/JAVA_LONG (long off))))
-                                 (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (unsigned-ret (.get seg ValueLayout/JAVA_LONG (long off))))))))
+                                 (fn field-write [^MemorySegment seg ^objects arr ^long idx]
+                                   (aset arr idx kw)
+                                   (aset arr (inc idx) ^Object (.get seg ValueLayout/JAVA_LONG (long off))))
+                                 (fn field-write [^MemorySegment seg ^objects arr ^long idx]
+                                   (aset arr idx kw)
+                                   (aset arr (inc idx) ^Object (unsigned-ret (.get seg ValueLayout/JAVA_LONG (long off))))))))
                  :float (case bits
-                          32 (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (double (.get seg ValueLayout/JAVA_FLOAT  (long off)))))
-                          64 (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (double (.get seg ValueLayout/JAVA_DOUBLE (long off))))))
-                  :bool  (fn field-assoc [^MemorySegment seg acc] (assoc! acc kw (boolean (.get seg ValueLayout/JAVA_BOOLEAN (long off)))))))))]
-       (let [;; Replace the per-call loop over `(nth field-readers i)` with a
-             ;; reduce-built chain so each field-reader is captured directly
-             ;; in a closure (no per-call nth, no loop counter). The chain
-             ;; threads `(seg, acc)` through each reader; the JIT sees a
-             ;; monomorphic call at every level and can inline the body.
-             chain (reduce (fn [next-k fr]
-                             (fn [seg acc]
-                               (let [acc' (fr seg acc)]
-                                 (next-k seg acc'))))
-                           (fn [_seg acc] acc)
-                           (reverse field-readers))]
-         (fn struct-reader [^MemorySegment seg]
-           (persistent! (chain seg (transient {}))))))))
+                          32 (fn field-write [^MemorySegment seg ^objects arr ^long idx]
+                               (aset arr idx kw)
+                               (aset arr (inc idx) ^Object (double (.get seg ValueLayout/JAVA_FLOAT (long off)))))
+                          64 (fn field-write [^MemorySegment seg ^objects arr ^long idx]
+                               (aset arr idx kw)
+                               (aset arr (inc idx) ^Object (double (.get seg ValueLayout/JAVA_DOUBLE (long off))))))
+                 :bool  (fn field-write [^MemorySegment seg ^objects arr ^long idx]
+                          (aset arr idx kw)
+                          (aset arr (inc idx) ^Object (boolean (.get seg ValueLayout/JAVA_BOOLEAN (long off)))))))))]
+      ;; Reduce-built chain so each field-writer is captured directly in
+      ;; a closure (no per-call nth, no loop counter). The chain threads
+      ;; `(seg, arr)` and bumps the array base index (`idx*2`) per link.
+      (let [nfields (count field-writers)
+            arr-size (* 2 (long nfields))
+            chain (reduce (fn [next-k fw-idx]
+                            (let [fw      (nth fw-idx 0)
+                                  base-ix (* 2 (long (nth fw-idx 1)))]
+                              (fn [^MemorySegment seg ^objects arr]
+                                (fw seg arr base-ix)
+                                (next-k seg arr))))
+                          (fn [_seg _arr] nil)
+                          (reverse (map vector field-writers (range))))]
+        (fn struct-reader [^MemorySegment seg]
+          (let [arr (object-array arr-size)]
+            (chain seg arr)
+            (PersistentArrayMap/createWithCheck arr)))))))
 
 (def ^:private struct-writer-chain-cache (atom {}))
 
