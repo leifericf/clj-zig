@@ -209,13 +209,27 @@
 
 (defn- scalar-return-coerce
   "Build a per-call return coercion fn for a scalar-or-void return. The
-  void case returns a constant-nil fn; the scalar case is `coerce-scalar`
-  with the return type captured at bind time. Mirrors the scalar hot
-  path's pre-bound param coercions."
+  void case returns a constant-nil fn; the scalar case captures the
+  return's category, signedness, and bit width at bind time and inlines
+  the specific decode, eliminating the per-call `coerce-scalar` `case`
+  dispatch. Mirrors `scalar-param-coerce`'s per-bind specialization."
   [ret]
   (if (type/void-type? ret)
     (fn void-ret [_] nil)
-    (fn scalar-ret [v] (coerce-scalar ret v))))
+    (let [{:keys [category signed? bits]} (type/scalar-info (:name ret))]
+      (case category
+        :bool  (fn bool-ret [v] (boolean v))
+        :float (fn float-ret [v] (double v))
+        :int   (if signed?
+                 (fn signed-int-ret [v] (long v))
+                 (case (long bits)
+                   8  (fn u8-ret  [v] (bit-and (long v) 0xff))
+                   16 (fn u16-ret [v] (bit-and (long v) 0xffff))
+                   32 (fn u32-ret [v] (bit-and (long v) 0xffffffff))
+                   64 (fn u64-ret [v] (let [l (long v)]
+                                        (if (neg? l)
+                                          (.add (biginteger l) two-to-64)
+                                          l)))))))))
 
 (declare marshal-struct-into! marshal-buffer-field buffer-field-element marshal-array
          compiled-struct-writer compiled-struct-reader)
@@ -1223,9 +1237,10 @@
               (= :scalar (:kind type)) (scalar-param-coerce p)
               (enum-type? type)        (enum-param-coerce (:layout type))
               (= :handle (:kind type)) (handle-param-coerce (-> type :of :name))))))
-   (if (= :named (:kind ret))
-     (enum-return-coerce (:layout ret))
-     #(from-return ret %))])
+   (cond
+     (= :named (:kind ret)) (enum-return-coerce (:layout ret))
+     (= :scalar (:kind ret)) (scalar-return-coerce ret)
+     :else                   #(from-return ret %))])
 
 (defn- safe-free
   "Invoke the free shim with `args`, swallowing a fault so a failure in the
@@ -1760,9 +1775,10 @@
             (return-coerce (.invokeExact ^MethodHandle spreader ^objects carriers)))))
 
       slice?
-      (let [return-coerce (if (= :named (:kind ret))
-                            (enum-return-coerce (:layout ret))
-                            #(from-return ret %))]
+      (let [return-coerce (cond
+                            (= :named (:kind ret))  (enum-return-coerce (:layout ret))
+                            (= :scalar (:kind ret)) (scalar-return-coerce ret)
+                            :else                   #(from-return ret %))]
         (fn [& args]
           (check-arity! var-sym arity args)
           (with-pooled-arena
