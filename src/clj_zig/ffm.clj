@@ -1865,23 +1865,55 @@
         fresh)
       entry)))
 
+(defn- acquire-pooled-arena
+  "Return the current thread's pooled confined Arena, bumping the
+  per-thread call counter in place. The arena is refreshed (closed and
+  replaced) when the counter reaches `refresh-interval`, bounding the
+  pool's memory growth. The pool path's per-call work is this counter
+  bump; there is no per-call release (the next call's acquire handles
+  refresh)."
+  ^Arena []
+  (let [entry   ^PoolEntry (refresh-if-needed)
+        arena   (.arena entry)
+        counter ^longs (.counter entry)]
+    (aset counter 0 (inc (long (aget counter 0))))
+    arena))
+
 (defn- with-pooled-arena
-  "Run `f` with an Arena. When pooling is enabled (the default), reuses a
-  thread-local confined arena and mutates the per-thread counter in place
-  (no per-call PersistentArrayMap allocation); the arena is refreshed
-  every `refresh-interval` calls to bound memory growth. When disabled
-  with -Dclj-zig.arena-pool=false, allocates a fresh confined arena per
-  call (matching the existing `with-open` pattern)."
+  "Run `f` with an Arena. When pooling is enabled (the default), the
+  arena comes from `acquire-pooled-arena` (a thread-local confined
+  arena reused across calls, with a per-call counter bump in place via
+  `aset` on a one-element long array; no per-call allocation). When
+  disabled with -Dclj-zig.arena-pool=false, allocates a fresh confined
+  arena per call and closes it in a `with-open`.
+
+  The hot-path invokers (`bind`'s slice and general branches) skip
+  this wrapper and call `acquire-pooled-arena` directly with a
+  pre-bound arena-fn, so they avoid the per-call callback closure this
+  helper would otherwise allocate."
   [f]
   (if pool-enabled
-    (let [entry   ^PoolEntry (refresh-if-needed)
-          arena   (.arena entry)
-          counter ^longs (.counter entry)
-          n       (long (aget counter 0))]
-      (aset counter 0 (inc n))
-      (f arena))
+    (f (acquire-pooled-arena))
     (with-open [arena (Arena/ofConfined)]
       (f arena))))
+
+(defn- pool-invoker
+  "Build the per-call invoker fn for an arena-using signature, given a
+  pre-bound `arena-fn` of `[arena args]`. The pool-enabled branch is
+  straight-line: check arity, acquire the pooled arena, call the
+  arena-fn (no `try/finally`; the pool has no per-call release). The
+  pool-disabled branch wraps the arena-fn in `with-open` so each call
+  closes its confined arena. The split is resolved at bind time so the
+  per-call path matches the runtime config without re-checking."
+  [var-sym arity arena-fn]
+  (if pool-enabled
+    (fn pooled-invoker [& args]
+      (check-arity! var-sym arity args)
+      (arena-fn (acquire-pooled-arena) args))
+    (fn unpooled-invoker [& args]
+      (check-arity! var-sym arity args)
+      (with-open [arena (Arena/ofConfined)]
+        (arena-fn arena args)))))
 
 (defn bind
   "Load `library-path`, look up the spec's symbol, and return a Clojure
@@ -1944,64 +1976,57 @@
       (let [return-coerce (cond
                             (= :named (:kind ret))  (enum-return-coerce (:layout ret))
                             (= :scalar (:kind ret)) (scalar-return-coerce ret)
-                            :else                   #(from-return ret %))]
-        (fn [& args]
-          (check-arity! var-sym arity args)
-          (with-pooled-arena
-           (fn [^Arena arena]
-             (let [^objects carriers (.get ^ThreadLocal slice-carriers-tl)]
-               (slice-chain arena carriers args)
-               (return-coerce (.invokeExact ^MethodHandle spreader ^objects carriers)))))))
+                            :else                   #(from-return ret %))
+            arena-fn (fn slice-arena-fn [^Arena arena args]
+                       (let [^objects carriers (.get ^ThreadLocal slice-carriers-tl)]
+                         (slice-chain arena carriers args)
+                         (return-coerce (.invokeExact ^MethodHandle spreader ^objects carriers))))]
+        (pool-invoker var-sym arity arena-fn))
 
       :else
-      (fn [& args]
-        (check-arity! var-sym arity args)
-        ;; A confined arena holds the native copies of any slice arguments
-        ;; for exactly the duration of the call. Mutable slices are copied
-        ;; back before it closes, keeping the lifetime to the call.
-        (with-pooled-arena
-         (fn [^Arena arena]
-           (let [^objects carriers (.get ^ThreadLocal gen-carriers-tl)
-                 base-offset (long gen-base-offset)]
-             ;; Fill the base carriers. When no param can produce a
-             ;; copy-back thunk, skip the per-call cb-count loop and use a
-             ;; constant noop for copy-back!, saving the per-call closure
-             ;; allocation. When any param may copy back, count and
-             ;; collect the thunks; the copy-back! body is a tight loop
-             ;; over the pre-sized array.
-              (let [copy-back! (if has-mutable-args?
-                                 (let [^objects copybacks (.get ^ThreadLocal gen-copybacks-tl)
-                                       cb-count (loop [i (long 0) off base-offset cb (long 0)]
-                                                  (if (>= i (long arity))
-                                                    cb
-                                                    (let [copy-back ((nth gen-marshal-fns i)
-                                                                      arena (nth args i) carriers off)]
-                                                      (when copy-back
-                                                        (aset copybacks cb copy-back))
-                                                      (recur (inc i)
-                                                             (+ off (long (nth gen-carrier-counts i)))
-                                                             (if copy-back (inc cb) cb)))))]
-                                   (fn []
-                                     (loop [i (long 0)]
-                                       (when (< i cb-count)
-                                         ((aget copybacks i))
-                                         (recur (inc i))))))
-                                 (do (loop [i (long 0) off base-offset]
-                                       (when (< i (long arity))
-                                         ((nth gen-marshal-fns i) arena (nth args i) carriers off)
-                                         (recur (inc i) (+ off (long (nth gen-carrier-counts i))))))
-                                     noop-copy-back!))]
-               (cond
-                 stream?                      (let [iter-addr (.invokeExact ^MethodHandle spreader ^objects carriers)]
-                                                (copy-back!)
-                                                (make-stream-reducible iter-addr next-h free-h ret elem-lay))
-                 eu-struct?                   (invoke-eu-struct   invoke-ctx arena carriers copy-back!)
-                 (= :error-union (:kind ret)) (invoke-error-union invoke-ctx arena carriers copy-back!)
-                 owned-rec?                   (invoke-owned-record invoke-ctx arena carriers copy-back!)
-                 owned-slice?                 (invoke-owned-slice  invoke-ctx arena carriers copy-back!)
-                 opt-struct?                  (invoke-optional-struct invoke-ctx arena carriers copy-back!)
-                 struct-ret?                  (invoke-struct-return invoke-ctx arena carriers copy-back!)
-                 :else                        (invoke-scalar       invoke-ctx arena carriers copy-back!))))))))))
+      (let [arena-fn (fn general-arena-fn [^Arena arena args]
+                       (let [^objects carriers (.get ^ThreadLocal gen-carriers-tl)
+                             base-offset (long gen-base-offset)]
+                         ;; Fill the base carriers. When no param can produce a
+                         ;; copy-back thunk, skip the per-call cb-count loop and use a
+                         ;; constant noop for copy-back!, saving the per-call closure
+                         ;; allocation. When any param may copy back, count and
+                         ;; collect the thunks; the copy-back! body is a tight loop
+                         ;; over the pre-sized array.
+                         (let [copy-back! (if has-mutable-args?
+                                            (let [^objects copybacks (.get ^ThreadLocal gen-copybacks-tl)
+                                                  cb-count (loop [i (long 0) off base-offset cb (long 0)]
+                                                             (if (>= i (long arity))
+                                                               cb
+                                                               (let [copy-back ((nth gen-marshal-fns i)
+                                                                                 arena (nth args i) carriers off)]
+                                                                 (when copy-back
+                                                                   (aset copybacks cb copy-back))
+                                                                 (recur (inc i)
+                                                                        (+ off (long (nth gen-carrier-counts i)))
+                                                                        (if copy-back (inc cb) cb)))))]
+                                              (fn []
+                                                (loop [i (long 0)]
+                                                  (when (< i cb-count)
+                                                    ((aget copybacks i))
+                                                    (recur (inc i))))))
+                                            (do (loop [i (long 0) off base-offset]
+                                                  (when (< i (long arity))
+                                                    ((nth gen-marshal-fns i) arena (nth args i) carriers off)
+                                                    (recur (inc i) (+ off (long (nth gen-carrier-counts i))))))
+                                                noop-copy-back!))]
+                           (cond
+                             stream?                      (let [iter-addr (.invokeExact ^MethodHandle spreader ^objects carriers)]
+                                                            (copy-back!)
+                                                            (make-stream-reducible iter-addr next-h free-h ret elem-lay))
+                             eu-struct?                   (invoke-eu-struct   invoke-ctx arena carriers copy-back!)
+                             (= :error-union (:kind ret)) (invoke-error-union invoke-ctx arena carriers copy-back!)
+                             owned-rec?                   (invoke-owned-record invoke-ctx arena carriers copy-back!)
+                             owned-slice?                 (invoke-owned-slice  invoke-ctx arena carriers copy-back!)
+                             opt-struct?                  (invoke-optional-struct invoke-ctx arena carriers copy-back!)
+                              struct-ret?                  (invoke-struct-return invoke-ctx arena carriers copy-back!)
+                             :else                        (invoke-scalar       invoke-ctx arena carriers copy-back!)))))]
+         (pool-invoker var-sym arity arena-fn)))))
 
 (comment
   ;; A whole small pipeline: build, compile, bind, call.
