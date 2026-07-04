@@ -64,7 +64,8 @@
 (declare marshal-struct read-struct-field read-bytes read-slice-values
          read-utf8-string write-scalar enum-member->value enum-value->member
          enum-index coerce-scalar
-         pool-enabled global-arena)
+         pool-enabled global-arena
+         compiled-struct-writer-chain)
 
 ;; An opaque native resource handle: the symbol naming its Zig type and
 ;; the native pointer. The caller threads it back across calls and frees
@@ -439,16 +440,25 @@
                                    :type lname :member arg})))
                 (aset cs off (coerce value))
                 nil)))
-          (let [writer (or (compiled-struct-writer layout)
-                           (fn fallback-writer [^Arena arena m]
-                             (let [seg ^MemorySegment (.allocate arena
-                                                                 (long (:size layout))
-                                                                 (long (:align layout)))]
-                               (marshal-struct-into! arena seg layout m)
-                               seg)))]
-            (fn struct-marshal [^Arena arena arg ^objects cs ^long off]
-              (aset cs off (writer arena arg))
-              nil))))
+          (let [[msize malign chain] (or (compiled-struct-writer-chain layout)
+                                         [(:size layout) (:align layout) nil])
+                marshal-seg-tl (when (and pool-enabled chain)
+                                 (ThreadLocal/withInitial
+                                  (reify java.util.function.Supplier
+                                    (get [_] (.allocate ^Arena global-arena msize malign)))))]
+            (if chain
+              (fn struct-marshal [^Arena arena arg ^objects cs ^long off]
+                (let [seg (if marshal-seg-tl
+                            (.get ^ThreadLocal marshal-seg-tl)
+                            (.allocate ^Arena arena msize malign))]
+                  (chain seg arg)
+                  (aset cs off seg)
+                  nil))
+              (fn struct-marshal-fallback [^Arena arena arg ^objects cs ^long off]
+                (let [seg ^MemorySegment (.allocate ^Arena arena msize malign)]
+                  (marshal-struct-into! arena seg layout arg)
+                  (aset cs off seg)
+                  nil))))))
 
       :handle
       (let [expected (-> type :of :name)]
@@ -702,16 +712,18 @@
                   {:level :error :error/code :clj-zig/missing-field
                    :type descriptor-name :field field-name})))
 
-(defn- build-struct-writer
-  "Build a tight writer closure for an all-scalar struct, or nil if any
+(defn- build-struct-writer-chain
+  "Build `[size align chain]` for an all-scalar struct, or nil if any
   field is a buffer field, a nested struct, or an enum field (those need
-  the generic path's per-field dispatch). The closure captures each
-  field's keyword, byte offset, and a scalar-specialized `.set` call so
-  the per-call cost is one segment alloc plus a tight scalar write per
-  field with no `case` dispatch and no `to-carrier` call. Honors the
-  unsigned-int range via `unchecked-byte`/`unchecked-short`/etc., and
-  throws `:clj-zig/missing-field` for a nil field value, mirroring the
-  generic path."
+  the generic path's per-field dispatch). The chain takes `(seg, m)`
+  and writes the fields directly; it does NOT allocate. Each chain step
+  captures its keyword, byte offset, and a scalar-specialized `.set`
+  call so the per-call body is a tight scalar write with no `case`
+  dispatch and no `to-carrier` call. Honors the unsigned-int range via
+  `unchecked-byte`/`unchecked-short`/etc., and throws
+  `:clj-zig/missing-field` for a nil field value, mirroring the generic
+  path. Exposed separately from `build-struct-writer` so the marshal
+  path can pool its segment while reusing the chain."
   [descriptor]
   (when (every? (fn [f]
                   (and (not (:target f))
@@ -761,20 +773,30 @@
                           (let [v (.get m kw)]
                             (when (nil? v) (throw-missing-field descriptor-name field-name))
                             (.set seg ValueLayout/JAVA_BOOLEAN (long off) (boolean v))))))))]
-       (let [;; Replace the per-call loop over `(nth field-writers i)` with a
-             ;; reduce-built chain so each field-writer is captured directly
-             ;; in a closure (no per-call nth, no loop counter). The chain
-             ;; threads `(seg, m)` through each writer.
-             chain (reduce (fn [next-k fw]
-                             (fn [seg m]
-                               (fw seg m)
-                               (next-k seg m)))
-                           (fn [_seg _m] nil)
-                           (reverse field-writers))]
-         (fn struct-writer [^Arena arena m]
-           (let [seg ^MemorySegment (.allocate arena (long size) (long align))]
-             (chain seg m)
-             seg))))))
+      (let [;; Reduce-built chain so each field-writer is captured directly
+            ;; in a closure (no per-call nth, no loop counter). The chain
+            ;; threads `(seg, m)` through each writer.
+            chain (reduce (fn [next-k fw]
+                            (fn [seg m]
+                              (fw seg m)
+                              (next-k seg m)))
+                          (fn [_seg _m] nil)
+                          (reverse field-writers))]
+        [(long size) (long align) chain]))))
+
+(defn- build-struct-writer
+  "Build a tight writer closure for an all-scalar struct, or nil if any
+  field is a buffer field, a nested struct, or an enum field. The
+  closure allocates a segment from the arena per call and runs the
+  chain from `build-struct-writer-chain` to fill it. Mirrors the older
+  monolithic writer; the chain is exposed separately so the marshal
+  path can pool its segment while reusing the chain."
+  [descriptor]
+  (when-let [[size align chain] (build-struct-writer-chain descriptor)]
+    (fn struct-writer [^Arena arena m]
+      (let [seg ^MemorySegment (.allocate arena size align)]
+        (chain seg m)
+        seg))))
 
 (defn- build-struct-reader
   "Build a tight reader closure for an all-scalar struct, or nil if any
@@ -832,6 +854,21 @@
                            (reverse field-readers))]
          (fn struct-reader [^MemorySegment seg]
            (persistent! (chain seg (transient {}))))))))
+
+(def ^:private struct-writer-chain-cache (atom {}))
+
+(defn- compiled-struct-writer-chain
+  "The cached `[size align chain]` for an all-scalar struct, or nil.
+  Cached by descriptor so the build happens once per struct shape.
+  Exposed so the marshal path can pool its segment while reusing the
+  chain (one less per-call segment allocation than the wrapping
+  `compiled-struct-writer` path)."
+  [descriptor]
+  (if-let [e (find @struct-writer-chain-cache descriptor)]
+    (val e)
+    (let [parts (build-struct-writer-chain descriptor)]
+      (swap! struct-writer-chain-cache assoc descriptor parts)
+      parts)))
 
 (defn- compiled-struct-writer
   "The compiled writer for `descriptor`, or nil. Cached by descriptor so
