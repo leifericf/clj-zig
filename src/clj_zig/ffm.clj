@@ -63,7 +63,7 @@
 
 (declare marshal-struct read-struct-field read-bytes read-slice-values
          read-utf8-string write-scalar enum-member->value enum-value->member
-         coerce-scalar)
+         enum-index coerce-scalar)
 
 ;; An opaque native resource handle: the symbol naming its Zig type and
 ;; the native pointer. The caller threads it back across calls and frees
@@ -332,6 +332,136 @@
             nil)
         (do (aset cs off (to-carrier param arg))
             nil)))))
+
+(defn- marshal-arg-fn
+  "Build a per-param marshal closure that captures the param's kind, type,
+  and any inner bindings at bind time. The returned fn takes
+  `[arena arg carriers off]` and writes the param's carrier(s) at offset,
+  returning the copy-back thunk or nil. Mirrors `marshal-arg-into!`'s case
+  dispatch but each closure captures one case's body, eliminating the
+  per-call `case (:kind type)` walk. The bench shows that walk is a
+  measurable fraction of the struct-by-value path."
+  [param]
+  (let [type (:type param)]
+    (case (:kind type)
+      :string
+      (fn string-marshal [^Arena arena arg ^objects cs ^long off]
+        (let [bs (if (string? arg)
+                   (.getBytes ^String arg StandardCharsets/UTF_8)
+                   (do (when-not (bytes? arg)
+                         (throw (ex-info (str "A :string argument must be a String or a byte[]"
+                                              " of UTF-8; got " (pr-str (type arg)) ".")
+                                         {:level :error
+                                          :error/code :clj-zig/string-argument
+                                          :actual (type arg)})))
+                       arg))
+              len (alength ^bytes bs)
+              seg ^MemorySegment (.allocate arena (long len) 1)]
+          (when (pos? len)
+            (MemorySegment/copy bs (long 0) seg ValueLayout/JAVA_BYTE (long 0) (long len)))
+          (aset cs off seg)
+          (aset cs (inc off) (Long/valueOf (long len)))
+          nil))
+
+      :slice
+      (fn slice-marshal [^Arena arena arg ^objects cs ^long off]
+        (let [{:keys [address length copy-back]} (marshal-array arena param arg)]
+          (aset cs off address)
+          (aset cs (inc off) length)
+          copy-back))
+
+      :manyptr
+      (fn manyptr-marshal [^Arena arena arg ^objects cs ^long off]
+        (let [{:keys [address copy-back]} (marshal-array arena param arg)]
+          (aset cs off address)
+          copy-back))
+
+      :ptr
+      (fn ptr-marshal [^Arena arena arg ^objects cs ^long off]
+        (when (not= 1 (Array/getLength arg))
+          (throw (ex-info "A :ptr argument must be a one-element array."
+                          {:level :error
+                           :error/code :clj-zig/pointer-arity
+                           :expected 1
+                           :actual (Array/getLength arg)})))
+        (let [{:keys [address copy-back]} (marshal-array arena param arg)]
+          (aset cs off address)
+          copy-back))
+
+      :array
+      (let [n      (-> type :length)
+            named? (= :named (:kind (:of type)))]
+        (fn array-marshal [^Arena arena arg ^objects cs ^long off]
+          (let [actual (if named? (count arg) (Array/getLength arg))]
+            (when (not= (long n) actual)
+              (throw (ex-info (str "An :array argument must have length " (long n) ".")
+                              {:level :error
+                               :error/code :clj-zig/array-length
+                               :expected (long n)
+                               :actual actual})))
+            (aset cs off (:address (marshal-array arena param arg)))
+            nil)))
+
+      :optional
+      (let [pointed (:of type)]
+        (cond
+          (= :scalar (:kind pointed))
+          (let [layout (value-layout pointed)
+                bb     (.byteSize layout)]
+            (fn opt-scalar-marshal [^Arena arena arg ^objects cs ^long off]
+              (if (nil? arg)
+                (do (aset cs off MemorySegment/NULL) nil)
+                (let [seg ^MemorySegment (.allocate arena bb bb)]
+                  (write-scalar seg pointed 0 (to-carrier {:type pointed} arg))
+                  (aset cs off seg)
+                  nil))))
+          :else
+          (let [inner-fn (marshal-arg-fn (update param :type :of))]
+            (fn opt-nested-marshal [^Arena arena arg ^objects cs ^long off]
+              (if (nil? arg)
+                (do (aset cs off MemorySegment/NULL) nil)
+                (let [{:keys [copy-back]} (inner-fn arena arg cs off)]
+                  copy-back))))))
+
+      :named
+      (let [layout (:layout type)]
+        (if (:enum layout)
+          (let [kw->val (:kw->value (enum-index layout))
+                coerce  (scalar-param-coerce {:type (:backing layout)})
+                lname   (:name layout)]
+            (fn enum-marshal [^Arena arena arg ^objects cs ^long off]
+              (let [value (get kw->val arg)]
+                (when (nil? value)
+                  (throw (ex-info (str arg " is not a member of enum " lname ".")
+                                  {:level :error
+                                   :error/code :clj-zig/unknown-enum-member
+                                   :type lname :member arg})))
+                (aset cs off (coerce value))
+                nil)))
+          (fn struct-marshal [^Arena arena arg ^objects cs ^long off]
+            (aset cs off (marshal-struct arena layout arg))
+            nil)))
+
+      :handle
+      (let [expected (-> type :of :name)]
+        (fn handle-marshal [^Arena arena arg ^objects cs ^long off]
+          (when-not (and (instance? Handle arg) (= expected (.type ^Handle arg)))
+            (throw (ex-info (str "Expected a :handle of " expected
+                                 " but got " (pr-str arg) ".")
+                            {:level :error
+                             :error/code :clj-zig/handle-type-mismatch
+                             :expected expected :actual arg})))
+          (aset cs off (.segment ^Handle arg))
+          nil))
+
+      (if (i128-type? type)
+        (fn i128-marshal [^Arena arena arg ^objects cs ^long off]
+          (aset cs off (bigint->i128-segment arena (biginteger arg)))
+          nil)
+        (let [coerce (scalar-param-coerce param)]
+          (fn scalar-marshal [^Arena arena arg ^objects cs ^long off]
+            (aset cs off (coerce arg))
+            nil))))))
 
 (defn- marshal-struct-collection
   "Copy a Clojure collection of maps into a fresh native segment, one
@@ -1681,10 +1811,14 @@
                           (ThreadLocal/withInitial
                            (reify java.util.function.Supplier
                              (get [_] (object-array arity)))))
-      :gen-base-offset base-offset
-      :gen-n-base      n-base
-      :has-mutable-args? has-mutable-args?
-      :i128-ret?       i128-ret?}))
+       :gen-base-offset base-offset
+       :gen-n-base      n-base
+       :gen-marshal-fns (when (and (not scalar-path?) (not enum-path?) (not slice-path?))
+                          (mapv marshal-arg-fn params))
+       :gen-carrier-counts (when (and (not scalar-path?) (not enum-path?) (not slice-path?))
+                             (mapv param-carrier-count params))
+       :has-mutable-args? has-mutable-args?
+       :i128-ret?       i128-ret?}))
 
 ;; --- Thread-local arena pooling for the call path ------------------------
 ;; With the arena pool on (the default), a thread-local confined arena is
@@ -1780,6 +1914,7 @@
                 slice? slice-writers slice-counts slice-chain slice-carriers-tl
                 stream? eu-struct? owned-rec? owned-slice? opt-struct? struct-ret?
                 gen-carriers-tl gen-copybacks-tl gen-base-offset gen-n-base
+                gen-marshal-fns gen-carrier-counts
                 has-mutable-args?]}
         (bind-context spec library-path)]
     (cond
@@ -1834,29 +1969,28 @@
              ;; allocation. When any param may copy back, count and
              ;; collect the thunks; the copy-back! body is a tight loop
              ;; over the pre-sized array.
-             (let [copy-back! (if has-mutable-args?
-                                (let [^objects copybacks (.get ^ThreadLocal gen-copybacks-tl)
-                                      cb-count (loop [i (long 0) off base-offset cb (long 0)]
-                                                 (if (>= i (long arity))
-                                                   cb
-                                                   (let [param (nth params i)
-                                                         arg   (nth args i)
-                                                         copy-back (marshal-arg-into! arena param arg carriers off)]
-                                                     (when copy-back
-                                                       (aset copybacks cb copy-back))
-                                                     (recur (inc i)
-                                                            (+ off (param-carrier-count param))
-                                                            (if copy-back (inc cb) cb)))))]
-                                  (fn []
-                                    (loop [i (long 0)]
-                                      (when (< i cb-count)
-                                        ((aget copybacks i))
-                                        (recur (inc i))))))
-                                (do (loop [i (long 0) off base-offset]
-                                      (when (< i (long arity))
-                                        (marshal-arg-into! arena (nth params i) (nth args i) carriers off)
-                                        (recur (inc i) (+ off (param-carrier-count (nth params i))))))
-                                    noop-copy-back!))]
+              (let [copy-back! (if has-mutable-args?
+                                 (let [^objects copybacks (.get ^ThreadLocal gen-copybacks-tl)
+                                       cb-count (loop [i (long 0) off base-offset cb (long 0)]
+                                                  (if (>= i (long arity))
+                                                    cb
+                                                    (let [copy-back ((nth gen-marshal-fns i)
+                                                                      arena (nth args i) carriers off)]
+                                                      (when copy-back
+                                                        (aset copybacks cb copy-back))
+                                                      (recur (inc i)
+                                                             (+ off (long (nth gen-carrier-counts i)))
+                                                             (if copy-back (inc cb) cb)))))]
+                                   (fn []
+                                     (loop [i (long 0)]
+                                       (when (< i cb-count)
+                                         ((aget copybacks i))
+                                         (recur (inc i))))))
+                                 (do (loop [i (long 0) off base-offset]
+                                       (when (< i (long arity))
+                                         ((nth gen-marshal-fns i) arena (nth args i) carriers off)
+                                         (recur (inc i) (+ off (long (nth gen-carrier-counts i))))))
+                                     noop-copy-back!))]
                (cond
                  stream?                      (let [iter-addr (.invokeExact ^MethodHandle spreader ^objects carriers)]
                                                 (copy-back!)
