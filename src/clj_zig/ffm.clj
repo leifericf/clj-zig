@@ -438,9 +438,16 @@
                                    :type lname :member arg})))
                 (aset cs off (coerce value))
                 nil)))
-          (fn struct-marshal [^Arena arena arg ^objects cs ^long off]
-            (aset cs off (marshal-struct arena layout arg))
-            nil)))
+          (let [writer (or (compiled-struct-writer layout)
+                           (fn fallback-writer [^Arena arena m]
+                             (let [seg ^MemorySegment (.allocate arena
+                                                                 (long (:size layout))
+                                                                 (long (:align layout)))]
+                               (marshal-struct-into! arena seg layout m)
+                               seg)))]
+            (fn struct-marshal [^Arena arena arg ^objects cs ^long off]
+              (aset cs off (writer arena arg))
+              nil))))
 
       :handle
       (let [expected (-> type :of :name)]
@@ -1440,7 +1447,7 @@
   Carriers is the thread-local base array of size `(:n-base ctx) + 3`; the
   trailing three slots are filled with errbuf, errlen, and out before the
   invoke, then cleared so the next call on this thread starts clean."
-  [{:keys [^MethodHandle spreader ret record-factory free-handle error-buffer-bytes n-base]}
+  [{:keys [^MethodHandle spreader ret record-factory free-handle error-buffer-bytes n-base struct-reader]}
    ^Arena arena ^objects carriers copy-back!]
   (let [desc   (-> ret :of :layout)
         out    ^MemorySegment (.allocate arena (long (:size desc)) (long (:align desc)))
@@ -1457,7 +1464,7 @@
       (if (zero? n)
         (try
           (copy-back!)
-          (let [m (read-struct out desc)]
+          (let [m (struct-reader out)]
             (if record-factory (record-factory m) m))
           (finally
             (safe-free free-handle [out])))
@@ -1502,7 +1509,7 @@
 
   Carriers is the thread-local base array of size `base-count + 1`; the
   trailing slot is filled with the out-segment before the invoke."
-  [{:keys [^MethodHandle spreader ret record-factory free-handle n-base]} ^Arena arena
+  [{:keys [^MethodHandle spreader ret record-factory free-handle n-base struct-reader]} ^Arena arena
    ^objects carriers copy-back!]
   (let [desc (-> ret :of :layout)
         out  ^MemorySegment (.allocate arena (long (:size desc)) (long (:align desc)))
@@ -1511,7 +1518,7 @@
     (.invokeExact spreader ^objects carriers)
     (try
       (copy-back!)
-      (let [m (read-struct out desc)]
+      (let [m (struct-reader out)]
         (if record-factory (record-factory m) m))
       (finally
         (safe-free free-handle [out])))))
@@ -1558,7 +1565,7 @@
 
   Carriers is the thread-local base array of size `(:n-base ctx) + 1`; the
   trailing slot is filled with the out-segment before the invoke."
-  [{:keys [^MethodHandle spreader ret record-factory n-base]} ^Arena arena
+  [{:keys [^MethodHandle spreader ret record-factory n-base struct-reader]} ^Arena arena
    ^objects carriers copy-back!]
   (let [desc (:layout ret)
         out  ^MemorySegment (.allocate arena (long (:size desc)) (long (:align desc)))
@@ -1566,7 +1573,7 @@
     (aset carriers i0 out)
     (.invokeExact spreader ^objects carriers)
     (copy-back!)
-    (let [m (read-struct out desc)]
+    (let [m (struct-reader out)]
       (if record-factory (record-factory m) m))))
 
 (defn- invoke-optional-struct
@@ -1578,7 +1585,7 @@
 
   Carriers is the thread-local base array of size `(:n-base ctx)` (no
   trailing slots; the optional return is the FFM return value)."
-  [{:keys [^MethodHandle spreader ret record-factory free-handle]} _arena
+  [{:keys [^MethodHandle spreader ret record-factory free-handle struct-reader]} _arena
    ^objects carriers copy-back!]
   ;; base-count names the array length; nothing is appended, and the array
   ;; is already in invoke order.
@@ -1590,7 +1597,7 @@
             sized  (.reinterpret ^MemorySegment result (long (:size layout)))]
         (try
           (copy-back!)
-          (let [m (read-struct sized layout)]
+          (let [m (struct-reader sized)]
             (if record-factory (record-factory m) m))
           (finally
             (safe-free free-handle [addr])))))))
@@ -1758,7 +1765,20 @@
                        (-> (.asSpreader ^MethodHandle handle obj-array-class
                                         ^int spreader-arity)
                            (.asType (MethodType/methodType
-                                     Object (into-array Class [obj-array-class])))))]
+                                     Object (into-array Class [obj-array-class])))))
+        ;; The struct desc and a compiled-or-fallback reader for the
+        ;; return-side struct, captured at bind time so the invoke helpers
+        ;; skip the per-call `(compiled-struct-reader desc)` cache lookup
+        ;; (a `find` on the atom that allocates a MapEntry each call).
+        ;; nil for non-struct returns; the helpers that read a struct are
+        ;; the only ones that touch it.
+        struct-desc   (cond
+                        struct-ret?                       (:layout ret)
+                        (or owned-rec? eu-struct? opt-struct?) (-> ret :of :layout)
+                        :else                             nil)
+        struct-reader (when struct-desc
+                        (or (compiled-struct-reader struct-desc)
+                            (fn fallback-reader [seg] (read-struct seg struct-desc))))]
     {:handle handle :spreader spreader :params params :ret ret :arity arity
      :stream? stream? :eu-struct? eu-struct? :owned-rec? owned-rec?
      :owned-slice? owned-slice? :opt-struct? opt-struct? :struct-ret? struct-ret?
@@ -1767,7 +1787,8 @@
      ;; once-computed metadata.
      :invoke-ctx {:spreader spreader :ret ret :record-factory record-factory
                   :free-handle free-handle :error-buffer-bytes error-buffer-bytes
-                  :n-base n-base}
+                  :n-base n-base
+                  :struct-reader struct-reader}
      :next-h next-h :free-h free-h :elem-lay elem-lay
      :var-sym (symbol (str (:ns spec)) (str (:name spec)))
      ;; The hot path for a scalar-only signature: no per-call arena, and a
