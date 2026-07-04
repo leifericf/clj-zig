@@ -1941,34 +1941,34 @@
    (reify java.util.function.Supplier
      (get [_] (PoolEntry. (Arena/ofConfined) (long-array [0]))))))
 
-(defn- refresh-if-needed ^PoolEntry []
-  (let [entry   ^PoolEntry (.get tl-arena)
-        counter ^longs (.counter entry)
-        n       (long (aget counter 0))]
-    (if (>= n refresh-interval)
-      (let [old   (.arena entry)
-            fresh (PoolEntry. (Arena/ofConfined) (long-array [0]))]
-        ;; Install the fresh entry before closing the old arena, so a close
-        ;; failure cannot orphan the new arena: the next call retries on the
-        ;; installed entry, and the close is swallowed teardown.
-        (.set tl-arena fresh)
-        (try (.close ^Arena old) (catch Throwable _ nil))
-        fresh)
-      entry)))
-
 (defn- acquire-pooled-arena
   "Return the current thread's pooled confined Arena, bumping the
   per-thread call counter in place. The arena is refreshed (closed and
   replaced) when the counter reaches `refresh-interval`, bounding the
   pool's memory growth. The pool path's per-call work is this counter
   bump; there is no per-call release (the next call's acquire handles
-  refresh)."
+  refresh). Reads the counter exactly once on the steady path so the
+  JIT sees a single `laload` and `lastore` pair with no redundant
+  ThreadLocal/field reads between them."
   ^Arena []
-  (let [entry   ^PoolEntry (refresh-if-needed)
-        arena   (.arena entry)
-        counter ^longs (.counter entry)]
-    (aset counter 0 (inc (long (aget counter 0))))
-    arena))
+  (let [entry   ^PoolEntry (.get tl-arena)
+        counter ^longs (.counter entry)
+        n       (long (aget counter 0))]
+    (if (>= n refresh-interval)
+      (let [old           (.arena entry)
+            fresh         (PoolEntry. (Arena/ofConfined) (long-array [0]))
+            fresh-counter (.counter fresh)]
+        ;; Install the fresh entry before closing the old arena, so a close
+        ;; failure cannot orphan the new arena: the next call retries on
+        ;; the installed entry, and the close is swallowed teardown. The
+        ;; fresh counter starts at 1 (this call), not 0.
+        (.set tl-arena fresh)
+        (try (.close ^Arena old) (catch Throwable _ nil))
+        (aset fresh-counter 0 1)
+        (.arena fresh))
+      (do
+        (aset counter 0 (inc n))
+        (.arena entry)))))
 
 (defn- with-pooled-arena
   "Run `f` with an Arena. When pooling is enabled (the default), the
