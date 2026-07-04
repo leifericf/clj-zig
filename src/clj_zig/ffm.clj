@@ -1224,12 +1224,27 @@
                        :expected expected :actual arg})))
     (.segment ^Handle arg)))
 
+(defn- handle-return-coerce
+  "Build a per-call return coercion fn for a [:handle Type] return:
+  wrap the returned MemorySegment in a Handle of the expected type,
+  unless the address is zero (nil for a null handle). Mirrors the
+  `:handle` branch of `from-return` with the expected type name
+  captured at bind time so the per-call body is a single address
+  check and Handle construction with no `cond` dispatch."
+  [expected-name]
+  (fn handle-ret [^MemorySegment v]
+    (when-not (zero? (.address v))
+      (Handle. expected-name v))))
+
 (defn- enum-aware-coercions
   "Build `[param-coercions return-coercion]` for an enum- or handle-aware
   signature: one coercion fn per param (scalar uses the pre-bound
   `scalar-param-coerce`, enum uses the keyword-to-backing lookup, handle
-  validates the type and returns its segment) and one return fn (scalar
-  uses `from-return`, enum uses the int-to-keyword lookup)."
+  validates the type and returns its segment) and one return fn. The
+  return fn is `enum-return-coerce` for an enum, `scalar-return-coerce`
+  for a scalar (both with the per-call dispatch inlined at bind time),
+  or `handle-return-coerce` for a handle return (a single address
+  check plus Handle construction)."
   [params ret]
   [(vec (for [p params]
           (let [type (:type p)]
@@ -1238,9 +1253,9 @@
               (enum-type? type)        (enum-param-coerce (:layout type))
               (= :handle (:kind type)) (handle-param-coerce (-> type :of :name))))))
    (cond
-     (= :named (:kind ret)) (enum-return-coerce (:layout ret))
+     (= :named (:kind ret))  (enum-return-coerce (:layout ret))
      (= :scalar (:kind ret)) (scalar-return-coerce ret)
-     :else                   #(from-return ret %))])
+     (= :handle (:kind ret)) (handle-return-coerce (-> ret :of :name)))])
 
 (defn- safe-free
   "Invoke the free shim with `args`, swallowing a fault so a failure in the
