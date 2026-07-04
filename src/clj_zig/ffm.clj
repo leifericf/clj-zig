@@ -1718,6 +1718,39 @@
                    (FunctionDescriptor/ofVoid (into-array MemoryLayout arg-layouts))
                    (into-array Linker$Option [])))
 
+(defn- bind-shim-handles
+  "Bind the per-return-shape shim handles and return them as a map:
+  `:free-handle` (the `__free` shim releasing owned memory; nil for a
+  borrowed return), and for a `:stream` return the iterator's `:next-h`,
+  `:free-h`, and `:elem-lay`. The shim symbol names are derived from the
+  wrapper's `export-symbol`. `classify` is the return-shape map from
+  `classify-return`. Owned record and error-union-over-struct returns
+  carry a per-field shim over a wire-struct pointer; a `:string` return
+  always owns its bytes."
+  [linker lookup export-symbol ret classify]
+  (let [{:keys [eu-struct? owned-rec? opt-struct? stream?]} classify
+        free-sym     (str export-symbol "__free")
+        struct-free? (or eu-struct? (and owned-rec? (= :owned (:kind ret))))
+        free-handle  (cond
+                       opt-struct?
+                       (free-shim-handle linker lookup free-sym [ValueLayout/JAVA_LONG])
+                       struct-free?
+                       (free-shim-handle linker lookup free-sym [ValueLayout/ADDRESS])
+                       (contains? #{:owned :bytes :string} (:kind ret))
+                       (free-shim-handle linker lookup free-sym
+                                         [ValueLayout/JAVA_LONG ValueLayout/JAVA_LONG])
+                       :else nil)]
+    {:free-handle free-handle
+     :next-h   (when stream?
+                 (.downcallHandle linker
+                                  (foreign/find-symbol lookup (str export-symbol "__next"))
+                                  (FunctionDescriptor/of ValueLayout/JAVA_BOOLEAN
+                                    (into-array MemoryLayout [ValueLayout/JAVA_LONG ValueLayout/ADDRESS]))
+                                  (into-array Linker$Option [])))
+     :free-h   (when stream?
+                 (free-shim-handle linker lookup free-sym [ValueLayout/JAVA_LONG]))
+     :elem-lay (when stream? (value-layout (:of ret)))}))
+
 (defn- bind-context
   "The per-bind context shared by the scalar hot path and the general
   invoker: the downcall handle, the return-shape classification, the
@@ -1740,9 +1773,9 @@
         params (:params spec)
         ret    (:ret spec)
         arity  (count params)
-        free-sym (str (:symbol spec) "__free")
+        classify     (classify-return ret)
         {:keys [eu-struct? owned-rec? owned-slice? opt-struct? struct-ret? stream?]}
-        (classify-return ret)
+        classify
         ;; An owned/borrowed record and an error-union over a struct both
         ;; wrap the value's named type under :of; everything else (a plain
         ;; struct return, an enum, a scalar, a scalar/void/enum error-union)
@@ -1756,32 +1789,11 @@
         ;; struct return has none and stays a map.
         record-factory (when (and (= :named (:kind ret-value)) (:record (:layout ret-value)))
                          (requiring-resolve (:record (:layout ret-value))))
-        ;; An owned slice (or :bytes buffer, or :string) return carries a
-        ;; free shim taking the slice's pointer and length; an owned record
-        ;; and an error-union over a struct both carry a per-field free shim
-        ;; taking a pointer to the wire struct (the eu-struct shim runs on
-        ;; the success path only); a borrowed return frees nothing. A
-        ;; :string return always owns its bytes (allocated by the body,
-        ;; decoded on read).
-        struct-free? (or eu-struct? (and owned-rec? (= :owned (:kind ret))))
-        free-handle  (cond
-                       opt-struct?
-                       (free-shim-handle linker lookup free-sym [ValueLayout/JAVA_LONG])
-                       struct-free?
-                       (free-shim-handle linker lookup free-sym [ValueLayout/ADDRESS])
-                       (contains? #{:owned :bytes :string} (:kind ret))
-                       (free-shim-handle linker lookup free-sym
-                                         [ValueLayout/JAVA_LONG ValueLayout/JAVA_LONG])
-                       :else nil)
-        next-h       (when stream?
-                       (.downcallHandle linker
-                                        (foreign/find-symbol lookup (str (:symbol spec) "__next"))
-                                        (FunctionDescriptor/of ValueLayout/JAVA_BOOLEAN
-                                          (into-array MemoryLayout [ValueLayout/JAVA_LONG ValueLayout/ADDRESS]))
-                                        (into-array Linker$Option [])))
-        free-h       (when stream?
-                       (free-shim-handle linker lookup free-sym [ValueLayout/JAVA_LONG]))
-        elem-lay     (when stream? (value-layout (:of ret)))
+        shims    (bind-shim-handles linker lookup (:symbol spec) ret classify)
+        free-handle (:free-handle shims)
+        next-h      (:next-h shims)
+        free-h      (:free-h shims)
+        elem-lay    (:elem-lay shims)
         ;; Carrier-array sizing for the general invoker's thread-local
         ;; invoke array. The base carriers fill indices `[base-offset,
         ;; base-offset+n-base)`; the dispatch helper fills any trailing
