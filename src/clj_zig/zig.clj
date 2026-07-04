@@ -16,7 +16,11 @@
   Generators compose nodes with the constructor functions, never with
   `str`. Type strings (like `\"i64\"` or `\"[]const f64\"`) are the
   exception: they are opaque tokens passed through from `zig-type`. The
-  four-space indent appears ONLY in the renderer's `indent` function."
+  four-space indent appears ONLY in the renderer's `indent` function.
+
+  The expression constructors `ref` and `deref` shadow their `clojure.core`
+  names; both are excluded so loading the namespace prints no warning."
+  (:refer-clojure :exclude [deref ref])
   (:require [clojure.string :as str]))
 
 ;;;; Indentation (the only place four spaces live)
