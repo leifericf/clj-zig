@@ -2075,7 +2075,32 @@
         (pool-invoker var-sym arity arena-fn))
 
       :else
-      (let [arena-fn (fn general-arena-fn [^Arena arena args]
+      (let [;; Specialize the per-call dispatch to the bind's single return
+            ;; shape. The general invoker used to run a `(cond stream? ...
+            ;; eu-struct? ... ...)` walk per call; that's dead work since
+            ;; exactly one branch ever fires for a given bind. Capturing the
+            ;; branch as `dispatch` at bind time leaves the per-call body
+            ;; with one direct invoke, no cond walk.
+            dispatch (cond
+                       stream?                      (fn stream-dispatch [_arena ^objects carriers copy-back!]
+                                                      (let [iter-addr (.invokeExact ^MethodHandle spreader ^objects carriers)]
+                                                        (copy-back!)
+                                                        (make-stream-reducible iter-addr next-h free-h ret elem-lay)))
+                       eu-struct?                   (fn eu-struct-dispatch [_arena ^objects carriers copy-back!]
+                                                      (invoke-eu-struct invoke-ctx _arena carriers copy-back!))
+                       (= :error-union (:kind ret)) (fn error-union-dispatch [_arena ^objects carriers copy-back!]
+                                                      (invoke-error-union invoke-ctx _arena carriers copy-back!))
+                       owned-rec?                   (fn owned-rec-dispatch [_arena ^objects carriers copy-back!]
+                                                      (invoke-owned-record invoke-ctx _arena carriers copy-back!))
+                       owned-slice?                 (fn owned-slice-dispatch [_arena ^objects carriers copy-back!]
+                                                      (invoke-owned-slice invoke-ctx _arena carriers copy-back!))
+                       opt-struct?                  (fn opt-struct-dispatch [_arena ^objects carriers copy-back!]
+                                                      (invoke-optional-struct invoke-ctx _arena carriers copy-back!))
+                       struct-ret?                  (fn struct-ret-dispatch [_arena ^objects carriers copy-back!]
+                                                      (invoke-struct-return invoke-ctx _arena carriers copy-back!))
+                       :else                        (fn scalar-dispatch [_arena ^objects carriers copy-back!]
+                                                      (invoke-scalar invoke-ctx _arena carriers copy-back!)))
+            arena-fn (fn general-arena-fn [^Arena arena args]
                        (let [^objects carriers (.get ^ThreadLocal gen-carriers-tl)
                              base-offset (long gen-base-offset)]
                          ;; Fill the base carriers. When no param can produce a
@@ -2106,18 +2131,8 @@
                                                     ((nth gen-marshal-fns i) arena (nth args i) carriers off)
                                                     (recur (inc i) (+ off (long (nth gen-carrier-counts i))))))
                                                 noop-copy-back!))]
-                           (cond
-                             stream?                      (let [iter-addr (.invokeExact ^MethodHandle spreader ^objects carriers)]
-                                                            (copy-back!)
-                                                            (make-stream-reducible iter-addr next-h free-h ret elem-lay))
-                             eu-struct?                   (invoke-eu-struct   invoke-ctx arena carriers copy-back!)
-                             (= :error-union (:kind ret)) (invoke-error-union invoke-ctx arena carriers copy-back!)
-                             owned-rec?                   (invoke-owned-record invoke-ctx arena carriers copy-back!)
-                             owned-slice?                 (invoke-owned-slice  invoke-ctx arena carriers copy-back!)
-                             opt-struct?                  (invoke-optional-struct invoke-ctx arena carriers copy-back!)
-                              struct-ret?                  (invoke-struct-return invoke-ctx arena carriers copy-back!)
-                             :else                        (invoke-scalar       invoke-ctx arena carriers copy-back!)))))]
-         (pool-invoker var-sym arity arena-fn)))))
+                           (dispatch arena carriers copy-back!))))]
+        (pool-invoker var-sym arity arena-fn)))))
 
 (comment
   ;; A whole small pipeline: build, compile, bind, call.
