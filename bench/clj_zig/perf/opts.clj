@@ -18,6 +18,8 @@
 (def ^:private track-allocations-env "CLJ_ZIG_TRACK_ALLOCATIONS")
 (def ^:private axis1-flag "--axis1")
 (def ^:private axis1-env "CLJ_ZIG_AXIS1")
+(def ^:private jfr-flag "--jfr")
+(def ^:private jfr-env "CLJ_ZIG_JFR")
 
 (def ^:private max-attach-window-secs
   "The largest whole-second attach window whose millisecond conversion
@@ -77,6 +79,18 @@
   (let [v (some-> (get env axis1-env) str/lower-case str/trim)]
     (boolean (and v (#{ "1" "true" "yes" "on"} v)))))
 
+(defn- parse-jfr-flag
+  "Walk `args` and return the value of the --jfr flag (a path string),
+  or nil when the flag is absent. A trailing flag with no value parses
+  to nil, so a malformed invocation does not surprise jcmd with an
+  empty filename."
+  [args]
+  (loop [[a & rest] args]
+    (cond
+      (nil? a)              nil
+      (= a jfr-flag)        (first rest)
+      :else                 (recur rest))))
+
 (defn- positional-kind
   "The first positional arg in `args`: one that neither starts with `--`
   nor is consumed as a flag's value. nil when absent."
@@ -85,7 +99,7 @@
     (cond
       (nil? a)                    nil
       skip-next?                  (recur rest false)
-      (= a attach-window-flag)    (recur rest true)
+      (or (= a attach-window-flag) (= a jfr-flag)) (recur rest true)
       (str/starts-with? a "--")   (recur rest false)
       :else                       a)))
 
@@ -98,6 +112,7 @@
     :track-allocations   truthy when the profiling build is on (see below)
     :axis1               truthy when the Axis-1 authoring-latency harness
                          is selected (see below)
+    :jfr                 the path for the JFR recording, nil absent
 
   The attach window reads from the --attach-window <secs> flag or the
   CLJ_ZIG_ATTACH_WINDOW env var; the flag wins when both are set. :kind
@@ -117,13 +132,24 @@
   separates the zig build-lib subprocess wall-clock from JVM-side time.
   OFF by default; set via the --axis1 bare switch or CLJ_ZIG_AXIS1=1.
   The optional :kind positional narrows the run to one shape, as in the
-  default mode."
+  default mode.
+
+  :jfr names a JFR recording path. When set, the bench shell spawns jcmd
+  JFR.start against its own pid (with a tightened 1 ms execution-sample
+  period) after any attach window opens, and JFR.stop after the last
+  shape measures. OFF by default (no flag and no env), so a run without
+  the option writes no .jfr file and is byte-identical to a run without
+  it. Reads from the --jfr <path> flag or the CLJ_ZIG_JFR env var; the
+  flag wins when both are set."
   [args env]
   (let [from-flag (parse-attach-window-flag args)
-        from-env  (some-> (get env attach-window-env) parse-attach-window)]
+        from-env  (some-> (get env attach-window-env) parse-attach-window)
+        jfr-flag  (parse-jfr-flag args)
+        jfr-env   (get env jfr-env)]
     (cond-> {:kind (positional-kind args)}
       (or from-flag from-env)        (assoc :attach-window (or from-flag from-env))
       (or (track-allocations-from-args? args)
           (track-allocations-from-env? env)) (assoc :track-allocations true)
       (or (axis1-from-args? args)
-          (axis1-from-env? env)) (assoc :axis1 true))))
+          (axis1-from-env? env)) (assoc :axis1 true)
+      (or jfr-flag jfr-env)          (assoc :jfr (or jfr-flag jfr-env)))))

@@ -86,30 +86,34 @@ shape under `Debug`, set `:zig/optimize "Debug"` on that shape's
 descriptor options; the build gets its own cache key and never pollutes
 the default library.
 
-## JFR fallback (zero agent)
+## JFR (in-process, zero install)
 
-When `asprof` is unavailable, the JDK's own flight recorder works
-against the same pid and needs no extra install. Start the bench with a
-window, then from a second shell:
+The JDK's own flight recorder ships with the JVM and needs no second
+shell. The bench drives it directly:
 
-    jcmd <pid> JFR.start name=bench settings=profile filename=~/.agentic-sdk/clj-zig/artifacts/perf/bench.jfr
+    clojure -M:bench --jfr ~/.agentic-sdk/clj-zig/artifacts/perf/bench.jfr
+    clojure -M:bench --jfr ~/.agentic-sdk/clj-zig/artifacts/perf/<shape>.jfr <shape>
 
-Run the measurement, then stop the recording:
+The flag fires `jcmd <pid> JFR.start` against the bench's own pid after
+any attach window opens (the two flags compose) and `JFR.stop` after
+the last shape measures. The recording uses the `profile` settings with
+a tightened 1 ms execution-sample period so the clj-zig frames
+accumulate sample time within a 30 s run. The `.jfr` file opens in Java
+Mission Control, IntelliJ's profiler, or any JFR viewer; `jfr summary
+<file>` prints the event counts from the shell. The recording is OFF
+when the flag is absent, so a run without `--jfr` is byte-identical to
+a run without the option.
 
-    jcmd <pid> JFR.stop name=bench
+For per-shape isolation, run the bench once per shape with a distinct
+`--jfr` path; each shape gets its own JVM and its own recording. One
+multi-shape run with one `--jfr` produces a single recording that
+covers every shape in canonical order, useful for an overview but
+less precise for shape-specific root-causing.
 
-The `.jfr` file opens in Java Mission Control or any JFR viewer. The
-`profile` settings sample at higher frequency than the default; it is
-heavier but captures the native and FFM frames a clj-zig investigation
-needs.
-
-The recording flushes to the filename on JVM exit, so a `JFR.stop`
-issued after the bench exits errors harmlessly (jcmd reports no such
-process) and the file is already written. Pairing `JFR.start` with a
-generous `duration=300s` and letting the bench exit is the simplest
-form for the bench, which exits immediately after printing its summary.
-A manual `JFR.stop` is still useful for the REPL redefine below, where
-the JVM stays alive.
+Use the attach window + async-profiler path above when you need
+allocation flamegraphs or native CPU frames at finer resolution than
+JFR's `jdk.ObjectAllocationSample` provides; JFR is the right default
+for the common Java-frame CPU investigation.
 
 ## Profile a defnz redefine (authoring pipeline)
 

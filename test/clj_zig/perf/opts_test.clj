@@ -113,6 +113,47 @@
     (is (:axis1 m))
     (is (= "scalar-passthrough" (:kind m)))))
 
+(deftest jfr-off-by-default
+  ;; The JFR recording is OFF by default: a run with no option writes no
+  ;; .jfr file. Pinned so a regression that flips the default surfaces as
+  ;; a test failure.
+  (let [m (opts/parse-args [] {})]
+    (is (nil? (:jfr m)))))
+
+(deftest jfr-set-via-flag
+  (is (= "/tmp/shape.jfr"
+         (:jfr (opts/parse-args ["--jfr" "/tmp/shape.jfr"] {})))))
+
+(deftest jfr-set-via-env
+  (is (= "/tmp/shape.jfr"
+         (:jfr (opts/parse-args [] {"CLJ_ZIG_JFR" "/tmp/shape.jfr"})))))
+
+(deftest jfr-flag-wins-over-env
+  (is (= "/tmp/flag.jfr"
+         (:jfr (opts/parse-args ["--jfr" "/tmp/flag.jfr"]
+                                {"CLJ_ZIG_JFR" "/tmp/env.jfr"})))))
+
+(deftest jfr-with-kind-positional
+  ;; The kind positional survives a preceding --jfr value: positional-kind
+  ;; treats the path as the flag's value, not as the kind.
+  (let [m (opts/parse-args ["--jfr" "/tmp/shape.jfr" "scalar-passthrough"] {})]
+    (is (= "/tmp/shape.jfr" (:jfr m)))
+    (is (= "scalar-passthrough" (:kind m)))))
+
+(deftest jfr-and-attach-window-together
+  ;; Both profiler options compose: the attach window opens, then the JFR
+  ;; recording starts against the same pid.
+  (let [m (opts/parse-args ["--attach-window" "30"
+                            "--jfr" "/tmp/shape.jfr" "enum"] {})]
+    (is (= 30 (:attach-window m)))
+    (is (= "/tmp/shape.jfr" (:jfr m)))
+    (is (= "enum" (:kind m)))))
+
+(deftest trailing-jfr-flag-without-value-is-nil
+  ;; A trailing --jfr with no value parses to nil, so a malformed
+  ;; invocation does not surprise jcmd with an empty filename.
+  (is (nil? (:jfr (opts/parse-args ["--jfr"] {})))))
+
 (deftest opts-source-is-pure
   ;; Source-level purity: the parse namespace requires neither Criterium
   ;; nor clj-zig native edges, so the :test lane can load it.

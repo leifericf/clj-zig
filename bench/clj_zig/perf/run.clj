@@ -45,7 +45,8 @@
             [criterium.core :as criterium])
   (:import (java.lang ProcessHandle)
            (java.lang.foreign Arena MemorySegment ValueLayout)
-           (java.nio.charset StandardCharsets)))
+           (java.nio.charset StandardCharsets)
+           (java.util ArrayList List)))
 
 ;; --- output location -----------------------------------------------------
 
@@ -519,6 +520,89 @@
       (println "bench pid" pid "-- attach within" (long secs) "s"))
     (Thread/sleep (* 1000 (long secs)))))
 
+;; --- in-process JFR recording -------------------------------------------
+;;
+;; An opt-in JFR recording driven from inside the bench JVM, replacing
+;; the second-shell jcmd workflow the RUNBOOK used to require. When
+;; :jfr names a path, the shell spawns `jcmd <pid> JFR.start ...` against
+;; its own pid after any attach window opens, and `JFR.stop` after the
+;; last shape measures. The recording uses the `profile` settings with a
+;; tightened 1 ms execution-sample period (twentyfold over the default)
+;; so the clj-zig frames accumulate sample time within a 30 s run. OFF by
+;; default; a run without --jfr (and without CLJ_ZIG_JFR) is byte-identical.
+
+(defn- jcmd-binary
+  "The jcmd binary path: `$java.home/bin/jcmd`. Resolves against the
+  running JVM's java.home so a custom JDK layout still finds the tool
+  without requiring jcmd on PATH."
+  ^String []
+  (str (System/getProperty "java.home")
+       java.io.File/separator "bin"
+       java.io.File/separator "jcmd"))
+
+(defn- jfr-start-args
+  "Pure: the argument vector to pass to jcmd to start a JFR recording
+  for `pid` writing to `filename`. The tightened execution-sample period
+  raises the Java-frame sample rate above the profile default. Pure so
+  a unit test can pin the shape without spawning jcmd."
+  ^java.util.List [pid filename]
+  (doto (java.util.ArrayList.)
+    (.add (str pid))
+    (.add "JFR.start")
+    (.add "name=bench")
+    (.add "settings=profile")
+    (.add (str "filename=" filename))
+    (.add "duration=300s")
+    (.add "jdk.ExecutionSample#period=1ms")))
+
+(defn- jfr-stop-args
+  "Pure: the argument vector to pass to jcmd to stop the bench JFR
+  recording for `pid`."
+  ^java.util.List [pid]
+  (doto (java.util.ArrayList.)
+    (.add (str pid))
+    (.add "JFR.stop")
+    (.add "name=bench")))
+
+(defn- run-jcmd!
+  "Spawn jcmd with `args`, waiting for it to exit. Returns the exit code.
+  Prints a warning on non-zero so a jcmd fault does not crash the bench:
+  the recording may still flush on JVM exit, and the per-shape
+  measurements are independent of the recording."
+  [args]
+  (let [cmd (doto (java.util.ArrayList.)
+              (.add (jcmd-binary))
+              (.addAll args))
+        proc (.start (ProcessBuilder. cmd))]
+    (.waitFor proc)
+    (let [exit (.exitValue proc)]
+      (when (not (zero? exit))
+        (let [err (slurp (.getErrorStream proc))]
+          (println "warning: jcmd exited" exit "--" (str/trim err))))
+      exit)))
+
+(defn- start-jfr!
+  "When `opts` carries a :jfr path, spawn jcmd JFR.start against the
+  running JVM. No-op when :jfr is nil, so a default run is unchanged.
+  Fires AFTER any attach window so the two options compose: the window
+  still lets an external profiler attach, and the in-process JFR records
+  the same measured run."
+  [opts]
+  (when-let [path (:jfr opts)]
+    (let [pid (.pid (ProcessHandle/current))]
+      (println "bench pid" pid "-- starting JFR recording to" path)
+      (run-jcmd! (jfr-start-args pid path)))))
+
+(defn- stop-jfr!
+  "When `opts` carries a :jfr path, spawn jcmd JFR.stop. No-op when
+  :jfr is nil. The recording flushes to the filename on stop, so this
+  runs before the final stdout summary."
+  [opts]
+  (when-let [path (:jfr opts)]
+    (let [pid (.pid (ProcessHandle/current))]
+      (run-jcmd! (jfr-stop-args pid))
+      (println "bench pid" pid "-- stopped JFR recording to" path))))
+
 ;; --- the numbers record write ------------------------------------------
 
 (defn- write-record!
@@ -853,7 +937,13 @@
   subprocess wall-clock from JVM-side time, and flags any tier whose
   cache state did not match its contract. The optional kind positional
   narrows the run to one shape, as in the default mode. Off by default;
-  a run without the option takes the per-call path unchanged."
+  a run without the option takes the per-call path unchanged.
+
+  An optional --jfr <path> (or CLJ_ZIG_JFR=<path>) starts an in-process
+  JFR recording against the bench's own pid after any attach window
+  opens, and stops it after the last shape measures. Replaces the
+  second-shell jcmd workflow the RUNBOOK used to require. Off by default;
+  a run without the option writes no .jfr file."
   [& args]
   (ensure-dir! artifacts-dir)
   (let [opts   (opts/parse-args args (System/getenv))
@@ -864,9 +954,11 @@
                "running axis1."))
     (if (:axis1 opts)
       (run-axis1 shapes opts)
-      (let [_       (attach-profiler! opts)
+      (let [_       (do (attach-profiler! opts)
+                        (start-jfr! opts))
             track?  (:track-allocations opts)
             entries (mapv #(measure-one % track?) shapes)
+            _       (stop-jfr! opts)
             record  (stats/numbers-record entries (meta-inputs))
             out     (io/file artifacts-dir
                              (str "perf-" (.getTime (java.util.Date.)) ".edn"))]
