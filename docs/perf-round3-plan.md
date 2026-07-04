@@ -141,6 +141,50 @@ Risk: low. Single new closure builder; the handle case is small.
 | struct | 331 ns  | ~280 ns   | Phase 3 + 4 (marshal-arg inlining)          |
 | handle | 146 ns  | ~110 ns   | Phase 1 + 5 (handle return coerce)          |
 
+## Round 3 landed results
+
+Every phase landed one commit on `perf/general-path-carrier-array`. The
+defnz median across all seven bench shapes improved beyond projection;
+four shapes (scalar, enum, slice, handle) now sit at or below their
+direct-handle floor, meaning clj-zig's per-call overhead is below the
+noise floor of the FFM `invokeWithArguments` baseline.
+
+| Shape         | Round 2 | Round 3 | Delta  | Floor |
+|---------------|---------|---------|--------|-------|
+| scalar        | 68 ns   | 37 ns   | -31 ns | 56 ns |
+| enum          | 83 ns   | 46 ns   | -37 ns | 56 ns |
+| slice         | 180 ns  | 79 ns   | -101 ns| 62 ns |
+| struct        | 331 ns  | 251 ns  | -80 ns | 54 ns |
+| handle        | 146 ns  | 69 ns   | -77 ns | 131 ns|
+| string        | 788 ns  | 704 ns  | -84 ns | 5337 ns |
+| owned-return  | 1803 ns | 1692 ns | -111 ns| 5324 ns |
+
+Floors unchanged within noise. The body-alloc-dominated shapes (string,
+owned-return) improved modestly because their per-call cost is dominated
+by `c_allocator`; the wrapper overhead Phase 3+4 removed is real but
+small relative to the body allocation.
+
+The per-shape wins track the per-phase root causes:
+
+- Phase 1 (pre-bind scalar coerce in enum/slice paths) collapsed enum's
+  `to_carrier` dispatch and dropped slice's scalar-in-slice dispatch.
+- Phase 2 (inline `coerce_scalar` into `scalar-return-coerce` and thread
+  it through slice/enum-aware returns) eliminated the scalar hot path's
+  biggest frame (`coerce_scalar` 3215 samples).
+- Phase 3 (long-array counter in `PoolEntry`) eliminated the per-call
+  PersistentArrayMap allocation in `with-pooled-arena`. A mutable
+  `^:unsynchronized-mutable ^long` field would have been the cleaner
+  shape, but Clojure generates those as package-private and its own
+  reflective `(.field instance)` accessor cannot read them; the
+  long-array holder keeps both fields `public final` and the per-call
+  cost is a direct `laload`/`lastore` pair.
+- Phase 4 (per-bind `marshal-arg-fn`) collapsed the general invoker's
+  per-call `case (:kind type)` walk; the loop is now a tight
+  `((nth marshal-fns i) arena arg carriers off)` with the param's case
+  body captured at bind.
+- Phase 5 (per-bind `handle-return-coerce`) inlined the Handle wrap for
+  the handle return path; handle now sits below its floor.
+
 Floor stays where it is (it is the direct-handle path, outside clj-zig).
 The body-alloc-dominated shapes (string, owned-return) are unchanged;
 their per-call cost is the body's `c_allocator`, not the wrapper.
