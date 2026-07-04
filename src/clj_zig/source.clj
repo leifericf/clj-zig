@@ -853,21 +853,38 @@
       [(zig/raw-stmt (str "const __self: *" iter-name " = @ptrFromInt(__iter);"))
        (zig/raw-stmt (str deinit-fn "(__self);"))])]))
 
+(defn- return-shape
+  "Classify a return type into one dispatch keyword the inline and file
+  generators share, so the shape predicates live in one place and each
+  mode dispatches from a keyword table. Mirrors ffm's `classify-return`:
+  the two modes never drift apart when a shape is added or adjusted."
+  [ret]
+  (cond
+    (= :stream (:kind ret))                                    :stream
+    (error-union-struct-return? ret)                           :error-union-struct
+    (= :error-union (:kind ret))                               :error-union
+    (owned-record-return? ret)                                 :owned-record
+    (contains? #{:owned :borrowed :bytes :string} (:kind ret)) :ownership
+    (opt-struct-return? ret)                                   :optional-struct
+    (and (= :named (:kind ret)) (enum-type? ret))              :named-enum
+    (= :named (:kind ret))                                     :named-struct
+    :else                                                      :plain))
+
 (defn- generate-inline
   "The inline-mode declarations: the user's body string is spliced into
   the function body. Wire struct declarations and the std import are
   emitted at the top level. Returns a vector of declaration nodes."
   [{:keys [ret] :as spec} body]
-  (let [core      (cond
-                    (= :stream (:kind ret))                        (generate-stream-return spec body)
-                    (error-union-struct-return? ret)                 (generate-error-union-struct-return spec body)
-                    (= :error-union (:kind ret))                       (generate-error-union spec body)
-                    (owned-record-return? ret)                         (generate-owned-struct-return spec body)
-                    (contains? #{:owned :borrowed :bytes :string} (:kind ret)) (generate-ownership spec body)
-                    (opt-struct-return? ret)                           (generate-optional-struct-return spec body)
-                    (and (= :named (:kind ret)) (enum-type? ret))      (generate-plain spec body)
-                    (= :named (:kind ret))                             (generate-struct-return spec body)
-                    :else                                              (generate-plain spec body))
+  (let [core      (case (return-shape ret)
+                    :stream             (generate-stream-return spec body)
+                    :error-union-struct (generate-error-union-struct-return spec body)
+                    :error-union        (generate-error-union spec body)
+                    :owned-record       (generate-owned-struct-return spec body)
+                    :ownership          (generate-ownership spec body)
+                    :optional-struct    (generate-optional-struct-return spec body)
+                    :named-enum         (generate-plain spec body)
+                    :named-struct       (generate-struct-return spec body)
+                    :plain              (generate-plain spec body))
         wire-decls (buffer-wire-decls spec)
         std?       (needs-std? spec)]
     (vec (concat
@@ -1090,15 +1107,17 @@
   nodes."
   [{:keys [ret] :as spec} entry]
   (let [wire-decls (buffer-wire-decls spec)
-        core       (cond
-                    (error-union-struct-return? ret)                   (file-error-union-struct-return spec entry)
-                    (= :error-union (:kind ret))                       (file-error-union spec entry)
-                    (owned-record-return? ret)                         (file-owned-struct-return spec entry)
-                    (contains? #{:owned :borrowed :bytes :string} (:kind ret)) (file-ownership spec entry)
-                    (opt-struct-return? ret)                           (file-optional-struct-return spec entry)
-                    (and (= :named (:kind ret)) (enum-type? ret))      (file-plain spec entry)
-                    (= :named (:kind ret))                             (file-struct-return spec entry)
-                    :else                                              (file-plain spec entry))]
+        ;; A :stream return has no file-mode generator; it falls through to
+        ;; the plain wrapper, as the inline-only stream path does.
+        core       (case (return-shape ret)
+                     :error-union-struct (file-error-union-struct-return spec entry)
+                     :error-union        (file-error-union spec entry)
+                     :owned-record       (file-owned-struct-return spec entry)
+                     :ownership          (file-ownership spec entry)
+                     :optional-struct    (file-optional-struct-return spec entry)
+                     :named-enum         (file-plain spec entry)
+                     :named-struct       (file-struct-return spec entry)
+                     (:stream :plain)    (file-plain spec entry))]
     (vec (concat wire-decls core))))
 
 (defn inline-nodes
