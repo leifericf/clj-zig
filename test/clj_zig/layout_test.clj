@@ -26,10 +26,8 @@
   (:target (first (:fields (layout/describe 'T fields-form)))))
 
 (deftest lays-out-a-mixed-scalar-buffer-and-string-record
-  ;; A record carrying two scalars, a :string, and a [:bytes [:slice :u8]]
-  ;; field. Each buffer field expands to two usize words aligned to the word
-  ;; width, so the layout is the C-ABI layout of the wire struct (ADR 21
-  ;; section 4 specifies (ptr then len), not the nice record.
+  ;; Each buffer field expands to two usize words aligned to the word width
+  ;; (the wire struct layout, ADR 21).
   (let [d (layout/describe 'RenderResult
                            '[status :i32
                              w      :u32
@@ -69,10 +67,8 @@
     (is (nil? (field-target '[n :i64])))))
 
 (deftest buffer-fields-expand-to-a-target-width-word-pair
-  ;; A buffer field's two words are usize, which is target-width. The word
-  ;; size is derived from the usize scalar, not a hardcoded constant, so a
-  ;; future 32-bit target that changed usize's width would recompute the
-  ;; offsets and the descriptor's content hash alongside it.
+  ;; The word size is derived from the usize scalar, not hardcoded, so a
+  ;; different target width recomputes offsets and the content hash.
   (let [word  (quot (:bits (type/scalar-info :usize)) 8)
         d     (layout/describe 'S '[s :string])
         field (first (:fields d))]

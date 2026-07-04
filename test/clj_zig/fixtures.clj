@@ -12,7 +12,7 @@
   pointer."
   (:require [clj-zig.core :refer [defnz defz deftypez defrecordz defenumz]]))
 
-;; --- Scalar echoes, one per carrier -------------------------------------
+;; Scalar echoes, one per carrier
 
 (defnz echo-i8 [x :i8 :ret :i8] "return x;")
 (defnz echo-i16 [x :i16 :ret :i16] "return x;")
@@ -38,7 +38,7 @@
    :isize echo-isize :usize echo-usize
    :f32 echo-f32 :f64 echo-f64 :bool echo-bool})
 
-;; --- Slices, arrays, optionals ------------------------------------------
+;; Slices, arrays, optionals
 
 (defnz sum-f64 [xs [:slice :const :f64] :ret :f64]
   "var t: f64 = 0; for (xs) |v| t += v; return t;")
@@ -60,7 +60,7 @@
 (defnz deref-or-default [p [:optional [:ptr :const :i64]] :ret :i64]
   "return if (p) |q| q.* else -1;")
 
-;; --- Structs, records, enums --------------------------------------------
+;; Structs, records, enums
 
 (deftypez Point [x :f64 y :f64])
 
@@ -76,7 +76,7 @@
 
 (def suit-members [:clubs :diamonds :hearts :spades])
 
-;; --- Owned and borrowed returns -----------------------------------------
+;; Owned and borrowed returns
 
 (defnz owned-double [xs [:slice :const :f64] :ret [:owned [:slice :f64]]]
   "const out = std.heap.c_allocator.alloc(f64, xs.len) catch @panic(\"oom\");
@@ -92,10 +92,7 @@
    @memcpy(out, xs);
    return out;")
 
-;; --- Strings (a :string crosses as UTF-8 in both directions) -----------
-
-;; A :string argument reconstructs to []const u8; a :string return is an
-;; owned []u8 the free shim releases after the Clojure side decodes it.
+;; Strings
 
 (defnz string-upper [s :string :ret :string]
   "const out = std.heap.c_allocator.alloc(u8, s.len) catch @panic(\"oom\");
@@ -107,13 +104,7 @@
    @memcpy(out, s);
    return out;")
 
-;; --- Result records (ADR 21): owned/borrowed record returns -----
-
-;; A result record carries scalars, an enum, and owned buffer fields. The
-;; nice record is a regular Zig struct the body constructs; the wrapper
-;; decomposes it field by field into the wire extern struct and a per-field
-;; __free shim releases every owned buffer after the Clojure side copies
-;; the bytes out.
+;; Result records (ADR 21)
 
 (defenumz RenderStatus [ok 0 invalid 1 no_output 2 oom 3])
 
@@ -178,11 +169,8 @@
     @memcpy(t, label);
     return .{ .tag = t, .n = @intCast(label.len) };")
 
-;; An owned slice of buffer-carrying structs: the wrapper transforms the
-;; body's []Note (nice records with real slice fields) into a wire (extern)
-;; slab, and a walking free shim iterates the slab freeing each element's
-;; tag buffer then the slab itself. Driving it in volume exercises every
-;; per-element free; a buffer left unfreed would accumulate across the run.
+;; Owned slice of buffer-carrying structs; driven in volume so an unfreed
+;; per-element buffer would accumulate across the run.
 
 (deftypez Note [tag :string n :i64])
 
@@ -197,18 +185,8 @@
    }
    return out;")
 
-;; --- Error-union over a struct (P3b): success returns the struct, failure
-;; returns the error keyword. The combined wire shape carries the existing
-;; error-union out-params (errbuf, errlen) PLUS the struct out-pointer
-;; (__ret). On failure the wrapper writes the error name and returns WITHOUT
-;; writing the struct, so nothing was allocated-for-the-result and the free
-;; shim runs on the success path only (no leak on either branch).
-
-;; A buffer-carrying record under an error union: the body allocates the
-;; buffers BEFORE checking the fail flag would leak on the error path, so
-;; the fail flag is checked FIRST and the body returns the error before any
-;; allocation. The success path allocates and the wrapper's per-field free
-;; shim releases every buffer once the bytes are copied out.
+;; Error-union over a struct
+;; Fail is checked before allocating, so the error path leaks nothing.
 (defnz render-may-fail
   [fail :bool
    :ret  [:error-union anyerror RenderResult]]
@@ -228,7 +206,7 @@
   "if (fail) return error.PixelFailed;
    return .{ .r = 10, .g = 20, .b = 30 };")
 
-;; --- Handles ------------------------------------------------------------
+;; Handles
 
 (defz Box "const Box = struct { v: i64 };")
 
@@ -241,7 +219,7 @@
 
 (defnz free-box [b [:handle Box] :ret :void] "std.heap.c_allocator.destroy(b);")
 
-;; --- Allocation tracker (the leak lane) ---------------------------------
+;; Allocation tracker (the leak lane)
 
 (defz Tracker "const Tracker = struct { live: i64 };")
 (defz Node "const Node = struct { v: i64 };")

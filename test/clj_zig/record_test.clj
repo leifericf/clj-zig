@@ -9,7 +9,7 @@
   [x :f64
    y :f64])
 
-;; --- The Clojure record -------------------------------------------------
+;; The Clojure record
 
 (deftest defrecordz-defines-an-ordinary-record
   (testing "the positional and map factories build a record"
@@ -20,7 +20,7 @@
     (is (= "A 2D point shared between Clojure and Zig."
            (:doc (meta #'map->Point))))))
 
-;; --- A record as an argument --------------------------------------------
+;; A record as an argument
 
 (defnz norm
   [p Point
@@ -33,7 +33,7 @@
   (testing "a plain map with the same fields also crosses"
     (is (= 5.0 (norm {:x 3.0 :y 4.0})))))
 
-;; --- A record as a return -----------------------------------------------
+;; A record as a return
 
 (defnz midpoint
   [a Point
@@ -53,7 +53,7 @@
   (is (str/includes? (zig/generated-source #'norm)
                      "const Point = extern struct {")))
 
-;; --- A nested record field ----------------------------------------------
+;; A nested record field
 
 (defrecordz Rect
   [origin Point

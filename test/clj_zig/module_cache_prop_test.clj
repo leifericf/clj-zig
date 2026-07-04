@@ -11,7 +11,7 @@
             [clj-zig.cache :as cache]
             [clj-zig.gen :as g]))
 
-;; --- Directory signature: cheap, order-independent, stat-sensitive ------
+;; Directory signature: cheap, order-independent, stat-sensitive
 
 (defspec dir-signature-is-order-independent 200
   (prop/for-all [tree g/gen-module-tree]
@@ -25,7 +25,7 @@
       (not= (cache/dir-signature stats)
             (cache/dir-signature (update-in stats [0 :size] inc))))))
 
-;; --- Content fingerprint: sixteen hex, order-independent, content-sensitive ---
+;; Content fingerprint: sixteen hex, order-independent, content-sensitive
 
 (defspec content-fingerprint-is-sixteen-hex-and-order-independent 200
   (prop/for-all [tree g/gen-module-tree]
@@ -40,7 +40,7 @@
       (not= (cache/content-fingerprint contents)
             (cache/content-fingerprint (update-in contents [0 :content] str "x"))))))
 
-;; --- Memoization: reuse on an unchanged signature, recompute otherwise --
+;; Memoization: reuse on an unchanged signature, recompute otherwise
 
 (defspec memoized-fingerprint-reuses-without-recomputing 200
   (prop/for-all [sig gen/string-alphanumeric
@@ -63,7 +63,7 @@
         (and (= "fresh" out) (= 1 @calls)
              (= {:signature new-sig :fingerprint "fresh"} entry))))))
 
-;; --- Cache-key participation: the fingerprint enters the key ------------
+;; Cache-key participation: the fingerprint enters the key
 
 (def ^:private gen-fingerprint
   (gen/fmap #(apply str %) (gen/vector gen/char-alphanumeric 16 16)))

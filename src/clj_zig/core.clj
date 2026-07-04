@@ -24,7 +24,7 @@
             [clj-zig.type :as type]
             [clj-zig.zig :as zig]))
 
-;; --- Namespace-scoped Zig declarations ----------------------------------
+;; Namespace-scoped Zig declarations
 
 (defonce ^:private zig-decls (atom {}))
 
@@ -91,7 +91,7 @@
                      (map zig/raw-decl))]
     (vec (concat structs decls))))
 
-;; --- Establishing a native function -------------------------------------
+;; Establishing a native function
 
 (defn build-inputs
   "The cache/compile inputs for `spec` and `body`: the generated source,
@@ -124,11 +124,9 @@
          rendered    (str (zig/render all-nodes) "\n")
          options     (merge {:optimize compile/default-optimize-mode}
                             (deps-in (:ns spec)) options-extra)
-         ;; Under :zig/track-allocations (ADR 41), wrap the wrapper's
-         ;; allocator in a counting allocator and emit per-symbol count
-         ;; fns. The flag is in :options, which cache/cache-key hashes,
-         ;; so a profiling build gets its own cache key by construction
-         ;; (ADR 12) and never reuses a default library. Default off.
+          ;; :zig/track-allocations (ADR 41) lives in :options, which
+          ;; cache/cache-key hashes, so a profiling build gets its own
+          ;; cache key (ADR 12) and never reuses a default library.
          src         (if (:track-allocations options)
                        (source/tracking-wrap rendered (:symbol spec))
                        rendered)]
@@ -184,7 +182,7 @@
    (let [a (artifact spec body gen)]
      (assoc a :invoke (ffm/bind spec (:library a))))))
 
-;; --- Binding and rebinding a Var ----------------------------------------
+;; Binding and rebinding a Var
 
 ;; A defnz Var's wrap fn, kept so `recompile!` can rebind with the same
 ;; arglist and destructuring the macro built.
@@ -273,7 +271,7 @@
     options-extra (assoc :options-extra options-extra)
     aux-files     (assoc :aux-files aux-files)))
 
-;; --- Comptime specialization (ADR 50/R4) ---------------------------------
+;; Comptime specialization (ADR 50/R4)
 
 (defn- zig-literal
   "Render a Clojure value as a Zig source literal for the given scalar type."
@@ -388,7 +386,7 @@
                       {:level :error :error/code :clj-zig/not-recompilable
                        :var the-var})))))
 
-;; --- Multi-arity binding (ADR 51) ---------------------------------------
+;; Multi-arity binding (ADR 51)
 
 (defn establish-multi-binding!
   "Establish a multi-arity `defnz` function (ADR 51). Each arity is
@@ -481,7 +479,7 @@
           (throw (ex-info (diagnostics/render data) data (:error first-fail)))))
       the-var)))
 
-;; --- File-sourced bodies ------------------------------------------------
+;; File-sourced bodies
 
 (defn- check-namespace!
   "Throw when a `.zig` file's `//! clj-zig: <ns>` header names a namespace
@@ -521,7 +519,7 @@
                    (seq files) (assoc :aux-files files))]
     (establish-binding! the-var the-spec text var-meta wrap gen)))
 
-;; --- defnz / defz -------------------------------------------------------
+;; defnz / defz
 
 (defn- builder-value
   "The type form a type-builder Var holds, or nil. A symbol resolves to the

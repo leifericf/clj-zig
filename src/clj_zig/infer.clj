@@ -66,11 +66,10 @@
                                 (mapv parse-param))]
             {:name fn-name :params params :ret ret}))))))
 
-;; --- Mapping Zig type strings to boundary type forms --------------------
+;; Mapping Zig type strings to boundary type forms
 
-;; The single source of truth for the scalar vocabulary is `type/scalars`;
-;; deriving the set from it keeps the two from drifting (a scalar added here
-;; but not there, or vice versa, would silently misparse).
+;; Derived from `type/scalars` so the vocabulary cannot drift: a scalar
+;; added here but not there would silently misparse.
 (def ^:private scalar-types (set (keys type/scalars)))
 
 (defn- strip-const

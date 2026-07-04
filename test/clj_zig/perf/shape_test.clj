@@ -42,7 +42,7 @@
 (defn- carrier-descriptor?
   "True when `x` is a tagged pointer-input descriptor (a vector whose
   first element is a known ptr tag). A raw scalar number is NOT a
-  descriptor -- the shell boxes it per the arg layout."
+  descriptor; the shell boxes it per the arg layout."
   [x]
   (and (vector? x) (contains? floor-args-tags (first x))))
 
@@ -79,16 +79,9 @@
       (is (string? (:body s)) "body is a string of Zig source"))))
 
 (deftest bodies-are-trivial
-  ;; The body-leak guard in clj-zig.perf.stats detects a heavy floor at
-  ;; measurement time. Here we assert only that the source is short and
-  ;; free of algorithmic work: the slice sum's reduction loop is the
-  ;; most the body does. The string, owned, and handle bodies allocate
-  ;; because their CONTRACTS require a buffer or a Box; the c_allocator
-  ;; calls in those bodies are the minimal contract-required allocation
-  ;; and not a defect -- their floors invoke the free shim per call so
-  ;; the Criterium loop leaks nothing, and the body-leak guard still
-  ;; flags their floor measurements as :body-leak-suspect, which is the
-  ;; expected outcome.
+  ;; Asserts only that the source is short and free of algorithmic work. The
+  ;; string, owned, and handle bodies allocate because their contracts require
+  ;; it; the guard still flags their floors :body-leak-suspect, as expected.
   (doseq [s (shape/shape-list)]
     (testing (str "body of " (:kind s))
       (is (< (count (:body s)) 240))
@@ -105,10 +98,8 @@
     (testing (str "arg-fn of " (:kind s))
       (let [args  ((:arg-fn s))
             sig   (:signature s)
-            ;; The defnz form is [binding type binding type ... :ret type]
-            ;; where a type may itself be a symbol (a named type like
-            ;; Point/Suit/Box). Bindings are the first of each pair
-            ;; before :ret.
+            ;; The defnz form is [binding type ... :ret type]; a type may be a
+            ;; named symbol. Bindings are the first of each pair before :ret.
             forms   (take-while #(not= % :ret) sig)
             binding-count (-> forms count (quot 2))]
         (is (= binding-count (count args))
@@ -179,10 +170,8 @@
         :defz (is (string? (:body decl)))))))
 
 (deftest free-body-is-pure-data-when-present
-  ;; Only :handle carries a :free-body (its wrapper emits no auto-free
-  ;; shim, so the bench establishes a sibling free-box defnz). When
-  ;; present it is a defnz triple: a name, a signature vector, and a
-  ;; Zig body string.
+  ;; Only :handle carries a :free-body (its wrapper emits no auto-free shim).
+  ;; When present it is a defnz triple: name, signature, body string.
   (doseq [s (shape/shape-list)]
     (when (contains? s :free-body)
       (testing (str "free-body of " (:kind s))
@@ -204,13 +193,9 @@
           (str k " floor must carry a :free-shim so the floor loop frees")))))
 
 (deftest shape-source-is-pure
-  ;; Source-level purity check: the pure core must not require Criterium
-  ;; or any clj-zig native namespace. The matchers target the
-  ;; `:require` vector syntax (`[clj-zig.X :as ...]`, `[criterium.X ..]`)
-  ;; so docstring prose mentioning the namespaces by name does not trip
-  ;; them. (The runtime classpath check is implicit: under `:test`,
-  ;; Criterium is not on the classpath, so requiring `clj-zig.perf.run`
-  ;; from any test would throw.)
+  ;; The matchers target the `:require` vector syntax so docstring prose
+  ;; naming the namespaces does not trip them. Under :test Criterium is off
+  ;; the classpath, so requiring clj-zig.perf.run from a test would throw.
   (let [src (slurp "bench/clj_zig/perf/shape.clj")]
     (is (not (re-find #"\[\s*clj-zig\.core\b" src))
         "shape.clj must not require clj-zig.core")

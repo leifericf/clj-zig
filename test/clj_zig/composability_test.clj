@@ -3,7 +3,7 @@
             [clj-zig :as zig]
             [clj-zig.core :refer [defnz]]))
 
-;; --- Type builders are ordinary functions over data ---------------------
+;; Type builders are ordinary functions over data
 
 (defn- slice-of [t] [:slice t])
 (defn- const-slice-of [t] [:slice :const t])
@@ -31,7 +31,7 @@
   (is (= 3 (count-needle (byte-array (.getBytes "banana" "UTF-8"))
                          (byte (int \a))))))
 
-;; --- The data pipeline reaches a callable without the macro -------------
+;; The data pipeline reaches a callable without the macro
 
 (deftest the-pipeline-composes-without-the-macro
   (testing "build-spec then fn yields a working native function"
@@ -44,7 +44,7 @@
                                  :signature [x :i64 y :i64 :ret :i64]})]
       (is (re-find #"return x \* y;" (zig/generate-source spec "return x * y;"))))))
 
-;; --- A user macro generates defnz forms ---------------------------------
+;; A user macro generates defnz forms
 
 (defmacro defbinaryz [name op t]
   `(defnz ~name

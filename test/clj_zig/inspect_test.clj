@@ -11,7 +11,7 @@
    :ret :i64]
   "return x + y;")
 
-;; --- Inspection helpers hang off the Var --------------------------------
+;; Inspection helpers hang off the Var
 
 (deftest inspects-a-defined-function-through-its-var
   (testing "the body is returned as written"
@@ -35,7 +35,7 @@
   (testing "the status is a build outcome"
     (is (contains? #{:compiled :cached} (zig/status #'add)))))
 
-;; --- Pure data functions compose the same pipeline ----------------------
+;; Pure data functions compose the same pipeline
 
 (deftest exposes-the-pure-pipeline-functions
   (testing "normalize-type"
@@ -64,7 +64,7 @@
       (is (contains? #{:compiled :cached} (:status artifact)))
       (is (= 5 (sub 8 3))))))
 
-;; --- recompile! and explain ---------------------------------------------
+;; recompile! and explain
 
 (deftest recompile-rebuilds-and-rebinds
   (let [define (fn [body] (eval `(defnz ~'rc [~'x :i64 :ret :i64] ~body)))]
@@ -87,7 +87,7 @@
         (is (str/includes? out "Could not compile defnz"))
         (is (str/includes? out "Zig error:"))))))
 
-;; --- clean! --------------------------------------------------------------
+;; clean!
 
 (deftest clean-removes-the-cache-root
   (let [root ".clj-zig/cache-inspect-test"]

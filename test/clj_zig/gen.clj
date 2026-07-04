@@ -22,7 +22,7 @@
             [clj-zig.layout :as layout]
             [clj-zig.type :as type]))
 
-;; --- Scalar vocabulary --------------------------------------------------
+;; Scalar vocabulary
 
 (def carrier-scalars
   "Primitive carrier scalars. The 128-bit integers cross as a 16-byte
@@ -68,7 +68,7 @@
                (let [hi (pow2 bits)]
                  [0 1 2 (- hi 2) (- hi 1)])))))
 
-;; --- Scalar and value generators ---------------------------------------
+;; Scalar and value generators
 
 (def gen-scalar-type
   "A scalar boundary type with an FFM carrier."
@@ -138,7 +138,7 @@
     :optional (gen/one-of [(gen/return nil) (gen-value-for (:of t))])
     (gen-scalar-value :i64)))
 
-;; --- Type-form generators ----------------------------------------------
+;; Type-form generators
 
 (defn normalized->form
   "Render a normalized boundary type back to a type form, the inverse of
@@ -189,7 +189,7 @@
          :handle      [:handle sub]
          :error-union [:error-union 'Error sub])))))
 
-;; --- Signature generators (the supported subset) -----------------------
+;; Signature generators (the supported subset)
 
 (def gen-arg-type
   "A boundary type valid in argument position and supported end to end."
@@ -252,7 +252,7 @@
             values (gen/vector-distinct (gen/choose 0 999) {:num-elements n})]
     (vec (mapcat (fn [i v] [(symbol (str "m" i)) v]) (range) values))))
 
-;; --- Module file closures (ADR 34 fingerprint) -------------------------
+;; Module file closures (ADR 34 fingerprint)
 
 (def gen-rel-path
   "A relative path within a fake module file closure."
@@ -285,7 +285,7 @@
   [tree]
   (mapv (fn [[path {:keys [content]}]] {:path path :content content}) tree))
 
-;; --- Negative space ----------------------------------------------------
+;; Negative space
 
 (def junk-forms
   "Malformed type forms; `type/normalize` must reject every one."
@@ -304,7 +304,7 @@
 
 (def gen-junk-form (gen/elements junk-forms))
 
-;; --- Structural enumeration --------------------------------------------
+;; Structural enumeration
 
 (def matrix-scalars
   "A representative scalar per category and signedness for the structural

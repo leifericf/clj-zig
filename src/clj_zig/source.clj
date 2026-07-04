@@ -20,9 +20,7 @@
             [clj-zig.layout :as layout]
             [clj-zig.zig :as zig]))
 
-;; --- External `.zig` file resolution -------------------------------------
-;; The candidate-path logic, the co-located namespace file, the declared
-;; namespace header, the entry-fn name, and the one filesystem/classpath read.
+;; External `.zig` file resolution
 
 (def ^:private no-source
   "The value of `*file*` when a form is evaluated with no source file, as
@@ -877,7 +875,7 @@
           wire-decls
           core))))
 
-;; --- File mode: the wrapper calls a user-written `pub fn` ----------------
+;; File mode: the wrapper calls a user-written pub fn
 
 (defn- user-call
   "The Zig expression calling the user's `entry` fn with each binding by
@@ -1128,26 +1126,13 @@
                       (generate-inline spec body)))
         "\n")))
 
-;; --- track-allocations profiling build (ADR 12, ADR 41) -------------------
+;; track-allocations profiling build (ADR 12, ADR 41)
 
 (def ^:private tracking-allocator-block
-  "The counting allocator the profiling build routes every
-  c_allocator call through. Zig 0.16.0 ships no
-  std.heap.TrackingAllocator (it was removed after 0.13), so this is the
-  sanctioned fallback: a std.mem.Allocator vtable wrapper over
-  c_allocator that increments a counter on each allocation event (alloc,
-  or a resize/remap that grows or relocates). Free does not decrement:
-  the bench reads the count after its measured loop to learn how many
-  native allocations the shape issued, not the net live count. The
-  counter is a process-global the per-symbol reset fn zeroes before each
-  shape's measured loop.
-
-  The block uses a private std import (`__clj_zig_tstd`) so it is
-  self-contained whether or not the wrapper already imports std at top
-  level (a non-allocating shape's wrapper has no top-level std). Its
-  c_allocator references spell `__clj_zig_tstd.heap.c_allocator`, NOT
-  `std.heap.c_allocator`, so the body+wrapper rewrite below leaves them
-  untouched."
+  "The counting allocator the profiling build routes c_allocator through
+  (ADR 12, ADR 41). Zig 0.16.0 has no std.heap.TrackingAllocator, so this
+  vtable wrapper over c_allocator is the fallback; it increments on alloc
+  and on a resize/remap that grows."
   (str "const __clj_zig_tstd = @import(\"std\");\n"
        "var __clj_zig_alloc_count: usize = 0;\n"
        "\n"
@@ -1202,28 +1187,10 @@
        "}"))
 
 (defn tracking-wrap
-  "Wrap the rendered wrapper source `src` for the profiling build (the
-  :zig/track-allocations flag). Returns `src` with three changes:
-
-   1. Prepends a counting allocator over c_allocator (Zig
-     0.16.0 has no std.heap.TrackingAllocator; this is the fallback).
-   2. Rewrites every c_allocator reference in `src` to route through the
-      counter, covering both spellings the codegen emits: the inline
-      `std.heap.c_allocator` and the file-mode
-      `@import(\"std\").heap.c_allocator` reconstruction, so both the
-      wrapper-generated code AND the user body's c_allocator calls are
-      counted regardless of source mode.
-  3. Appends per-symbol `__alloc_count_get` / `__alloc_count_reset`
-     export fns the bench reads after each shape's measured loop.
-
-  `symbol` is the wrapper's export symbol. Pure.
-
-  The default codegen path (flag off) never calls this fn, so its output
-  is byte-for-byte unchanged: a production library never sees the wrap,
-  the counting allocator, or the count fns. A profiling build's cache
-  key (ADR 12) is distinct from the default's because
-  :track-allocations enters the options map cache/cache-key hashes, AND
-  the wrapped source differs, so the isolation is double."
+  "Returns `src` wrapped for the profiling build: the counting allocator
+  prepended, both c_allocator spellings rewritten through it, and
+  per-symbol count fns appended. The :track-allocations flag enters the
+  cache key (ADR 12), so the default codegen path is never touched."
   [src symbol]
   (let [rewritten (-> src
                       (str/replace "@import(\"std\").heap.c_allocator" "__clj_zig_alloc")

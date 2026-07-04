@@ -375,10 +375,9 @@
                             :signature (:signature spec)})
                           extra))))
 
-;; --- clojure.spec.alpha projection ---------------------------------------
-;; The boundary spec projected to spec.alpha predicates: a normalized type
-;; becomes a predicate form, a param becomes its argument-side spec, and
-;; `register!` writes the args/ret specs to the registry for a defnz Var.
+;; clojure.spec.alpha projection
+;; The boundary spec projected to spec.alpha predicates: `register!` writes
+;; the args/ret specs to the registry for a defnz Var.
 
 (defn spec-for-type
   "A clojure.spec predicate form for a normalized boundary type.

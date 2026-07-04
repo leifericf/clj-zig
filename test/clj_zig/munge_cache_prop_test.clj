@@ -10,7 +10,7 @@
             [clj-zig.cache :as cache]
             [clj-zig.spec :as spec]))
 
-;; --- Symbol munging -----------------------------------------------------
+;; Symbol munging
 
 (def gen-name-string
   "A namespace or name fragment with the awkward characters munging must
@@ -40,7 +40,7 @@
                  nm-s gen-name-string]
     (= (spec/symbol-name ns-s nm-s) (spec/symbol-name ns-s nm-s))))
 
-;; --- Cache keys ---------------------------------------------------------
+;; Cache keys
 
 (def gen-cache-input
   (gen/hash-map
@@ -74,7 +74,5 @@
                  k  (gen/elements [:spec :body :source :deps :options
                                    :zig-version :target])]
     ;; The sentinel is a value the generators never produce, so the input
-    ;; genuinely changes and the key must change with it. It is a non-empty
-    ;; seqable, so it stays present through the seq-gate that omits an empty
-    ;; :deps (the same gate :aux and :modules pass through).
+    ;; changes and survives the seq-gate that omits an empty :deps.
     (not= (cache/cache-key in) (cache/cache-key (assoc in k [::changed])))))

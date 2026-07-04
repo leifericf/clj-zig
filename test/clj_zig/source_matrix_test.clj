@@ -49,10 +49,8 @@
   [{:keys [ret] sym :symbol}]
   (cond
     (eu-struct? ret)
-    ;; An error-union over a struct combines the error-union out-params with
-    ;; the struct out-pointer; the per-field free shim always appears. The
-    ;; allocator call appears only when the record carries buffer fields; a
-    ;; scalar-only record emits a no-op shim body.
+    ;; The per-field free shim always appears; the allocator call appears only
+    ;; when the record carries buffer fields.
     (let [layout (:layout (:of ret))
           has-buffers? (some :target (:fields layout))]
       (cond-> ["__err: [*]u8" "__errlen: *usize"

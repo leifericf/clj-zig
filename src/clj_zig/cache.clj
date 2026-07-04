@@ -22,7 +22,7 @@
             [clojure.string :as str]
             [clj-zig.fs :as fs]))
 
-;; --- Pure: hashing and the cache key -------------------------------------
+;; Pure: hashing and the cache key
 
 (defn- canonical
   "A deterministic, order-independent string for `x`, so the hash does
@@ -85,7 +85,7 @@
                  (present? aux-files) (assoc :aux aux-files)
                  (present? modules)   (assoc :modules modules))))
 
-;; --- Pure: external-module fingerprint primitives (ADR 34) ----------------
+;; Pure: external-module fingerprint primitives (ADR 34)
 
 (defn dir-signature
   "A cheap, order-independent signature over a module's file closure, keyed
@@ -126,7 +126,7 @@
   [{:keys [git/sha root]}]
   (fingerprint {:git/sha sha :root root}))
 
-;; --- Pure: paths ---------------------------------------------------------
+;; Pure: paths
 
 (defn- extension-for-target
   "The shared-library suffix for a target triple, without the dot."
@@ -210,7 +210,7 @@
     (str native-resource-root "/" target "/" ns "/" name "-" hash
          "/lib" name "-" hash "." (extension-for-target target))))
 
-;; --- Pure: external-module roots -----------------------------------------
+;; Pure: external-module roots
 
 (defn- module-root
   "The local source path a module reference compiles from, or nil when none
@@ -234,7 +234,7 @@
                             m))
                         {} modules)))
 
-;; --- Effectful: environment -----------------------------------------------
+;; Effectful: environment
 
 (defn- var-symbol [spec]
   (symbol (str (:ns spec)) (str (:name spec))))
@@ -254,7 +254,7 @@
                    :else                       arch)]
     (str os "-" arch)))
 
-;; --- Effectful: external-module fingerprint over the filesystem (ADR 34) --
+;; Effectful: external-module fingerprint over the filesystem (ADR 34)
 
 (defn- closure-files
   "The `.zig` files in a module root's directory tree. The closure is a
@@ -322,7 +322,7 @@
     (reduce-kv (fn [m name ref] (assoc m name (module-fingerprint ref io)))
                {} modules))))
 
-;; --- Effectful: artifact resolution ---------------------------------------
+;; Effectful: artifact resolution
 
 (defn library-present?
   "True when a usable library exists. A zero-byte file (left by a failed

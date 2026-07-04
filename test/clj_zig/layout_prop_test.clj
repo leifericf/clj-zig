@@ -16,7 +16,7 @@
   (let [{:keys [category bits]} (type/scalars (:name t))]
     (if (= :bool category) 1 (quot bits 8))))
 
-;; --- Struct layout invariants ------------------------------------------
+;; Struct layout invariants
 
 (defspec offsets-strictly-increase 200
   (prop/for-all [fields g/gen-field-list]
@@ -52,7 +52,7 @@
            (= (map (comp type/normalize second) pairs)
               (map :type (:fields desc)))))))
 
-;; --- Enum descriptor and bridge ----------------------------------------
+;; Enum descriptor and bridge
 
 (defspec enum-descriptor-preserves-members 200
   (prop/for-all [members g/gen-enum-members]

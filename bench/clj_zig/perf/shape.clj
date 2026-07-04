@@ -24,7 +24,7 @@
   owned/struct return, NOT a separate canonical shape; that keeps the
   count at seven.")
 
-;; --- shared structure -----------------------------------------------------
+;; shared structure
 
 (def required-shape-keys
   "The keys every shape record carries. Asserted by the Tier-0 unit
@@ -47,21 +47,8 @@
   [:scalar-passthrough :struct-by-value :enum :slice-arg
    :string :owned-return :handle])
 
-;; --- the seven shapes -----------------------------------------------------
-;;
-;; Bodies are TRIVIAL by design: this feature measures per-call
-;; OVERHEAD, not user computation (the governing principle: MEASUREMENT
-;; ONLY). Each body is the shortest form that exercises its contract
-;; kind. The scalar, struct, enum, and slice bodies do not allocate.
-;; The string, owned, and handle bodies DO allocate because their
-;; contracts require a buffer or a Box; the c_allocator calls in those
-;; bodies are the minimal contract-required allocation. Their floors
-;; invoke the free shim (auto-emitted for :string/:owned-return, a
-;; sibling :free-body for :handle) once per call so the Criterium loop
-;; leaks nothing; the body-leak guard in clj-zig.perf.stats still flags
-;; those three shapes' floor measurements as :body-leak-suspect because
-;; the floor now includes the alloc/free round-trip, which is the
-;; expected and honest outcome, not a defect.
+;; the seven shapes
+;; Bodies are trivial; the harness measures per-call overhead (ADR 16).
 
 (def ^:private scalar-passthrough
   "Echo an i64 straight back. The body does no work and allocates
@@ -129,9 +116,7 @@
                    :args     [:c-int]
                    :out-args 0}
    :arg-fn        (fn [] [:clubs])
-   ;; :clubs is member 0 of the enum (see :setup); the floor crosses it
-   ;; as the i32 backing value, so the raw scalar is the literal 0. The
-   ;; shell boxes it to Integer for the :c-int carrier width.
+    ;; :clubs is enum member 0 (see :setup); crossed as the i32 backing value.
    :floor-args-fn (fn [] [0])})
 
 (def ^:private slice-arg

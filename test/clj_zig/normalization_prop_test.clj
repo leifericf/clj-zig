@@ -10,7 +10,7 @@
             [clj-zig.signature :as signature]
             [clj-zig.type :as type]))
 
-;; --- Type normalization ------------------------------------------------
+;; Type normalization
 
 (defspec type-normalization-is-deterministic 200
   (prop/for-all [form (g/gen-type-form)]
@@ -35,7 +35,7 @@
                                            :handle :error-union) (:kind t)
                                           (first form)))))))
 
-;; --- Signature normalization -------------------------------------------
+;; Signature normalization
 
 (defspec signature-normalization-is-deterministic 200
   (prop/for-all [sig g/gen-signature]

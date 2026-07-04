@@ -6,7 +6,7 @@
 
 (defn- bytes-of [^String s] (.getBytes s "UTF-8"))
 
-;; --- Owned returns ------------------------------------------------------
+;; Owned returns
 
 (defnz shout
   [s [:slice :const :u8]
@@ -28,7 +28,7 @@
   (testing "an owned slice of another scalar copies element values"
     (is (= [2.0 4.0 6.0] (doubled (double-array [1.0 2.0 3.0]))))))
 
-;; --- Borrowed returns ---------------------------------------------------
+;; Borrowed returns
 
 (defnz rest-of
   [s [:slice :const :u8]
@@ -41,7 +41,7 @@
   (testing "an empty borrowed view is an empty vector"
     (is (= [] (rest-of (byte-array (bytes-of "x")))))))
 
-;; --- Generated form -----------------------------------------------------
+;; Generated form
 
 (deftest an-owned-return-emits-a-free-shim
   (let [src (zig/generated-source #'shout)]
@@ -50,7 +50,7 @@
   (testing "a borrowed return frees nothing, so it emits no shim"
     (is (not (str/includes? (zig/generated-source #'rest-of) "__free")))))
 
-;; --- Rejections ---------------------------------------------------------
+;; Rejections
 
 (deftest ownership-wrappers-are-return-only-and-slice-only
   (testing "an ownership wrapper in argument position is rejected"

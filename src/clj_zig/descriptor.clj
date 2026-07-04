@@ -44,18 +44,9 @@
     {:optimize (name mode)}))
 
 (defn- track-allocations-option
-  "The `{:track-allocations true}` entry for a descriptor's
-  `:zig/track-allocations`, or nil when it is absent or false. The flag
-  is a profiling-build switch parallel to `:zig/optimize` (ADR 41): when
-  true the codegen wraps the wrapper's allocator in a counting allocator
-  and emits a per-shape allocation count the bench reads. The flag MUST
-  enter the content hash (ADR 12) so a profiling build gets its own cache
-  key and never pollutes a default library; that isolation holds by
-  construction because `cache/cache-key` hashes the whole :options map.
-  Defaults off (nil), so a production library never sees the wrap. The
-  value must be a boolean; a non-boolean throws
-  `:clj-zig/bad-track-allocations` so a typo (a string, a number) fails
-  before the compile rather than silently behaving as truthy."
+  "The `{:track-allocations true}` entry for `:zig/track-allocations`, or
+  nil when absent/false. A non-boolean throws
+  `:clj-zig/bad-track-allocations`."
   [descriptor]
   (let [v (:zig/track-allocations descriptor)]
     (when (some? v)

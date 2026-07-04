@@ -28,7 +28,7 @@
   {'Point (layout/describe 'Point '[x :f64 y :f64])
    'Buf   (layout/describe 'Buf '[media :string] {})})
 
-;; --- Rejections that surface through build-spec -------------------------
+;; Rejections that surface through build-spec
 
 (def spec-rejections
   "Each row is a `build-spec` input paired with the code it must raise.
@@ -85,13 +85,9 @@
    {:code :clj-zig/unsupported-bytes       :signature '[a [:bytes [:slice :u8]] :ret :i64]}
    {:code :clj-zig/unsupported-bytes       :signature '[:ret [:bytes :u8]]}
    {:code :clj-zig/unsupported-bytes       :signature '[:ret [:bytes [:slice :i64]]]}
-    ;; a slice/array of a scalar struct is a valid element now (crossed by
-    ;; value), so the element-rejection rows name the shapes still rejected:
-    ;; a pointer to any named type (a :ptr/:manyptr element must be scalar),
-    ;; an argument slice/array of a buffer-carrying struct (the marshaller
-    ;; writes extern slots and cannot lay out a nice struct's buffers there),
-    ;; a borrowed slice of one (the wrapper's wire slab would leak with no
-    ;; free shim), and a nested indirection.
+     ;; Element-rejection rows: a pointer to a named type, an argument
+     ;; slice/array of a buffer-carrying struct (extern slots cannot hold its
+     ;; buffers), a borrowed buffer slice (no free shim would leak), a nested indirection.
     {:code :clj-zig/unsupported-element     :signature '[xs [:ptr Point] :ret :i64]
      :types matrix-types}
     {:code :clj-zig/unsupported-element     :signature '[xs [:manyptr Point] :ret :i64]
@@ -143,10 +139,8 @@
                            :signature '[:ret :string]})))))
 
 (deftest optional-carrier-scalar-is-not-a-rejection
-  ;; A carrier scalar under :optional lowers to a nullable pointer-to-const
-  ;; cell, so build-spec accepts it in argument and return position and
-  ;; returns no diagnostic. (A carrierless scalar and a slice under
-  ;; :optional are rejected -- see the matrix above.)
+  ;; A carrier scalar under :optional is accepted; a carrierless scalar or a
+  ;; slice is rejected (see the matrix above).
   (testing "[:optional :i64] in argument, return, or both yields no diagnostic"
     (is (nil? (build-code {:ns 'clj-zig.matrix :name 'f
                            :signature '[x [:optional :i64] :ret :i64]})))
@@ -157,15 +151,12 @@
     (is (nil? (build-code {:ns 'clj-zig.matrix :name 'f
                            :signature '[x [:optional :f64] :ret [:optional :bool]]})))))
 
-;; --- Rejections from the layout describers ------------------------------
+;; Rejections from the layout describers
 
 (deftest layout-rejection-matrix
   (is (= :clj-zig/malformed-fields    (code-from #(layout/describe 'T '[a :i64 b]))))
-  ;; A slice is a valid buffer field now (it expands to a {ptr, len} pair),
-  ;; and a nested struct is a valid by-value field when its inner type is
-  ;; declared and scalar-only, so the rejection rows name the field types
-  ;; the wire struct still cannot carry: an undeclared named type, an
-  ;; unbounded pointer, and a carrierless scalar.
+  ;; The rejection rows name field types the wire struct cannot carry: an
+  ;; undeclared named type, an unbounded pointer, and a carrierless scalar.
   (is (= :clj-zig/unknown-field       (code-from #(layout/describe 'T '[p Point]))))
   (is (= :clj-zig/unsupported-field   (code-from #(layout/describe 'T '[p [:ptr :i64]]))))
   (is (= :clj-zig/unsupported-field   (code-from #(layout/describe 'T '[p [:manyptr :i64]]))))
@@ -183,7 +174,7 @@
   (is (nil? (code-from #(layout/describe 'T '[xs [:owned [:slice :i64]]]))))
   (is (nil? (code-from #(layout/describe 'T '[xs [:borrowed [:slice :i64]]])))))
 
-;; --- Rejections from external-module declarations -----------------------
+;; Rejections from external-module declarations
 
 (def module-rejections
   "Each row is a `descriptor/zig-modules` descriptor paired with the code its
@@ -201,7 +192,7 @@
     (testing (pr-str descriptor)
       (is (= code (code-from #(descriptor/zig-modules descriptor)))))))
 
-;; --- Generative breadth: junk in argument position is rejected ----------
+;; Generative breadth: junk in argument position is rejected
 
 (defspec junk-argument-types-are-rejected 200
   (prop/for-all [junk g/gen-junk-form]

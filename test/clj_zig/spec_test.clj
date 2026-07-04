@@ -295,7 +295,7 @@
             (is (= :slice (:indirection d)))
             (is (= {:kind :slice} (:element d)))))))))
 
-;; --- clojure.spec.alpha projection ---------------------------------------
+;; clojure.spec.alpha projection
 
 (deftest spec-for-type-maps-scalars
   (is (= 'int? (spec/spec-for-type {:kind :scalar :name :i64})))

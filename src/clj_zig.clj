@@ -19,7 +19,7 @@
             [clj-zig.spec :as spec]
             [clj-zig.type :as type]))
 
-;; --- Inspection (hangs off a Var) ---------------------------------------
+;; Inspection (hangs off a Var)
 
 (defn source
   "The Zig body the function was defined with."
@@ -91,7 +91,7 @@
   ([] (cache/clean!))
   ([root] (cache/clean! root)))
 
-;; --- Pure data pipeline -------------------------------------------------
+;; Pure data pipeline
 
 (defn normalize-type
   "Normalize a boundary type form to its canonical data shape."
@@ -114,7 +114,7 @@
   ([spec body] (source/generate spec body))
   ([spec body opts] (source/generate spec body opts)))
 
-;; --- Shell pipeline -----------------------------------------------------
+;; Shell pipeline
 
 (defn compile!
   "Compile or reuse the native library for `spec` and `body`, returning the

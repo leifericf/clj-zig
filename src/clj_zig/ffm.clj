@@ -23,10 +23,9 @@
 (def ^:private two-to-64-minus-1 (.subtract two-to-64 BigInteger/ONE))
 (def ^:private two-to-128 (.shiftLeft BigInteger/ONE 128))
 
-;; The C `__int128` ABI: a 16-byte value passed and returned by value as a
-;; pair of 64-bit halves. FFM represents it as a struct of two JAVA_LONGs;
-;; the carrier is a MemorySegment, and a by-value return makes FFM prepend a
-;; SegmentAllocator to the downcall handle. A probe confirmed the round-trip.
+;; The C `__int128` ABI: a 16-byte value passed and returned as two 64-bit
+;; halves. FFM carries it as a struct of two JAVA_LONGs in a MemorySegment;
+;; a by-value return makes FFM prepend a SegmentAllocator to the handle.
 (def ^:private i128-layout
   (MemoryLayout/structLayout (into-array MemoryLayout [ValueLayout/JAVA_LONG ValueLayout/JAVA_LONG])))
 
@@ -70,10 +69,7 @@
 
 ;; An opaque native resource handle: the symbol naming its Zig type and
 ;; the native pointer. The caller threads it back across calls and frees
-;; it explicitly; it never inspects the pointer. A deftype (not
-;; defrecord) so each return allocates one instance and no backing
-;; PersistentArrayMap; the type and segment fields are immutable and
-;; accessed by name at the boundary.
+;; it explicitly; it never inspects the pointer.
 (deftype Handle [^Object type ^MemorySegment segment])
 
 (defmethod print-method Handle [h ^java.io.Writer w]
@@ -154,14 +150,9 @@
   (let [ret (:ret spec)
         {:keys [eu? eu-struct? owned-rec? owned-slice? struct-ret? stream?]}
         (classify-return ret)
-        ;; An error-union wrapper carries two trailing out-params, the
-        ;; error-name buffer and its length; a struct return carries one
-        ;; out-pointer the result is written through; an owned-slice,
-        ;; :bytes, or :string return carries two out-params for the slice's
-        ;; pointer and length; an owned or borrowed record carries one
-        ;; out-pointer to its wire struct. An error-union over a struct
-        ;; combines all three: the error-name buffer, its length, AND the
-        ;; struct out-pointer. All four export `void`.
+        ;; Trailing out-params per ABI return shape (all export void):
+        ;; error-union adds errbuf+errlen; struct-return and owned-record
+        ;; add one out-pointer; owned-slice/:bytes/:string add ptr+len.
         extra        (cond eu-struct?                     [ValueLayout/ADDRESS ValueLayout/ADDRESS ValueLayout/ADDRESS]
                            eu?                            [ValueLayout/ADDRESS ValueLayout/ADDRESS]
                            owned-slice?                   [ValueLayout/ADDRESS ValueLayout/ADDRESS]
@@ -597,11 +588,9 @@
     :optional (let [pointed (-> param :type :of)]
                  (cond
                    (nil? arg) {:carriers [MemorySegment/NULL]}
-                   ;; A carrier scalar lowers to a nullable pointer-to-const
-                   ;; one-element cell: nil is NULL, a present value is copied
-                   ;; into a fresh cell in the call arena and its address is
-                   ;; passed. The cell is const (`?*const T`), so there is no
-                   ;; copy-back; the arena owns it for the duration of the call.
+                    ;; An optional scalar lowers to `?*const T`: nil is NULL,
+                    ;; a present value is copied into a call-arena cell whose
+                    ;; address is passed. Const, so no copy-back.
                    (= :scalar (:kind pointed))
                    (let [layout (value-layout pointed)
                          seg    ^MemorySegment (.allocate ^Arena arena
@@ -774,10 +763,7 @@
                           (let [v (.get m kw)]
                             (when (nil? v) (throw-missing-field descriptor-name field-name))
                             (.set seg ValueLayout/JAVA_BOOLEAN (long off) (boolean v))))))))]
-      (let [;; Reduce-built chain so each field-writer is captured directly
-            ;; in a closure (no per-call nth, no loop counter). The chain
-            ;; threads `(seg, m)` through each writer.
-            chain (reduce (fn [next-k fw]
+       (let [chain (reduce (fn [next-k fw]
                             (fn [seg m]
                               (fw seg m)
                               (next-k seg m)))
@@ -801,20 +787,9 @@
 
 (defn- build-struct-reader
   "Build a tight reader closure for an all-scalar struct, or nil if any
-  field is a buffer field, a nested struct, or an enum field. The closure
-  captures each field's keyword, byte offset, and a scalar-specialized
-  `.get` plus coercion, so the per-call cost is one `object-array` alloc
-  plus a tight scalar read per field with no `case` dispatch and no
-  `coerce-scalar` call.
-
-  Each field-writer takes `(seg, arr, idx)` and writes its keyword at
-  `arr[idx*2]` and its value at `arr[idx*2+1]`, replacing the prior
-  transient-map `assoc!` path (one map alloc instead of two, no
-  `TransientArrayMap.indexOf` per field). The reader closure allocates
-  the array, runs the chain, and constructs the map via
-  `PersistentArrayMap/createWithCheck` (a duplicate-key check that's
-  O(n²) but trivially cheap for the small all-scalar structs this
-  path serves)."
+  field is a buffer field, a nested struct, or an enum field. Each field's
+  keyword, byte offset, and scalar-specialized `.get` are captured at
+  build time."
   [descriptor]
   (when (every? (fn [f]
                   (and (not (:target f))
@@ -829,12 +804,9 @@
                    {:keys [category bits signed?]} (type/scalar-info (:name t))
                    off      (:offset f)
                    kw       (keyword (:name f))]
-               ;; The `^Object` hint on each value expression is load-bearing:
-               ;; `aset` on `^objects` has multiple `RT/aset` overloads (one
-               ;; per primitive array type plus the Object[] one), and the
-               ;; Clojure compiler cannot disambiguate from a primitive value
-               ;; without the explicit cast to Object. Without the hint, the
-               ;; call resolves reflectively per call (a 50x slowdown).
+                ;; The `^Object` hint is load-bearing: `aset` on `^objects`
+                ;; has per-primitive-type overloads the compiler cannot
+                ;; disambiguate from a primitive. Without it: reflective (50x).
                (case category
                  :int   (case bits
                           8  (if signed?
@@ -879,9 +851,6 @@
                  :bool  (fn field-write [^MemorySegment seg ^objects arr ^long idx]
                           (aset arr idx kw)
                           (aset arr (inc idx) ^Object (boolean (.get seg ValueLayout/JAVA_BOOLEAN (long off)))))))))]
-      ;; Reduce-built chain so each field-writer is captured directly in
-      ;; a closure (no per-call nth, no loop counter). The chain threads
-      ;; `(seg, arr)` and bumps the array base index (`idx*2`) per link.
       (let [nfields (count field-writers)
             arr-size (* 2 (long nfields))
             chain (reduce (fn [next-k fw-idx]
@@ -1139,10 +1108,9 @@
   (String. (read-bytes addr len) StandardCharsets/UTF_8))
 
 (def ^:private enum-index-cache
-  ;; Per enum `:values`, the `{kw->value value->kw}` lookup maps, so repeated
-  ;; marshal/unmarshal of the same enum is O(1) rather than an O(n) scan per
-  ;; element. Keyed by the `:values` vector (structural equality); growth is
-  ;; bounded by the number of distinct enum definitions.
+  ;; Per enum `:values`, the `{kw->value value->kw}` lookup maps. Keyed by
+  ;; the `:values` vector (structural equality); growth is bounded by the
+  ;; number of distinct enum definitions.
   (atom {}))
 
 (defn- enum-index
@@ -1380,10 +1348,7 @@
 
 (defn- slice-aware-chain
   "Build a 3-arg `(arena, carriers, args)` fn that runs each slice-aware
-  writer at its pre-computed offset, replacing the invoker's per-call
-  loop over `(nth writers i)` and the offset accumulator. Each writer is
-  captured directly in a closure so the JIT sees a monomorphic call at
-  every level."
+  writer at its pre-computed offset."
   [writers counts]
   (let [offs (reductions (fn [acc c] (+ acc c)) 0 (drop-last (seq counts)))
         indexed (map vector writers offs (range))]
@@ -1396,12 +1361,7 @@
 
 (defn- build-marshal-chain
   "Build a 3-arg `[arena args carriers]` fn that calls each per-bind
-  marshal fn at its pre-computed offset, replacing the general invoker's
-  per-call loop over `(nth marshal-fns i)` with the offset accumulator.
-  Each link captures one marshal fn, its offset, and its arg index, so
-  the per-call body is a direct closure call with no loop counter, no
-  `nth` of the marshal-fns vector per call, and no per-call offset
-  arithmetic. Mirrors `slice-aware-chain`'s pattern."
+  marshal fn at its pre-computed offset. Mirrors `slice-aware-chain`."
   [marshal-fns carrier-counts base-offset]
   (let [offs    (reductions (fn [acc c] (+ acc c))
                             (long base-offset)
@@ -1526,13 +1486,7 @@
       :optional true
       false)))
 
-;; --- general-path return dispatch ----------------------------------------
-;; The non-scalar return shapes each need their own downcall choreography:
-;; where to write out-params, how to read the result, and whether a free
-;; shim runs in a finally. Each helper below takes the per-bind return
-;; context (`ctx`) plus the per-call arena, marshalled carriers, and
-;; copy-back thunk, and runs exactly one shape. `bind` reduces to a
-;; dispatch table over them.
+;;;; general-path return dispatch
 
 (defn- invoke-eu-struct
   "Run the error-union-over-a-struct downcall. The union combines its
@@ -1604,10 +1558,9 @@
   "Run an owned or borrowed record downcall. The result writes its fields
   through a caller-allocated wire-struct out-segment; clj-zig reads each
   field, then frees owned memory through the per-field shim. The free runs
-  in a finally so a read fault cannot leak any buffer the body allocated
-  (mirror of the owned-record free-in-finally discipline). A borrowed record has no shim. The result rebuilds
-  as a record via its map-> factory when the named type is a defrecordz,
-  else a plain map.
+  in a finally so a read fault cannot leak any buffer the body allocated.
+  A borrowed record has no shim. The result rebuilds as a record via its
+  map-> factory when the named type is a defrecordz, else a plain map.
 
   Carriers is the thread-local base array of size `base-count + 1`; the
   trailing slot is filled with the out-segment before the invoke."
@@ -1634,9 +1587,8 @@
   UTF-8 with replacement, any other slice as a vector), then frees owned
   memory through the shim. The free runs in a finally so a read fault (a
   wild pointer, or an OOM on a huge length) cannot leak the slice the body
-  allocated (ADR 21, mirror of the owned-record free-in-finally discipline). copy-back! runs inside the same
-  try: the native call already allocated the owned slice, so a copy-back
-  fault must still free. A borrowed return has no shim.
+  allocated (ADR 21). copy-back! runs inside the same try: the native call
+  already allocated the owned slice, so a copy-back fault must still free. A borrowed return has no shim.
 
   Carriers is the thread-local base array of size `(:n-base ctx) + 2`; the
   trailing two slots are filled with pout and lout before the invoke."
@@ -1730,12 +1682,11 @@
 
 (defn- make-stream-reducible
   "Return an `IReduceInit` that drives the iteration from `iter-addr`,
-  calling `next-handle` in a loop (writing the element to an out-pointer
-  and returning a bool), applying the reduction, and calling `free-handle`
-  in a finally so a fault cannot leak the iterator (ADR 50). The native
-  iterator is freed ONLY when the reducible is reduced, so a caller that
-  obtains it and discards it without reducing leaks it; reduce it (e.g.
-  with `into`) or do not hold the reducible."
+  applying the reduction and calling `free-handle` in a finally so a
+  fault cannot leak the iterator (ADR 50). The native iterator is freed
+  ONLY when the reducible is reduced, so a caller that obtains it and
+  discards it without reducing leaks it; reduce it (e.g. with `into`)
+  or do not hold the reducible."
   [iter-addr next-handle free-handle ret elem-layout]
   (let [elem-type (:of ret)]
     (reify
@@ -1856,13 +1807,9 @@
                            :else 0)
         total        (+ base-offset n-base n-trailing)
         has-mutable-args? (some param-may-copy-back? params)
-        ;; Cache a spreader handle once per bind so the call site is a
-        ;; single `.invokeExact` with a fixed `(Object[]) Object` signature.
-        ;; `invokeWithArguments` re-derives the spreader and its MethodType
-        ;; and Class[] on every call; `asType` widens the return to Object
-        ;; (a primitive return boxes once at the seam, a constant cost well
-        ;; under the re-derivation) so one Clojure call site covers every
-        ;; return shape.
+        ;; Cache the spreader once per bind: `invokeWithArguments`
+        ;; re-derives the spreader and its MethodType per call. `asType`
+        ;; widens the return to Object so one call site covers all returns.
         spreader-arity (cond
                          (or scalar-path? enum-path?) arity
                          slice-path?                 (int slice-total)
@@ -1872,12 +1819,9 @@
                                         ^int spreader-arity)
                            (.asType (MethodType/methodType
                                      Object (into-array Class [obj-array-class])))))
-        ;; The struct desc and a compiled-or-fallback reader for the
-        ;; return-side struct, captured at bind time so the invoke helpers
-        ;; skip the per-call `(compiled-struct-reader desc)` cache lookup
-        ;; (a `find` on the atom that allocates a MapEntry each call).
-        ;; nil for non-struct returns; the helpers that read a struct are
-        ;; the only ones that touch it.
+        ;; The struct desc and reader captured at bind time so the invoke
+        ;; helpers skip the per-call cache lookup. nil for non-struct
+        ;; returns; only struct-reading helpers touch it.
         struct-desc   (cond
                         struct-ret?                       (:layout ret)
                         (or owned-rec? eu-struct? opt-struct?) (-> ret :of :layout)
@@ -1885,14 +1829,9 @@
         struct-reader (when struct-desc
                         (or (compiled-struct-reader struct-desc)
                             (fn fallback-reader [seg] (read-struct seg struct-desc))))
-        ;; A per-thread pre-allocated out-segment for the struct-return
-        ;; shapes, allocated from the JVM-lifetime global arena so it is
-        ;; reused across calls instead of allocated per call from the
-        ;; pooled confined arena (saves a `SegmentFactories$1` plus a
-        ;; `NativeMemorySegmentImpl` per call). Only the pool-enabled
-        ;; path uses the pool; the disabled path keeps per-call
-        ;; allocation so each call's arena owns its out-segment for the
-        ;; duration.
+        ;; A per-thread out-segment for struct-return shapes, allocated
+        ;; from the JVM-lifetime global arena (pool-enabled path only);
+        ;; the disabled path allocates per call so the arena owns it.
         struct-out-size  (when struct-desc (long (:size struct-desc)))
         struct-out-align (when struct-desc (long (:align struct-desc)))
         struct-out-tl    (when (and pool-enabled struct-out-size)
@@ -1964,21 +1903,7 @@
        :has-mutable-args? has-mutable-args?
        :i128-ret?       i128-ret?}))
 
-;; --- Thread-local arena pooling for the call path ------------------------
-;; With the arena pool on (the default), a thread-local confined arena is
-;; reused across calls instead of creating and closing one per call. The
-;; arena is refreshed (closed and replaced) every refresh-interval calls
-;; to bound its growth. The pool defaults on because the per-call
-;; open/close is a measurable fraction of the call once the downcall
-;; spreader is cached; pass -Dclj-zig.arena-pool=false to disable.
-;;
-;; The pool entry is a deftype with two immutable final fields: the arena
-;; reference and a one-element `long[]` counter. Clojure's deftype marks
-;; `^:unsynchronized-mutable` fields package-private, which Clojure's own
-;; reflective `(.field instance)` accessor cannot reach, so the counter
-;; is held in a `long[]` the entry exposes as an immutable reference; the
-;; per-call increment mutates the array element via `aset`, no
-;; PersistentArrayMap allocation per call.
+;;;; Thread-local arena pooling
 
 (deftype PoolEntry [^Arena arena
                     ^longs counter])
@@ -2076,23 +2001,12 @@
 
   A scalar-only signature (every param and the return a plain scalar) takes
   a hot path that opens NO confined arena and does no per-arg marshalling
-  bookkeeping -- it coerces directly into a thread-local carrier array and
-  invokes -- because the arena is dead weight when nothing crosses as a
-  native segment. Every other signature keeps the general path, whose
-  confined arena holds the native copies of slice/pointer/struct args for
-  the call (ADR 37/39). With `-Dclj-zig.arena-pool=true` the arena is a
-  pooled thread-local one reused across calls (`with-pooled-arena`), so its
-  lifetime is logically call-bounded but physically extended.
-
-  The general path fills a pre-sized thread-local carrier array through
-  `marshal-arg-into!` and dispatches the return through `invoke-*` helpers
-  that fill the trailing out-seg slots in place. The choreography avoids
-  the per-call `mapv` of marshalled maps, the `mapcat :carriers` lazy seq,
-  the `copy-back!` closure, and the `concat`+`object-array` alloc each
-  helper used to do; the per-call allocation surface is now the arena, the
-  out-segments themselves, and any owned/buffer resource the body allocates.
-  The arena pool defaults on; `-Dclj-zig.arena-pool=false` restores the
-  per-call confined arena."
+  bookkeeping; it coerces directly into a thread-local carrier array and
+  invokes. Every other signature keeps the general path, whose confined
+  arena holds the native copies of slice/pointer/struct args for the call
+  (ADR 37/39). With `-Dclj-zig.arena-pool=true` the arena is a pooled
+  thread-local one reused across calls (`with-pooled-arena`), so its
+  lifetime is logically call-bounded but physically extended."
   [spec library-path]
   (let [{:keys [spreader params ret arity invoke-ctx next-h free-h elem-lay var-sym
                 scalar? enum? enum-coercions scalar-coercions carriers-tl
@@ -2137,13 +2051,8 @@
         (pool-invoker var-sym arity arena-fn))
 
        :else
-       (let [;; Specialize the per-call dispatch to the bind's single return
-             ;; shape. The general invoker used to run a `(cond stream? ...
-             ;; eu-struct? ... ...)` walk per call; that's dead work since
-             ;; exactly one branch ever fires for a given bind. Capturing the
-             ;; branch as `dispatch` at bind time leaves the per-call body
-             ;; with one direct invoke, no cond walk.
-             dispatch (cond
+        (let [;; dispatch is specialized to the bind's single return shape.
+              dispatch (cond
                         stream?                      (fn stream-dispatch [_arena ^objects carriers copy-back!]
                                                        (let [iter-addr (.invokeExact ^MethodHandle spreader ^objects carriers)]
                                                          (copy-back!)
@@ -2162,13 +2071,7 @@
                                                        (invoke-struct-return invoke-ctx _arena carriers copy-back!))
                         :else                        (fn scalar-dispatch [_arena ^objects carriers copy-back!]
                                                        (invoke-scalar invoke-ctx _arena carriers copy-back!)))
-             ;; Split the arena-fn by `has-mutable-args?` at bind time. The
-             ;; no-mutable-args branch (struct-by-value, const slices, etc.)
-             ;; runs a pre-built marshal chain -- no per-call loop, no `nth`
-             ;; of the marshal-fns vector, no offset accumulator -- and uses
-             ;; the constant `noop-copy-back!`. The mutable-args branch
-             ;; keeps the per-call loop and copy-back collection.
-             arena-fn (if has-mutable-args?
+              arena-fn (if has-mutable-args?
                         (fn general-arena-fn-mutable [^Arena arena args]
                           (let [^objects carriers (.get ^ThreadLocal gen-carriers-tl)
                                 base-offset (long gen-base-offset)

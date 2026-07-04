@@ -35,11 +35,8 @@
       (is (nil? (:track-allocations opts))))))
 
 (deftest track-allocations-yields-a-distinct-cache-key
-  ;; ADR 12 (content-addressed artifacts): the flag enters the options
-  ;; map, and cache-key hashes the whole options map, so a profiling
-  ;; build gets its own key by construction and never reuses a default
-  ;; library. Pinned here so a regression that drops the flag from the
-  ;; hash surfaces as a test failure, not a polluted default library.
+  ;; ADR 12: the flag enters the options map, so cache-key gives a profiling
+  ;; build its own key and never reuses a default library.
   (let [base {:spec     {:ns 'app.core :name 'boxed}
               :body     "return x;"
               :source   "export fn x() void {}"

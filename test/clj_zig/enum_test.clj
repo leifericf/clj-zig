@@ -19,7 +19,7 @@
     (is (:clj-zig/type-layout (meta #'ParseStatus)))
     (is (= "The outcome of parsing one byte." (:doc (meta #'ParseStatus))))))
 
-;; --- An enum as a return ------------------------------------------------
+;; An enum as a return
 
 (defnz classify
   [c :u8
@@ -31,7 +31,7 @@
   (is (= :ok (classify 5)))
   (is (= :invalid (classify 50))))
 
-;; --- An enum as an argument ---------------------------------------------
+;; An enum as an argument
 
 (defnz advance
   [s ParseStatus
@@ -51,7 +51,7 @@
   (is (str/includes? (zig/generated-source #'classify)
                      "const ParseStatus = enum(i32) {")))
 
-;; --- A backed enum (u8 tag) ---------------------------------------------
+;; A backed enum (u8 tag)
 
 (defenumz CompactTag
   [red 0
@@ -79,7 +79,7 @@
     (is (str/includes? (zig/generated-source #'flag-for)
                        "const CompactTag = enum(u8) {"))))
 
-;; --- Slices and arrays of enums -----------------------------------------
+;; Slices and arrays of enums
 
 (defnz classify-batch
   "Classify each byte as a ParseStatus, returned as an owned slice."

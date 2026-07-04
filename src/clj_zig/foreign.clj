@@ -40,12 +40,9 @@
            (java.lang.invoke MethodHandle MethodHandles MethodType)
            (java.nio.charset StandardCharsets)))
 
-;; --- linker and layout shorthands ---------------------------------------
-;; The native linker is a process-wide, thread-safe singleton; bind it
-;; once. The layout shorthands let a caller describe a C signature without
-;; importing `ValueLayout`, keeping the FFM surface in this one namespace.
-;; They are interned `ValueLayout` constants, so they are also safe cache
-;; keys (see `downcall`).
+;; linker and layout shorthands
+;; The linker is a process-wide singleton; the layouts are interned
+;; ValueLayout constants, so they are safe cache keys (see `downcall`).
 
 (def ^Linker linker (Linker/nativeLinker))
 
@@ -60,7 +57,7 @@
 (def c-double "JAVA_DOUBLE: a C `double`/`f64` carrier."            ValueLayout/JAVA_DOUBLE)
 (def c-ptr    "ADDRESS: a C pointer / opaque handle carrier."       ValueLayout/ADDRESS)
 
-;; --- describing a signature ---------------------------------------------
+;; describing a signature
 
 (defn descriptor
   "Build a `FunctionDescriptor` from `ret` (a `ValueLayout` -- use the
@@ -74,7 +71,7 @@
       (FunctionDescriptor/ofVoid args)
       (FunctionDescriptor/of ^MemoryLayout ret args))))
 
-;; --- opening and resolving a library ------------------------------------
+;; opening and resolving a library
 
 (defn library-lookup
   "Open the native library at `path` (a file path string), bound to the
@@ -134,14 +131,10 @@
   [^SymbolLookup lookup ^String nm]
   (.isPresent (.find lookup nm)))
 
-;; --- downcalls (Clojure to native) --------------------------------------
-;; Bound MethodHandles, keyed by the resolvable identity of the call:
-;; [lookup nm ret arg-layouts]. A SymbolLookup is a process-lifetime
-;; resource on the global Arena, so its identity is a stable key, and the
-;; layouts are interned ValueLayout constants. Binding a handle resolves
-;; the symbol and builds a FunctionDescriptor + .downcallHandle -- per-call
-;; linker work a real-time loop forbids -- so cache it once per distinct
-;; call and let the per-frame path invoke the cached handle directly.
+;; downcalls (Clojure to native)
+;; Cached by [lookup nm ret arg-layouts]: the key is stable (SymbolLookup
+;; is process-lifetime, layouts are interned) and a real-time loop skips
+;; per-call linker work by invoking the cached handle directly.
 
 (defonce ^:private handle-cache (atom {}))
 
@@ -176,14 +169,9 @@
   [^MethodHandle h & args]
   (.invokeWithArguments h (object-array args)))
 
-;; --- upcalls (native to Clojure callbacks) ------------------------------
-;; The reverse direction: native code calling a Clojure fn through a
-;; function pointer. This is a SYNCHRONOUS upcall stub -- the native side
-;; fires it inside a downcall, on the calling thread -- which is the
-;; bounded subset of bidirectional interop ADR 10's deferral does not argue
-;; against (no embedded JVM, no async callback into a parked runtime). It
-;; is the cold half: a stub is built once at setup, never per frame, and
-;; shares nothing with the downcall cache.
+;; upcalls (native to Clojure callbacks)
+;; Synchronous only: the native side fires the stub inside a downcall on
+;; the calling thread (ADR 10). A stub is built once at setup, never per frame.
 
 (defn- upcall-method-handle
   "Reflect a `MethodHandle` onto `IFn.invoke` at `arity` args, bind it to
@@ -227,7 +215,7 @@
         mh    (upcall-method-handle f arity desc)]
     (.upcallStub linker mh desc arena no-options)))
 
-;; --- reading bounded native strings -------------------------------------
+;; reading bounded native strings
 
 (defn read-utf8-bounded
   "Read the NUL-terminated UTF-8 C string at `seg` (a pointer, typically
@@ -254,7 +242,7 @@
             (String. out StandardCharsets/UTF_8))
           :else (recur (inc i)))))))
 
-;; --- teardown -----------------------------------------------------------
+;; teardown
 
 (defn join-then-close-arena
   "The teardown tail for a native resource driven on a worker thread: join

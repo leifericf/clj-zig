@@ -71,11 +71,7 @@
     (is (every? #(= in %) (repeatedly 500 #(f/string-identity in))))))
 
 (deftest owned-result-records-drive-the-per-field-free-shim-in-volume
-  ;; An owned result record allocates a c_allocator buffer per buffer field
-  ;; and the generated per-field __free shim frees every one after the
-  ;; Clojure side copies the bytes out. Driving it in volume exercises every
-  ;; field's free (a :string and a :bytes field here) and the finally that
-  ;; guards the read; a field left unfreed would accumulate across the run.
+  ;; Volume is the leak lane: an unfreed buffer field would accumulate across calls.
   (let [expected-media "image/png"
         expected-bytes (byte-array [65 66 67])]
     (doseq [r (repeatedly 500 #(f/render-fixed))]
@@ -85,12 +81,6 @@
     (is true "500 owned result records freed every buffer field without fault")))
 
 (deftest error-union-over-owned-struct-success-frees-every-buffer
-  ;; A [:error-union E OwnedRecord] success path allocates a c_allocator
-  ;; buffer per buffer field and the wrapper's per-field __free shim frees
-  ;; every one in a finally after the Clojure side copies the bytes out
-  ;; (mirror of c8a822b and the owned-record path). Driving the success
-  ;; branch in volume exercises every field's free; a field left unfreed
-  ;; would accumulate across the run.
   (let [expected-media "image/png"
         expected-bytes (byte-array [65 66 67])]
     (doseq [r (repeatedly 500 #(f/render-may-fail false))]
@@ -101,36 +91,19 @@
     (is true "500 error-union-over-owned-struct successes freed every buffer")))
 
 (deftest error-union-over-owned-struct-error-leaks-nothing
-  ;; The error path of a [:error-union E OwnedRecord] writes NO struct: the
-  ;; wrapper translates the error and returns before the body's struct
-  ;; reaches the wire. Nothing was allocated-for-the-result on this branch
-  ;; (the fixture checks the fail flag BEFORE allocating), so the __free
-  ;; shim does not run and there is nothing to free. Driving the error
-  ;; branch in volume is the leak lane: a wrapper bug that freed an
-  ;; uninitialized wire struct on the error path would fault (reading
-  ;; garbage ptr/len words) or double-free within the run; a body that
-  ;; allocated before erroring would leak across the 500 calls and trip
-  ;; an address-sanitizer build. The keyword result must also stay stable.
+  ;; The error path allocates nothing; a bug freeing the uninitialized wire
+  ;; struct would fault here.
   (is (every? #(= :RenderFailed %) (repeatedly 500 #(f/render-may-fail true)))
       "500 error-union-over-owned-struct errors returned the keyword without fault"))
 
 (deftest owned-buffer-slice-drives-the-walking-free-shim-in-volume
-  ;; An owned slice of buffer-carrying structs allocates a c_allocator tag
-  ;; per element plus the nice-record slab; the wrapper's walking free shim
-  ;; iterates the wire slab freeing every element's tag buffer then the slab
-  ;; itself. Driving it in volume exercises every per-element free; a buffer
-  ;; left unfreed would accumulate across the 500 calls.
   (doseq [r (repeatedly 500 #(f/make-notes 8))]
     (assert (= 8 (count r)))
     (assert (every? #(= "note" (:tag %)) r))
     (assert (= 7 (:n (peek r)))))
   (is true "500 owned buffer-carrying slices freed every element's buffer"))
 
-;; --- the scalar hot path (ADR 39) ---------------------------------------
-;; A scalar-only signature skips the per-call confined arena and reuses a
-;; thread-local carrier array. The selection is exact, the reuse stays
-;; correct under volume, and the thread-local array makes concurrent
-;; callers safe.
+;; the scalar hot path (ADR 39)
 
 (deftest scalar-only-selects-the-hot-path
   (let [scalar? (fn [v] (let [s (zig/spec v)] (#'ffm/scalar-only? (:params s) (:ret s))))]
@@ -161,12 +134,7 @@
                       (range threads))]
     (is (every? true? (map deref futs)))))
 
-;; --- the enum-aware hot path -------------------------------------------
-;; A signature over only scalars and enums also skips the confined arena:
-;; an enum crosses the C ABI as its backing scalar, so the call is a scalar
-;; round-trip plus a per-arg keyword lookup. The selection includes enum
-;; args and enum returns alongside plain scalars; a slice, struct, handle,
-;; or pointer still needs the general path.
+;; the enum-aware hot path
 
 (deftest enum-aware-selects-the-enum-path
   (let [enum-aware? (fn [v] (let [s (zig/spec v)]
@@ -202,28 +170,18 @@
                       (range threads))]
     (is (every? true? (map deref futs)))))
 
-;; --- the handle-arg hot path -------------------------------------------
-;; A signature that threads a [:handle Type] arg with a scalar/enum/void
-;; return also skips the confined arena: a handle arg is just an aset of
-;; the segment pointer, no arena needed. Both directions of the
-;; handle-threading workload (box+unbox, box+free-box) leave the general
-;; path and take this no-arena sibling.
+;; the handle-arg hot path
 
 (deftest enum-aware-handle-arg-round-trips-in-volume
-  ;; No arena and a reused carrier array: a handle-arg call driven hard
-  ;; must stay correct call after call. The box allocates a fresh handle
-  ;; each iteration (the body allocates), so this is not allocation-free,
-  ;; but the clj-zig overhead path is the no-arena one.
+  ;; Not allocation-free (the body allocates a handle each call), but the
+  ;; clj-zig overhead path is the no-arena one.
   (let [boxes (repeatedly 50000 #(f/box 42))]
     (is (every? #(= 42 (f/unbox %)) boxes))
     (doseq [b boxes] (f/free-box b))
     (is true "50000 box+unbox+free-box round-trips stayed correct")))
 
 (deftest enum-aware-handle-arg-path-rejects-a-mismatched-handle
-  ;; The no-arena path still validates the handle's tag: unboxing a
-  ;; Tracker handle where a Box is expected throws the mismatch ex-info
-  ;; with the :clj-zig/handle-type-mismatch code, the same diagnostic the
-  ;; general path issues.
+  ;; The no-arena path still validates the handle tag, like the general path.
   (let [t (f/tracker-new)]
     (try
       (is (thrown-with-msg?
@@ -251,13 +209,7 @@
                       (range threads))]
     (is (every? true? (map deref futs)))))
 
-;; --- the const-slice-aware hot path ------------------------------------
-;; A signature with one or more [:slice :const <scalar>] args plus scalar
-;; or enum params/return lowers to (ptr, len, ...) at the C ABI. The
-;; invoker opens a confined arena for the slice segments and fills a
-;; thread-local carrier array inline -- skipping marshal-array's per-arg
-;; map and the general path's copy-back loop. Mutable slices, structs,
-;; handles, and other arena-touching shapes stay on the general path.
+;; the const-slice-aware hot path
 
 (deftest slice-aware-selects-the-slice-path
   (let [slice-aware? (fn [v] (let [s (zig/spec v)]

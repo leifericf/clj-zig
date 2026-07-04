@@ -83,14 +83,7 @@
   (is (specification-correct? lifecycle-spec
                               {:gen {:max-length 6} :run {:num-tests 15}})))
 
-;; --- Module-backed lifecycle (ADR 34) -----------------------------------
-;;
-;; The same define/redefine invariants, but the body `@import`s an external
-;; module whose source is mutated between commands. This pins the boundary a
-;; single test cannot reach: editing the module is picked up with no stale
-;; binding, an unchanged module is reused (cache hit), and a module that no
-;; longer compiles keeps the last good binding and reports a diagnostic
-;; attributed to the module, not the wrapper.
+;; Module-backed lifecycle (ADR 34)
 
 (def ^:private module-ns (create-ns 'clj-zig.module-lifecycle-subject))
 (def ^:private module-var (intern module-ns 'g))
@@ -204,10 +197,7 @@
   (is (= 6 (call! 5))))
 
 (deftest a-non-ex-info-shell-failure-is-recorded-as-a-failed-attempt
-  ;; The keep-last-good contract must hold for ANY failure to (re)establish,
-  ;; not only the structured ex-info a compile throws. A raw shell failure
-  ;; (an IOException, an IllegalStateException) is recorded as
-  ;; :clj-zig/shell-failure and the last good binding stays live.
+  ;; The keep-last-good contract holds for any failure, not only ex-info.
   (define! 1)
   (is (= 6 (call! 5)))
   (with-redefs [core/establish! (fn [& _]

@@ -12,7 +12,7 @@
    b :u8
    a :u8])
 
-;; --- Struct arguments ---------------------------------------------------
+;; Struct arguments
 
 (defnz norm
   [p Point
@@ -30,7 +30,7 @@
   (testing "a padded struct of bytes reads the right field"
     (is (= 255 (alpha {:r 10 :g 20 :b 30 :a 255})))))
 
-;; --- Struct returns -----------------------------------------------------
+;; Struct returns
 
 (defnz midpoint
   [a Point
@@ -56,7 +56,7 @@
       (norm p)
       (is (= {:x 1.0 :y 2.0} p)))))
 
-;; --- Nested struct fields ------------------------------------------------
+;; Nested struct fields
 
 (deftypez Rect
   [origin Point
@@ -85,7 +85,7 @@
       (rect-area r)
       (is (= {:origin {:x 0.0 :y 0.0} :size {:x 4.0 :y 6.0}} r)))))
 
-;; --- Slices and arrays of structs ---------------------------------------
+;; Slices and arrays of structs
 
 (defnz sum-points
   "Sum the x and y of every point a const slice carries."
@@ -134,11 +134,7 @@
   (is (= {:x 6.0 :y 9.0}
          (array-sum [{:x 1.0 :y 2.0} {:x 2.0 :y 3.0} {:x 3.0 :y 4.0}]))))
 
-;; --- Owned slices of buffer-carrying structs --------------------------------
-;; A buffer-carrying struct element needs the nice-to-wire transform: the body
-;; builds nice records (with real slice fields), the wrapper copies each into a
-;; wire (extern) slab, and a walking free shim frees every element's buffers
-;; then the slab.
+;; Owned slices of buffer-carrying structs
 
 (deftypez Label
   [tag :string
@@ -184,10 +180,7 @@
     (is (every? #(= {:tag "tag" :n 9} (last %))
                 (repeatedly 300 #(make-labels 10))))))
 
-;; --- Const slice arguments of buffer-carrying structs -------------------
-;; A const slice of buffer-carrying structs arrives as a wire (extern) slab;
-;; the wrapper allocates a nice-record slab, converts each wire element (ptr/len
-;; words reinterpreted as real slices), runs the body, and frees the nice slab.
+;; Const slice arguments of buffer-carrying structs
 
 (defnz longest-tag
   "Return the length of the longest tag in a const slice of Labels."
@@ -217,9 +210,7 @@
   (is (= 2 (count-labels [{:tag "a" :n 0} {:tag "b" :n 1} {:tag "c" :n 2}])))
   (is (= 0 (count-labels [{:tag "x" :n 0}]))))
 
-;; --- Optional over a named struct (nil-or-struct) -----------------------
-;; [:optional Point] lowers to ?*const Point: nil is NULL, a present value is a
-;; c_allocator pointer the FFM reads through and frees in a finally.
+;; Optional over a named struct (nil-or-struct)
 
 (defnz maybe-point
   "Return a Point only when the flag is set; otherwise null."
@@ -252,9 +243,7 @@
   (testing "nil dereferences to the default"
     (is (= -1.0 (use-maybe-point nil)))))
 
-;; --- Nested buffer-carrying structs as slice elements ------------------
-;; A slice element whose struct nests another buffer-carrying struct exercises
-;; the recursive nice-to-wire transform and the recursive walking free shim.
+;; Nested buffer-carrying structs as slice elements
 
 (deftypez Inner [tag :string n :i64])
 (deftypez Outer [label :string count :i64 detail Inner])
@@ -284,9 +273,7 @@
     (is (every? #(= {:tag "inner" :n 18} (:detail (last %)))
                 (repeatedly 200 #(make-outers 10))))))
 
-;; --- Per-field mixed ownership (Phase F) --------------------------------
-;; A record with an owned buffer field beside a borrowed one: the free shim
-;; frees the owned field and leaves the borrowed field alone.
+;; Per-field mixed ownership
 
 (deftypez Mixed [owned_tag :string borrowed_tag [:borrowed [:slice :u8]]])
 
@@ -310,9 +297,9 @@
     (is (every? #(= "hello" (:owned_tag %))
                 (repeatedly 200 #(make-mixed "hello"))))))
 
-;; --- Adversarial probes: feature combinations --------------------------
+;; Adversarial probes: feature combinations
 
-;; Probe: array of buffer-carrying structs as argument (Phase C + Phase E)
+;; Probe: array of buffer-carrying structs as argument
 (defnz outer-array-sum
   "Sum the count field of each Outer in a fixed-size array."
   [xs [:array 2 Outer]
@@ -325,7 +312,7 @@
   (is (= 3 (outer-array-sum [{:label "a" :count 1 :detail {:tag "x" :n 0}}
                              {:label "b" :count 2 :detail {:tag "y" :n 1}}]))))
 
-;; Probe: const slice of nested buffer structs as argument (Phase C + Phase E)
+;; Probe: const slice of nested buffer structs as argument
 (defnz outer-slice-tag-len
   "Return the total length of all label strings in a const slice of Outers."
   [xs [:slice :const Outer]
@@ -339,7 +326,7 @@
                                  {:label "cdef" :count 1 :detail {:tag "y" :n 1}}])))
   (is (= 0 (outer-slice-tag-len []))))
 
-;; Probe: optional struct with nested buffer fields (Phase D + Phase E)
+;; Probe: optional struct with nested buffer fields
 (defnz maybe-outer
   "Return an Outer with nested Inner, or null."
   [found :bool
@@ -364,9 +351,7 @@
     (is (every? #(= "tag" (get-in % [:detail :tag]))
                 (repeatedly 200 #(maybe-outer true))))))
 
-;; --- Single buffer-carrying struct argument (wire-to-nice) -------------
-;; A single struct argument with buffer fields arrives as a *const Type__wire
-;; pointer; the reconstruction converts it to a nice Type before the body.
+;; Single buffer-carrying struct argument
 
 (defnz label-info
   "Return the length of a Label's tag and its n field as a struct."

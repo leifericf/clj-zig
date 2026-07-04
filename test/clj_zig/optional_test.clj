@@ -4,7 +4,7 @@
             [clj-zig :as zig]
             [clj-zig.core :refer [defnz defz]]))
 
-;; --- Optional pointer arguments -----------------------------------------
+;; Optional pointer arguments
 
 (defnz deref-or
   [p [:optional [:ptr :const :i64]]
@@ -25,7 +25,7 @@
     (is (= 9 (first-or (int-array [9 8 7]))))
     (is (= -1 (first-or nil)))))
 
-;; --- Optional pointer return --------------------------------------------
+;; Optional pointer return
 
 (defz answer "const answer: i64 = 42;")
 (defz pi "const pi_val: f64 = 3.5;")
@@ -48,11 +48,7 @@
     (is (nil? (lookup-i64 false)))
     (is (nil? (lookup-f64 false)))))
 
-;; --- Optional scalar arguments and returns (nil-or-int) ------------------
-;; A carrier scalar under :optional lowers to the same wire shape as
-;; [:optional [:ptr :const T]]: nil crosses as NULL, a present value as a
-;; one-element native cell. The Clojure caller passes nil or the scalar
-;; itself (nil-or-int), not a one-element array.
+;; Optional scalar arguments and returns (nil-or-int)
 
 (defnz opt-int-or
   [x [:optional :i64]
@@ -76,7 +72,7 @@
   (testing "a null return is nil"
     (is (nil? (lookup-opt-i64 false)))))
 
-;; --- Contract validation ------------------------------------------------
+;; Contract validation
 
 (deftest optional-must-wrap-a-pointer-or-carrier-scalar
   (testing "an optional carrierless scalar is rejected: no FFM cell to point at"
@@ -93,7 +89,7 @@
                                             :signature [x :bool
                                                         :ret [:optional [:manyptr :u8]]]})))))
 
-;; --- Generated source ---------------------------------------------------
+;; Generated source
 
 (deftest generates-optional-pointer-types
   (is (str/includes? (zig/generated-source #'deref-or) "p: ?*const i64"))

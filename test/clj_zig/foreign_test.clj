@@ -1,7 +1,7 @@
 (ns clj-zig.foreign-test
   "The foreign-function toolkit, exercised against a real prebuilt library.
-  A tiny native library is compiled once when this namespace loads -- a few
-  C-ABI exports plus a function-pointer caller for the upcall path -- and
+  A tiny native library is compiled once when this namespace loads, a few
+  C-ABI exports plus a function-pointer caller for the upcall path, and
   the tests open it, bind downcalls, hand it an upcall, and read bounded
   strings, so every primitive round-trips through actual native code rather
   than a mock. The pure helpers (descriptor, resolve-library,
@@ -13,7 +13,7 @@
            (java.nio.charset StandardCharsets)
            (java.util.concurrent CountDownLatch TimeUnit)))
 
-;; --- compile-once native fixture ----------------------------------------
+;; compile-once native fixture
 
 (def ^:private fixture-source
   "A handful of C-ABI exports: scalar echoes across carriers, and a
@@ -41,7 +41,7 @@
 
 (defn- lookup [] (ff/library-lookup @fixture-lib))
 
-;; --- opening a library --------------------------------------------------
+;; opening a library
 
 (deftest library-lookup-opens-a-real-library
   (is (instance? java.lang.foreign.SymbolLookup (lookup))))
@@ -61,7 +61,7 @@
       (is (= :library-open-failed (:foreign/error (ex-data ex)))
           "nil degrades to the same tagged error as a missing path"))))
 
-;; --- symbols ------------------------------------------------------------
+;; symbols
 
 (deftest symbol-presence-is-data
   (let [lk (lookup)]
@@ -74,7 +74,7 @@
     (is (= :symbol-not-found (:foreign/error (ex-data ex))))
     (is (= "no_such_symbol" (:symbol (ex-data ex))))))
 
-;; --- downcalls ----------------------------------------------------------
+;; downcalls
 
 (deftest downcall-round-trips-scalars
   (let [lk (lookup)]
@@ -106,7 +106,7 @@
         again (repeatedly 1000 #(ff/downcall lk "echo_i64" ff/c-long [ff/c-long]))]
     (is (every? #(identical? first %) again))))
 
-;; --- upcalls ------------------------------------------------------------
+;; upcalls
 
 (deftest upcall-stub-lets-native-code-call-a-clojure-fn
   (let [lk     (lookup)
@@ -120,7 +120,7 @@
         (let [stub (ff/upcall-stub (fn [x] (int (+ 1 (long x)))) desc arena)]
           (is (= 8 (ff/call apply1 stub (int 7)))))))))
 
-;; --- descriptor ---------------------------------------------------------
+;; descriptor
 
 (deftest descriptor-builds-void-and-valued-signatures
   (testing ":void yields a void descriptor with the given args"
@@ -132,7 +132,7 @@
       (is (.isPresent (.returnLayout d)))
       (is (= 2 (count (.argumentLayouts d)))))))
 
-;; --- resolve-library ----------------------------------------------------
+;; resolve-library
 
 (deftest resolve-library-prefers-env-then-existing-candidate-then-default
   (testing "a set env var wins"
@@ -152,7 +152,7 @@
   (testing "a default of nil is a valid (degraded) result"
     (is (nil? (ff/resolve-library {:env [] :candidates ["/no/such"] :default nil})))))
 
-;; --- read-utf8-bounded --------------------------------------------------
+;; read-utf8-bounded
 
 (defn- nul-terminated
   "Allocate `s` as UTF-8 bytes plus a NUL terminator in `arena`."
@@ -186,7 +186,7 @@
         (.set seg ValueLayout/JAVA_BYTE (long 4) (byte 0))
         (is (= "xxxx" (ff/read-utf8-bounded seg 4 arena)))))))
 
-;; --- join-then-close-arena ----------------------------------------------
+;; join-then-close-arena
 
 (deftest join-then-close-arena-closes-only-after-the-worker-dies
   (testing "a worker that has exited lets the arena close"

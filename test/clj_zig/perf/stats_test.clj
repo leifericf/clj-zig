@@ -8,10 +8,8 @@
   (:require [clojure.test :refer [deftest is]]
             [clj-zig.perf.stats :as stats]))
 
-;; --- fixture inputs ------------------------------------------------------
-;; Pure data: the same map shape Criterium produces for a single
-;; measurement, captured here so the unit tests do not require
-;; Criterium on the classpath.
+;; fixture inputs
+;; Pure data shaped like Criterium output, so no Criterium on the classpath.
 
 (defn- criterium-result
   "A minimal Criterium result map carrying the fields stats consumes:
@@ -172,10 +170,8 @@
     (is (re-find #"boom" (:diagnostic entry)))))
 
 (deftest tier-entry-carries-three-tier-medians-and-subprocess-ms
-  ;; The pure core threads the three tier medians (cold, global-cache-hit,
-  ;; clj-zig-cache-hit), the separated zig build-lib subprocess wall-clock,
-  ;; and the tier-contamination flag as DATA the shell supplies, so it stays
-  ;; JVM-free and unit-testable without Criterium or a native lib.
+  ;; Threaded as data the shell supplies, so the core stays JVM-free and
+  ;; unit-testable without Criterium or a native lib.
   (let [entry (stats/tier-entry
                {:kind :scalar-passthrough :name "echo-i64"}
                {:cold 1000.0
@@ -213,15 +209,7 @@
     (is (= :string (:kind entry)))
     (is (= "string-identity" (:name entry)))))
 
-;; --- Axis-1 tier-contamination detection ---------------------------------
-;;
-;; The decision table is pure: it consumes a map of observed cache state
-;; the shell gathers (whether the predicted artifact path exists, whether
-;; the zig global cache is present and non-empty) and returns true when
-;; that state does not match the tier's intended state. The shell-side
-;; state gathering lives in run.clj; this is the pure half, exercised
-;; here with teeth. A forced stale entry that survives a clear MUST be
-;; flagged contaminated, never silently shaped as a clean number.
+;; Axis-1 tier-contamination detection
 
 (deftest tier-contaminated-cold-clean-when-both-caches-empty
   ;; The cold tier cleared both caches; the predicted artifact path does

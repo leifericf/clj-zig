@@ -46,7 +46,7 @@
            (java.nio.charset StandardCharsets)
            (java.util ArrayList List)))
 
-;; --- output location -----------------------------------------------------
+;; output location
 
 (def ^:private artifacts-dir
   "Where numbers records land. The campaign's docs rule keeps numbers
@@ -62,7 +62,7 @@
   (.mkdirs dir)
   dir)
 
-;; --- per-shape namespace and setup registration --------------------------
+;; per-shape namespace and setup registration
 
 (defn- shape-ns
   "The per-shape registration namespace. Each shape compiles into its
@@ -101,7 +101,7 @@
                     :signature (:signature shape)
                     :types     (clj-zig.core/types-in shape-ns)}))
 
-;; --- floor layout resolution --------------------------------------------
+;; floor layout resolution
 
 (def ^:private floor-layouts
   "The keyword spellings clj-zig.perf.shape uses in a floor descriptor
@@ -131,7 +131,7 @@
                         {:floor-layout kw})))
       v)))
 
-;; --- struct layout offsets (for struct segments) -------------------------
+;; struct layout offsets
 
 (defn- layout-byte-size
   "The C ABI byte size of one floor layout keyword. Primitives align to
@@ -157,19 +157,10 @@
             off  (* size (quot (+ offset size -1) size))]
         (recur (next flds) (+ off size) (conj out off))))))
 
-;; --- the floor carriers --------------------------------------------------
-;;
-;; Each shape's :floor-args-fn returns a vector with one element per
-;; INPUT floor arg (the trailing out-args are allocated by the shell,
-;; not described here). A scalar input is a raw number the shell boxes
-;; to the carrier width the arg layout demands (FFM rejects a Long where
-;; the MethodType expects an int, so the boxing must match the layout);
-;; a pointer input is a tagged descriptor the shell turns into a
-;; MemorySegment on the global arena:
-;;   <number>             a scalar (boxed per the arg layout)
-;;   [:ptr-bytes s]       a UTF-8 byte segment for a string input
-;;   [:ptr-doubles [..]]  an f64 segment for a slice input
-;;   [:ptr-struct vs ls]  a struct segment (field values + field layouts)
+;; the floor carriers
+;; :floor-args-fn yields one INPUT floor arg per slot; pointer inputs use
+;; tagged descriptors (:ptr-bytes/:ptr-doubles/:ptr-struct) the shell
+;; resolves to MemorySegments on the global arena.
 
 (def ^:private global-arena
   "The process-lifetime Arena every floor segment is allocated on. The
@@ -328,7 +319,7 @@
                   (aset free-carriers 0 ptr)
                   (.invokeWithArguments free-handle free-carriers)))))))))
 
-;; --- Criterium measurement ----------------------------------------------
+;; Criterium measurement
 
 (def ^:private bench-options
   "Criterium options for the per-shape measurement. A per-call invoke is
@@ -364,7 +355,7 @@
   [thunk]
   {:median (point-estimate (criterium/benchmark* thunk bench-options))})
 
-;; --- meta block inputs --------------------------------------------------
+;; meta block inputs
 
 (defn- git-head-sha
   "The current working copy's HEAD commit SHA via a single git
@@ -395,7 +386,7 @@
                      (if (some? v) (Boolean/parseBoolean v) true))
     :commit        (git-head-sha)})
 
-;; --- per-shape measurement ----------------------------------------------
+;; per-shape measurement
 
 (defn- shape-identity
   "The identity slice of a shape record -- the keys that name it in the
@@ -460,12 +451,9 @@
                         (:body fb)
                         gen-opts)))
          free-fn   (some-> free-art :invoke)
-         ;; The free binding the floor uses to bind its free handle. For
-         ;; auto-emitted shims (:string, :owned-return) the shim lives in
-         ;; the MAIN library, so the binding shares the main lookup with
-         ;; the derived <sym>__free symbol. For a sibling :free-body
-         ;; (:handle) the shim lives in its OWN library, so the binding
-         ;; carries that library's lookup and the free-body's symbol.
+          ;; Free-binding source depends on shim location: auto-emitted
+          ;; shims share the MAIN library lookup; a sibling :free-body
+          ;; (:handle) carries its OWN library's lookup.
          free-binding (when (:free-shim (:floor shape))
                         (if free-art
                           {:free-lookup (foreign/library-lookup (:library free-art))
@@ -494,40 +482,22 @@
      (cond-> {:defnz defnz-result :floor floor-result}
        track? (assoc :native-allocations native-allocations)))))
 
-;; --- profiler attach window ---------------------------------------------
-;;
-;; An opt-in attach window so an external profiler can attach against a
-;; stable pid before the measured run. The window is OFF by default: a
-;; run without --attach-window (and without CLJ_ZIG_ATTACH_WINDOW) prints
-;; no pid line and never sleeps, so the captured baseline numbers and the
-;; default-run stdout are unchanged. When set, the shell prints the pid
-;; and sleeps that many seconds; an external async-profiler (asprof) or
-;; the JDK's jcmd JFR.start attaches against the printed pid in that
-;; window. See bench/RUNBOOK.md for the full capture procedure.
+;; profiler attach window
+;; Opt-in: print the pid and sleep so an external profiler can attach
+;; before the measured run. See bench/RUNBOOK.md.
 
 (defn- attach-profiler!
-  "When `opts` carries an :attach-window, print the process id and sleep
-  that many seconds so an external profiler can attach before the
-  measured run. No-op when :attach-window is nil, so a default run is
-  unchanged. The pid print and the sleep are the attach window: the
-  contributor reads the pid, starts the profiler against it, and the
-  bench waits."
+  "When `opts` carries :attach-window, print the pid and sleep that many
+  seconds so an external profiler can attach before the measured run."
   [opts]
   (when-let [secs (:attach-window opts)]
     (let [pid (.pid (ProcessHandle/current))]
       (println "bench pid" pid "-- attach within" (long secs) "s"))
     (Thread/sleep (* 1000 (long secs)))))
 
-;; --- in-process JFR recording -------------------------------------------
-;;
-;; An opt-in JFR recording driven from inside the bench JVM, replacing
-;; the second-shell jcmd workflow the RUNBOOK used to require. When
-;; :jfr names a path, the shell spawns `jcmd <pid> JFR.start ...` against
-;; its own pid after any attach window opens, and `JFR.stop` after the
-;; last shape measures. The recording uses the `profile` settings with a
-;; tightened 1 ms execution-sample period (twentyfold over the default)
-;; so the clj-zig frames accumulate sample time within a 30 s run. OFF by
-;; default; a run without --jfr (and without CLJ_ZIG_JFR) is byte-identical.
+;; in-process JFR recording
+;; Opt-in jcmd JFR.start/stop against the bench pid; tightened 1 ms sample
+;; period. See bench/RUNBOOK.md.
 
 (defn- jcmd-binary
   "The jcmd binary path: `$java.home/bin/jcmd`. Resolves against the
@@ -581,10 +551,7 @@
 
 (defn- start-jfr!
   "When `opts` carries a :jfr path, spawn jcmd JFR.start against the
-  running JVM. No-op when :jfr is nil, so a default run is unchanged.
-  Fires AFTER any attach window so the two options compose: the window
-  still lets an external profiler attach, and the in-process JFR records
-  the same measured run."
+  running JVM. Fires after any attach window so the two compose."
   [opts]
   (when-let [path (:jfr opts)]
     (let [pid (.pid (ProcessHandle/current))]
@@ -592,16 +559,16 @@
       (run-jcmd! (jfr-start-args pid path)))))
 
 (defn- stop-jfr!
-  "When `opts` carries a :jfr path, spawn jcmd JFR.stop. No-op when
-  :jfr is nil. The recording flushes to the filename on stop, so this
-  runs before the final stdout summary."
+  "When `opts` carries a :jfr path, spawn jcmd JFR.stop. The recording
+  flushes to the filename on stop, so this runs before the final stdout
+  summary."
   [opts]
   (when-let [path (:jfr opts)]
     (let [pid (.pid (ProcessHandle/current))]
       (run-jcmd! (jfr-stop-args pid))
       (println "bench pid" pid "-- stopped JFR recording to" path))))
 
-;; --- the numbers record write ------------------------------------------
+;; the numbers record write
 
 (defn- write-record!
   "Write `record` (EDN) to `file`. Pretty-prints so a diff between two
@@ -613,36 +580,9 @@
       (pr record)))
   file)
 
-;; --- Axis-1: authoring-latency harness ----------------------------------
-;;
-;; Axis-1 measures a defnz redefine's wall-clock across three cache tiers
-;; and separates the zig build-lib subprocess wall-clock from JVM-side
-;; time. A single redefine is subprocess-dominated: the clj-zig authoring
-;; code (cache lookup, source generation, toolchain hand-off) runs for
-;; milliseconds, while the zig build-lib subprocess wait dominates the
-;; roughly one-second wall-clock. The separation lets optimization see
-;; where redefine time actually goes.
-;;
-;; TIERS (the cache state each tier's timed loop sees):
-;;   cold                clj-zig artifact cache (.clj-zig/cache) AND the
-;;                       zig global cache (.clj-zig/global-cache) cleared.
-;;                       The redefine recompiles from scratch.
-;;   global-cache-hit    clj-zig artifact cache cleared; zig global cache
-;;                       KEPT. The recompile reuses the prior std/preamble
-;;                       build in the zig global cache but relinks the
-;;                       wrapper (clj-zig re-links).
-;;   clj-zig-cache-hit   both KEPT. The redefine hits the clj-zig artifact
-;;                       cache and runs no subprocess. The fastest path.
-;;
-;; CACHE-SCOPING INVARIANT (ADR 35, load-bearing): clearing is scoped
-;; strictly to the bench-owned .clj-zig/ roots. The bench NEVER touches
-;; the machine's per-user zig cache (clj-zig does not use it post-ADR-35;
-;; every compile passes --global-cache-dir at .clj-zig/global-cache), and
-;; never touches any other clj-zig project on the machine. ADR 35's
-;; "persistent" qualifier on the global cache is about NOT scattering one
-;; project's intermediate artifacts into a shared per-user location; the
-;; project-local .clj-zig/global-cache/ the bench clears shares the
-;; .clj-zig/ lifecycle the toolchain and cache already own.
+;; Axis-1: authoring-latency harness
+;; Redefine wall-clock across three cache tiers. See bench/RUNBOOK.md
+;; and ADR 35 for the tier table and cache-scoping invariant.
 
 (def ^:private axis1-artifact-cache-root
   "The clj-zig content-addressed artifact cache root the bench clears.
@@ -917,16 +857,14 @@
 
   An optional --attach-window <secs> (or CLJ_ZIG_ATTACH_WINDOW) opens a
   profiler attach window before the measured run: the bench prints its
-  pid and sleeps, so an external profiler can attach. Off by default;
-  see bench/RUNBOOK.md.
+  pid and sleeps, so an external profiler can attach. See
+  bench/RUNBOOK.md.
 
   An optional --track-allocations (or CLJ_ZIG_TRACK_ALLOCATIONS=1)
   enables the profiling build: each shape's wrapper is compiled under
   :zig/track-allocations and the entry carries a per-shape native
-  allocation count for the defnz path (0 for non-allocating shapes,
-  >0 for allocating ones). Off by default; a run without the option
-  builds the default library and matches the baseline, and the
-  profiling build's cache key is distinct from the default's (ADR 12).
+  allocation count for the defnz path. The profiling build's cache key
+  is distinct from the default's (ADR 12).
 
   An optional --axis1 (or CLJ_ZIG_AXIS1=1) selects the Axis-1
   authoring-latency harness in place of the per-call overhead run.
@@ -934,14 +872,11 @@
   global-cache-hit, clj-zig-cache-hit), separates the zig build-lib
   subprocess wall-clock from JVM-side time, and flags any tier whose
   cache state did not match its contract. The optional kind positional
-  narrows the run to one shape, as in the default mode. Off by default;
-  a run without the option takes the per-call path unchanged.
+  narrows the run to one shape, as in the default mode.
 
   An optional --jfr <path> (or CLJ_ZIG_JFR=<path>) starts an in-process
   JFR recording against the bench's own pid after any attach window
-  opens, and stops it after the last shape measures. Replaces the
-  second-shell jcmd workflow the RUNBOOK used to require. Off by default;
-  a run without the option writes no .jfr file."
+  opens, and stops it after the last shape measures."
   [& args]
   (ensure-dir! artifacts-dir)
   (let [opts   (opts/parse-args args (System/getenv))

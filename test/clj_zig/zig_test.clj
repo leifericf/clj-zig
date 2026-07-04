@@ -3,7 +3,7 @@
             [clojure.test :refer [deftest is]]
             [clj-zig.zig :as zig]))
 
-;; --- Expression rendering ------------------------------------------------
+;; Expression rendering
 
 (deftest render-ref
   (is (= "x" (zig/render-expr-for-test (zig/ref "x")))))
@@ -42,7 +42,7 @@
          (zig/render-expr-for-test
           (zig/raw-expr "complex + thing")))))
 
-;; --- Statement rendering -------------------------------------------------
+;; Statement rendering
 
 (deftest render-const-stmt
   (is (= "    const xs = xs_ptr[0..xs_len];"
@@ -120,7 +120,7 @@
                 "};"))
           1))))
 
-;; --- Declaration rendering -----------------------------------------------
+;; Declaration rendering
 
 (deftest render-export-fn
   (is (= (str "export fn add(x: i64, y: i64) i64 {\n"

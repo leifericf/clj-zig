@@ -4,7 +4,7 @@
             [clj-zig :as zig]
             [clj-zig.core :refer [defnz]]))
 
-;; --- Single-item pointers -----------------------------------------------
+;; Single-item pointers
 
 (defnz deref-f64
   [p [:ptr :const :f64]
@@ -29,7 +29,7 @@
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"one-element"
                           (store-42! (long-array [1 2]))))))
 
-;; --- Many-item pointers -------------------------------------------------
+;; Many-item pointers
 
 (defnz sum-many
   [p [:manyptr :const :i32]
@@ -59,7 +59,7 @@
     (is (nil? (inc-many! xs 3)))
     (is (= [2 3 4] (vec xs)))))
 
-;; --- Generated source ---------------------------------------------------
+;; Generated source
 
 (deftest generates-pointer-types
   (testing "single-item pointers"

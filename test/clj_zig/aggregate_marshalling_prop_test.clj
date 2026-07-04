@@ -27,7 +27,7 @@
     :float (if (Double/isNaN (double a)) (Double/isNaN (double b)) (== a b))
     (== a b)))
 
-;; --- Structs ------------------------------------------------------------
+;; Structs
 
 (defn- gen-struct-map [fields]
   (apply gen/hash-map
@@ -56,7 +56,7 @@
          (code-from #(with-open [arena (Arena/ofConfined)]
                        (#'ffm/marshal-struct arena desc gone)))))))
 
-;; --- Slices -------------------------------------------------------------
+;; Slices
 
 (defspec slice-reads-the-right-vector 300
   (prop/for-all [[elem vals] (gen/let [elem g/gen-scalar-type
@@ -71,7 +71,7 @@
           (and (= (count vals) (count out))
                (every? true? (map #(value=? elem %1 %2) vals out))))))))
 
-;; --- Enums --------------------------------------------------------------
+;; Enums
 
 (defn- enum-ret [desc] {:kind :named :layout desc})
 

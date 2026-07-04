@@ -71,16 +71,14 @@
     (let [s (spec/build-spec '{:ns app.core :name noop :signature [:ret :void]})]
       (is (zig-fmt-clean? (source/generate s "return;"))))))
 
-;; --- Owned/borrowed result records (ADR 21) ---------------------
+;; Owned/borrowed result records (ADR 21)
 
 (defn- scratch-dir []
   (str (java.nio.file.Files/createTempDirectory
         "clj-zig-record" (make-array java.nio.file.attribute.FileAttribute 0))))
 
-;; A minimal record carrying one scalar and one buffer field. Validation
-;; still rejects [:owned NamedRecord] until p2c relaxes it, so the spec map
-;; is assembled directly with the layout descriptor attached, the shape the
-;; codegen consumes once validation admits it.
+;; Assembled directly with its layout descriptor; build-spec still rejects
+;; [:owned NamedRecord].
 (def ^:private record-layout
   (layout/describe 'RenderResult '[flag :u32 msg :string]))
 
@@ -133,10 +131,7 @@
       (is (zig-fmt-clean? src)))))
 
 (deftest owned-record-wrapper-compiles
-  ;; A richer record covering every buffer element kind the free shim casts
-  ;; (:string and :bytes free as u8; a slice field frees as its element).
-  ;; The emitted Zig must build, not merely look right: the wrapper writes
-  ;; every wire field and the shim reinterprets each pointer back to a slice.
+  ;; The emitted Zig must build, not merely look right.
   (let [layout (layout/describe 'RenderResult
                                 '[flag :u32
                                   msg  :string
@@ -165,7 +160,7 @@
                      :ctx          {:var 'app.core/render}}))))
         "the owned-record wrapper and per-field free shim build")))
 
-;; --- Owned slices of buffer-carrying structs (Follow-up 4) ----------------
+;; Owned slices of buffer-carrying structs
 
 (def ^:private label-layout
   (layout/describe 'Label '[tag :string n :i64]))
@@ -210,11 +205,7 @@
     (testing "the generated source is canonical Zig"
       (is (zig-fmt-clean? src)))))
 
-;; --- track-allocations profiling build (ADR 12, ADR 41) -------------------
-;;
-;; The :zig/track-allocations flag wraps the wrapper's allocator in a
-;; counting allocator and emits per-symbol count fns the bench reads.
-;; Default path (flag off) is byte-for-byte the plain c_allocator codegen.
+;; track-allocations profiling build (ADR 12, ADR 41)
 
 (deftest tracking-wrap-routes-c-allocator-through-counter
   (let [plain "export fn clj_zig_app_2e_core_box(v: i64) usize {\n    const b = std.heap.c_allocator.create(Box) catch @panic(\"oom\");\n    return @intFromPtr(b);\n}\n"
@@ -251,7 +242,7 @@
 (deftest tracking-wrap-default-source-is-unchanged
   ;; Regression guard for ADR 12: the default path (flag off) never calls
   ;; tracking-wrap, so its source is byte-for-byte the plain c_allocator
-  ;; codegen -- no counter, no wrap, no count fns.
+  ;; codegen, with no counter, wrap, or count fns.
   (let [src (source/generate add-spec "return x + y;")]
     (is (not (str/includes? src "__clj_zig_alloc"))
         "the default scalar wrapper has no tracking allocator")

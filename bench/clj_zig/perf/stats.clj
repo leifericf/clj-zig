@@ -30,33 +30,12 @@
   (:require [clojure.set :as set]
             [clojure.string :as str]))
 
-;; --- body-leak guard ------------------------------------------------------
+;; body-leak guard
 
 (def ^:const body-leak-fraction
-  "The largest acceptable floor median as a fraction of the defnz
-  median. A floor at or below this fraction is a clean isolate of
-  per-call invoke cost; a floor above it flags the entry as
-  :body-leak-suspect.
-
-  The 2/5 threshold is calibrated against the alloc-free
-  `invokeWithArguments` floor clj-zig.foreign actually reaches, not the
-  IDEAL Java-direct-invoke floor its PERFORMANCE note describes (a
-  caller invokes the cached handle with typed primitive arguments,
-  projected at roughly 1-2 ns -- well under 10% of any defnz median).
-  Clojure's compiler cannot emit that call site: a primitive-hinted
-  defn around `(.invoke h x)` fails AbstractMethodError, and an inline
-  `(.invoke h (long x))` fails ClassCastException (Clojure emits the
-  call against `invoke(Object[])`). The reliable alloc-frugal Clojure
-  path is `invokeWithArguments` against a reused object-array -- the
-  same discipline clj-zig's own ADR 39 scalar hot path uses -- and on
-  JDK 26 that floors at roughly 50 ns, which is ~30% of the cheapest
-  defnz median (~170 ns, the ADR 39 scalar hot path including the &
-  args sequence and carrier boxing). The 2/5 threshold clears the
-  scalar shape's ~30% ratio with margin while still flagging a floor
-  whose body work pushes the ratio past 40% (the allocating shapes
-  measured in p3). Named as a constant so a maintainer tunes it
-  without editing the predicate, and so a unit test can assert the
-  boundary without copying a magic number."
+  "Largest acceptable floor median as a fraction of the defnz median.
+  The 2/5 ratio is calibrated against the invokeWithArguments floor
+  (ADR 37, ADR 39); above it the entry flags :body-leak-suspect."
   2/5)
 
 (defn- body-leak?
@@ -67,7 +46,7 @@
   [defnz-median floor-median]
   (> floor-median (* (double defnz-median) (double body-leak-fraction))))
 
-;; --- shaping a Criterium result map into an entry ------------------------
+;; shaping a Criterium result map into an entry
 
 (defn- median
   "Pull the median point estimate (in nanoseconds) out of a Criterium
@@ -111,7 +90,7 @@
              :body-leak-suspect   (body-leak? defnz-med floor-med)
              :native-allocations  (:native-allocations results)))))
 
-;; --- the meta block -------------------------------------------------------
+;; the meta block
 
 (def ^:private required-meta-keys
   "Every field the meta block must carry. A measurement record without
@@ -133,7 +112,7 @@
                       {:missing missing}))))
   (select-keys inputs required-meta-keys))
 
-;; --- diagnostic shaping ---------------------------------------------------
+;; diagnostic shaping
 
 (defn- ex-chain-messages
   "Walk the cause chain of `throwable` and return each Throwable's
@@ -168,15 +147,7 @@
            :status     :errored
            :diagnostic (str/join "; " parts))))
 
-;; --- Axis-1 authoring-latency tier shaping --------------------------------
-;;
-;; Axis-1 measures a defnz redefine's wall-clock across three cache tiers
-;; (cold, global-cache-hit, clj-zig-cache-hit) and separates the zig
-;; build-lib subprocess wall-clock from the JVM-side time. A single
-;; redefine is subprocess-dominated: the clj-zig authoring code runs for
-;; milliseconds, the zig build-lib subprocess wait dominates the
-;; roughly one-second wall-clock. The separation lets optimization see
-;; where redefine time actually goes without re-deriving it.
+;; Axis-1 authoring-latency tier shaping
 
 (defn tier-entry
   "Shape one Axis-1 shape's three-tier redefine timings into a
@@ -215,35 +186,16 @@
          :tier-contaminated (boolean (:tier-contaminated results))))
 
 (defn tier-contaminated?
-  "True when the observed cache state does not match the intended state
-  for `tier`. A stale cache entry that survives a tier-clear is
-  contamination: the timed loop would hit the cache and report a clean
-  number when the tier in fact ran with the wrong cache state. The
-  detection runs AFTER a clear and BEFORE the tier's first timed sample.
+  "True when `observed` cache state does not match the contract for
+  `tier`. Run AFTER a clear, BEFORE the tier's first sample.
 
-  `tier` is one of :cold, :global-cache-hit, :clj-zig-cache-hit.
-  `observed` carries the cache state the shell gathers at the predicted
-  artifact path and the zig global cache:
+  Tier contracts:
+    :cold                no artifact and no usable global cache
+    :global-cache-hit    no artifact and a present non-empty global cache
+    :clj-zig-cache-hit   artifact present
 
-    :artifact-exists?     truthy when the predicted clj-zig artifact dir
-                          is present AFTER the clear
-    :global-cache-exists? truthy when .clj-zig/global-cache/ is present
-    :global-cache-empty?  truthy when .clj-zig/global-cache/ has no
-                          entries (nil when the dir is absent)
-
-  Tier intended state (the contract each clear must establish):
-    :cold                no artifact AND no usable global cache (the
-                          global cache must be absent or empty)
-    :global-cache-hit    no artifact AND a present, non-empty global
-                          cache (the clj-zig clear ran, the global cache
-                          hit is intact)
-    :clj-zig-cache-hit   artifact PRESENT (the prior tier populated it;
-                          no clear ran, so the artifact must already
-                          exist for the tier to measure a true hit)
-
-  Pure: the shell gathers the observed state and passes it as data, so
-  this namespace stays JVM-free and the decision table is unit-testable
-  with teeth."
+  `observed` keys: :artifact-exists?, :global-cache-exists?,
+  :global-cache-empty?."
   [tier observed]
   (case tier
     :cold              (or (:artifact-exists? observed)
@@ -254,7 +206,7 @@
                            (:global-cache-empty? observed))
     :clj-zig-cache-hit (not (:artifact-exists? observed))))
 
-;; --- the top-level numbers record ----------------------------------------
+;; the top-level numbers record
 
 (defn numbers-record
   "Combine shaped entries and a meta block (built from `meta-inputs`)

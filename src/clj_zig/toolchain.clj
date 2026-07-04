@@ -65,7 +65,7 @@
   (let [f (io/file (pinned-dir) (exe-name))]
     (when (executable? f) (.getPath f))))
 
-;; --- The bootstrap fetch: name a release, download it, verify it, place it ---
+;;;; The bootstrap fetch: name a release, download it, verify it, place it
 
 (defn- archive-key
   "Zig's release-index key for a host, `<arch>-<os>` (e.g. `x86_64-linux`)."

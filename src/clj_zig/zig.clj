@@ -19,7 +19,7 @@
   four-space indent appears ONLY in the renderer's `indent` function."
   (:require [clojure.string :as str]))
 
-;; --- Indentation (the only place four spaces live) -----------------------
+;;;; Indentation (the only place four spaces live)
 
 (defn- indent
   "The indentation string for `level` (four spaces per level)."
@@ -35,7 +35,7 @@
          (map (fn [line] (if (str/blank? line) "" (str pad line))))
          (str/join "\n"))))
 
-;; --- Expression nodes ----------------------------------------------------
+;;;; Expression nodes
 
 (defmulti ^:private render-expr
   "Dispatch on the `:expr` key of the node. A raw string is also accepted
@@ -60,7 +60,7 @@
   (str (render-expr base) "[" (render-expr from) ".." (render-expr to) "]"))
 (defmethod render-expr :raw [{:keys [text]}] text)
 
-;; --- Statement nodes -----------------------------------------------------
+;;;; Statement nodes
 
 (declare render-body)
 
@@ -115,7 +115,7 @@
   [stmts level]
   (str/join "\n" (map #(render-stmt % level) stmts)))
 
-;; --- Declaration nodes ---------------------------------------------------
+;;;; Declaration nodes
 
 (defmulti ^:private render-decl
   "Dispatch on the `:decl` key."
@@ -159,7 +159,7 @@
 (defmethod render-decl :raw [{:keys [text]}]
   text)
 
-;; --- Public renderer -----------------------------------------------------
+;;;; Public renderer
 
 (defn render
   "Render a vector of declaration nodes to Zig source text. Each
@@ -168,12 +168,12 @@
   [decls]
   (str/join "\n\n" (map render-decl decls)))
 
-;; --- Test helpers (public for unit testing) ------------------------------
+;;;; Test helpers (public for unit testing)
 
 (defn render-expr-for-test [e] (render-expr e))
 (defn render-stmt-for-test [stmt level] (render-stmt stmt level))
 
-;; --- Constructors: declarations -----------------------------------------
+;;;; Constructors: declarations
 
 (defn fn-decl
   "A non-exported function declaration node."
@@ -217,7 +217,7 @@
   [text]
   {:decl :raw :text text})
 
-;; --- Constructors: statements -------------------------------------------
+;;;; Constructors: statements
 
 (defn const-stmt
   "A local `const` statement: `const name = init;` or
@@ -270,7 +270,7 @@
   [text]
   {:stmt :raw :text text})
 
-;; --- Constructors: expressions ------------------------------------------
+;;;; Constructors: expressions
 
 (defn ref [name]
   {:expr :ref :name name})
@@ -299,7 +299,7 @@
 (defn raw-expr [text]
   {:expr :raw :text text})
 
-;; --- Field and param data constructors ----------------------------------
+;;;; Field and param data constructors
 
 (defn field-data
   "One struct field as node data: `{:name name :type type}`."
