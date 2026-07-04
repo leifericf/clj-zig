@@ -1678,6 +1678,17 @@
 ;; to bound its growth. The pool defaults on because the per-call
 ;; open/close is a measurable fraction of the call once the downcall
 ;; spreader is cached; pass -Dclj-zig.arena-pool=false to disable.
+;;
+;; The pool entry is a deftype with two immutable final fields: the arena
+;; reference and a one-element `long[]` counter. Clojure's deftype marks
+;; `^:unsynchronized-mutable` fields package-private, which Clojure's own
+;; reflective `(.field instance)` accessor cannot reach, so the counter
+;; is held in a `long[]` the entry exposes as an immutable reference; the
+;; per-call increment mutates the array element via `aset`, no
+;; PersistentArrayMap allocation per call.
+
+(deftype PoolEntry [^Arena arena
+                    ^longs counter])
 
 (def ^:private pool-enabled
   (let [v (System/getProperty "clj-zig.arena-pool")]
@@ -1688,14 +1699,16 @@
 (def ^:private ^ThreadLocal tl-arena
   (ThreadLocal/withInitial
    (reify java.util.function.Supplier
-     (get [_] {:arena (Arena/ofConfined) :count 0}))))
+     (get [_] (PoolEntry. (Arena/ofConfined) (long-array [0]))))))
 
-(defn- refresh-if-needed []
-  (let [entry (.get tl-arena)]
-    (if (>= (:count entry) refresh-interval)
-      (let [old   (:arena entry)
-            fresh {:arena (Arena/ofConfined) :count 0}]
-        ;; Install the fresh arena before closing the old one, so a close
+(defn- refresh-if-needed ^PoolEntry []
+  (let [entry   ^PoolEntry (.get tl-arena)
+        counter ^longs (.counter entry)
+        n       (long (aget counter 0))]
+    (if (>= n refresh-interval)
+      (let [old   (.arena entry)
+            fresh (PoolEntry. (Arena/ofConfined) (long-array [0]))]
+        ;; Install the fresh entry before closing the old arena, so a close
         ;; failure cannot orphan the new arena: the next call retries on the
         ;; installed entry, and the close is swallowed teardown.
         (.set tl-arena fresh)
@@ -1705,15 +1718,18 @@
 
 (defn- with-pooled-arena
   "Run `f` with an Arena. When pooling is enabled (the default), reuses a
-  thread-local confined arena, incrementing its call counter (the arena
-  is refreshed every `refresh-interval` calls to bound memory growth).
-  When disabled with -Dclj-zig.arena-pool=false, allocates a fresh
-  confined arena per call (matching the existing `with-open` pattern)."
+  thread-local confined arena and mutates the per-thread counter in place
+  (no per-call PersistentArrayMap allocation); the arena is refreshed
+  every `refresh-interval` calls to bound memory growth. When disabled
+  with -Dclj-zig.arena-pool=false, allocates a fresh confined arena per
+  call (matching the existing `with-open` pattern)."
   [f]
   (if pool-enabled
-    (let [entry (refresh-if-needed)
-          arena (:arena entry)]
-      (.set tl-arena (assoc entry :count (inc (:count entry))))
+    (let [entry   ^PoolEntry (refresh-if-needed)
+          arena   (.arena entry)
+          counter ^longs (.counter entry)
+          n       (long (aget counter 0))]
+      (aset counter 0 (inc n))
       (f arena))
     (with-open [arena (Arena/ofConfined)]
       (f arena))))
