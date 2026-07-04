@@ -96,32 +96,32 @@ The struct path carries most of the remaining winnable overhead.
 
 ## Round 4 landed results
 
-Phases 1, 2, 3, and 4 each landed one commit. Phase 3 (pool the
-out-segment per thread) and Phase 4 (pool the marshal-segment per
-thread) emerged from re-profiling after Phase 2 and were not in the
-original plan; both follow the same shape as the existing
-`carriers-tl` pattern (a per-thread, per-bind segment held in a
-`ThreadLocal`, allocated from a JVM-lifetime `Arena/ofShared`).
+Phases 1 through 5 each landed one commit. Phase 3 (pool the
+out-segment per thread), Phase 4 (pool the marshal-segment per thread),
+and Phase 5 (specialize the return dispatch at bind time) emerged from
+re-profiling after Phase 2; all three follow patterns Phase 1 and 2
+established (`ThreadLocal` + `global-arena` for the pools, captured
+per-bind closure for the dispatch).
 
-The struct path collapsed from 251 ns to 120 ns across the four
-phases, a 52% reduction in per-call overhead. The other shapes are
+The struct path collapsed from 251 ns to 123 ns across the five
+phases, a 51% reduction in per-call overhead. The other shapes are
 unchanged within noise; they sit at or below their direct-handle
 floor, so wrapper-side wins have nothing left to give there.
 
 | Shape         | Round 3 | Round 4 | Delta   | Floor |
 |---------------|---------|---------|---------|-------|
-| scalar        | 37 ns   | 37 ns   | 0       | 52 ns |
-| enum          | 46 ns   | 44 ns   | -2 ns   | 56 ns |
-| slice         | 79 ns   | 76 ns   | -3 ns   | 61 ns |
-| struct        | 251 ns  | 120 ns  | -131 ns | 61 ns |
-| handle        | 69 ns   | 75 ns   | +6 ns   | 132 ns|
-| string        | 704 ns  | 724 ns  | +20 ns  | 5076 ns |
-| owned-return  | 1692 ns | 1665 ns | -27 ns  | 5421 ns |
+| scalar        | 37 ns   | 40 ns   | +3 ns   | 58 ns |
+| enum          | 46 ns   | 46 ns   | 0       | 55 ns |
+| slice         | 79 ns   | 80 ns   | +1 ns   | 59 ns |
+| struct        | 251 ns  | 123 ns  | -128 ns | 58 ns |
+| handle        | 69 ns   | 74 ns   | +5 ns   | 118 ns|
+| string        | 704 ns  | 699 ns  | -5 ns   | 5365 ns |
+| owned-return  | 1692 ns | 1624 ns | -68 ns  | 5104 ns |
 
-The handle, string, and owned-return deltas are Criterium noise across
-the four runs; the struct delta is well outside any reasonable noise
-band. scalar, enum, and slice were already at or below floor in Round
-3 and stay there.
+The small deltas on scalar, enum, slice, and handle are Criterium
+noise across runs; the struct delta is well outside any reasonable
+noise band. scalar, enum, slice, and handle were already at or below
+floor in Round 3 and stay there.
 
 ### Per-phase wins on the struct path
 
@@ -132,6 +132,7 @@ band. scalar, enum, and slice were already at or below floor in Round
 | + Phase 2: capture writer/reader at bind time      | 180 ns        |
 | + Phase 3: pool the struct-out segment per thread  | 156 ns        |
 | + Phase 4: pool the marshal segment per thread     | 120 ns        |
+| + Phase 5: specialize the return dispatch at bind  | 113 ns        |
 
 Phase 1 (hoist the arena-fn closure) is the structural cleanup: a
 pre-bound `arena-fn` plus a per-bind `pool-invoker` that splits the
@@ -141,8 +142,11 @@ time) collapses the per-call `find` on the cache atoms and the
 `MapEntry` allocation each `find` does. Phase 3 and Phase 4 each pool
 one native segment per thread per bind: the out-segment the native
 call writes the struct into, and the marshal-segment the writer chain
-fills. Both reuse the same `Arena/ofShared` `global-arena` and the
-same `ThreadLocal` pattern as the existing `carriers-tl`.
+fills. Phase 5 captures the per-bind return-shape branch as a
+dedicated dispatch closure, so the per-call body is one direct invoke
+with no `cond` walk. Both pool phases reuse the same `Arena/ofShared`
+`global-arena` and the same `ThreadLocal` pattern as the existing
+`carriers-tl`.
 
 A JDK-26 wrinkle forced a small change in approach versus the
 Round 3 plan's wording: `Arena/ofGlobal` was a preview-API removal
@@ -150,6 +154,25 @@ candidate and is gone in JDK 26, so the segments are allocated from a
 never-closed `Arena/ofShared` instead. The shared-arena allocation
 overhead is paid once at TL init; the per-call cost is the segment
 header, which is now zero (reused, not allocated).
+
+### What's left on the struct path
+
+Post-Phase-5, struct sits at 113-123 ns against a 58 ns floor, so
+~55-65 ns of overhead remains. Re-profiling attributes the bulk of
+that to:
+
+- `RT.longCast` (long-primitive unbox across the carrier-fill loop,
+  the pool counter, and each field's offset).
+- `PersistentArrayMap.indexOf` + `PersistentArrayMap$TransientArrayMap.indexOf`
+  (the writer's `(.get m kw)` per field and the reader's `assoc!` per
+  field; intrinsic to Clojure's map shape and the input contract).
+- `pool_invoker` + `bind$general_arena_fn` per-call frames (the
+  outer invoker and the carrier-fill loop; further wins require
+  per-arity specialization, which is invasive).
+
+These are at or below the cost floor the JIT can extract from
+Clojure's invocation model without changing the public map-in/map-out
+contract for `deftypez` returns.
 
 ## Order and dependencies
 
@@ -160,7 +183,9 @@ struct path and the marshal-arg-fn / invoke-ctx plumbing. Phase 3
 re-profiling after Phase 2 and reuse the `ThreadLocal` + `global-arena`
 pattern; Phase 4 factored `build-struct-writer` to expose
 `build-struct-writer-chain` so the marshal path can pool its segment
-while reusing the chain. Recommended order: 1, 2, 3, 4.
+while reusing the chain. Phase 5 (return-shape dispatch specialization)
+closes the per-call `cond` walk in the arena-fn body. Recommended
+order: 1, 2, 3, 4, 5.
 
 ## Captures that motivated this plan
 
