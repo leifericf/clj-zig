@@ -96,27 +96,29 @@ The struct path carries most of the remaining winnable overhead.
 
 ## Round 4 landed results
 
-Phases 1 through 5 each landed one commit. Phase 3 (pool the
+Phases 1 through 7 each landed one commit. Phase 3 (pool the
 out-segment per thread), Phase 4 (pool the marshal-segment per thread),
-and Phase 5 (specialize the return dispatch at bind time) emerged from
-re-profiling after Phase 2; all three follow patterns Phase 1 and 2
-established (`ThreadLocal` + `global-arena` for the pools, captured
-per-bind closure for the dispatch).
+Phase 5 (specialize the return dispatch at bind time), Phase 6 (replace
+the carrier-fill loop with a marshal chain), and Phase 7 (build the
+struct return map without transient) emerged from re-profiling after
+Phase 2; all five follow patterns Phase 1 and 2 established
+(`ThreadLocal` + `global-arena` for the pools, captured per-bind closure
+for the dispatch and the chains).
 
-The struct path collapsed from 251 ns to 123 ns across the five
-phases, a 51% reduction in per-call overhead. The other shapes are
+The struct path collapsed from 251 ns to 97 ns across the seven
+phases, a 61% reduction in per-call overhead. The other shapes are
 unchanged within noise; they sit at or below their direct-handle
 floor, so wrapper-side wins have nothing left to give there.
 
 | Shape         | Round 3 | Round 4 | Delta   | Floor |
 |---------------|---------|---------|---------|-------|
-| scalar        | 37 ns   | 40 ns   | +3 ns   | 58 ns |
-| enum          | 46 ns   | 46 ns   | 0       | 55 ns |
-| slice         | 79 ns   | 80 ns   | +1 ns   | 59 ns |
-| struct        | 251 ns  | 123 ns  | -128 ns | 58 ns |
-| handle        | 69 ns   | 74 ns   | +5 ns   | 118 ns|
-| string        | 704 ns  | 699 ns  | -5 ns   | 5365 ns |
-| owned-return  | 1692 ns | 1624 ns | -68 ns  | 5104 ns |
+| scalar        | 37 ns   | 42 ns   | +5 ns   | 56 ns |
+| enum          | 46 ns   | 50 ns   | +4 ns   | 55 ns |
+| slice         | 79 ns   | 84 ns   | +5 ns   | 59 ns |
+| struct        | 251 ns  | 97 ns   | -154 ns | 59 ns |
+| handle        | 69 ns   | 73 ns   | +4 ns   | 131 ns|
+| string        | 704 ns  | 697 ns  | -7 ns   | 5044 ns |
+| owned-return  | 1692 ns | 1631 ns | -61 ns  | 5178 ns |
 
 The small deltas on scalar, enum, slice, and handle are Criterium
 noise across runs; the struct delta is well outside any reasonable
@@ -133,6 +135,8 @@ floor in Round 3 and stay there.
 | + Phase 3: pool the struct-out segment per thread  | 156 ns        |
 | + Phase 4: pool the marshal segment per thread     | 120 ns        |
 | + Phase 5: specialize the return dispatch at bind  | 113 ns        |
+| + Phase 6: replace the carrier-fill loop           | 114 ns        |
+| + Phase 7: build the return map without transient  | 91 ns         |
 
 Phase 1 (hoist the arena-fn closure) is the structural cleanup: a
 pre-bound `arena-fn` plus a per-bind `pool-invoker` that splits the
@@ -144,9 +148,13 @@ one native segment per thread per bind: the out-segment the native
 call writes the struct into, and the marshal-segment the writer chain
 fills. Phase 5 captures the per-bind return-shape branch as a
 dedicated dispatch closure, so the per-call body is one direct invoke
-with no `cond` walk. Both pool phases reuse the same `Arena/ofShared`
-`global-arena` and the same `ThreadLocal` pattern as the existing
-`carriers-tl`.
+with no `cond` walk. Phase 6 replaces the carrier-fill loop with a
+per-bind marshal chain (mirrors `slice-aware-chain`); the
+mutable-args branch keeps the loop. Phase 7 replaces the struct
+reader's `transient`/`persistent!` pair with direct `aset` into a
+pre-sized `object-array` plus `PersistentArrayMap/createWithCheck`
+(one map alloc instead of two, no `TransientArrayMap.indexOf` per
+field).
 
 A JDK-26 wrinkle forced a small change in approach versus the
 Round 3 plan's wording: `Arena/ofGlobal` was a preview-API removal
@@ -155,24 +163,41 @@ never-closed `Arena/ofShared` instead. The shared-arena allocation
 overhead is paid once at TL init; the per-call cost is the segment
 header, which is now zero (reused, not allocated).
 
+A Clojure-wrinkle surfaced in Phase 7: `aset` on `^objects` with a
+primitive value (e.g. `(double (.get seg JAVA_DOUBLE ...))`) reflects
+because `RT/aset` has one overload per primitive array type plus the
+`Object[]` one, and the Clojure compiler cannot disambiguate from a
+primitive value without an explicit cast to `Object`. The fix is a
+load-bearing `^Object` hint on each value expression in the field
+writers; without it the struct reader regresses 50x (5100 ns/call).
+
 ### What's left on the struct path
 
-Post-Phase-5, struct sits at 113-123 ns against a 58 ns floor, so
-~55-65 ns of overhead remains. Re-profiling attributes the bulk of
+Post-Phase-7, struct sits at 91-97 ns against a 59 ns floor, so
+~30-38 ns of overhead remains. Re-profiling attributes the bulk of
 that to:
 
-- `RT.longCast` (long-primitive unbox across the carrier-fill loop,
+- `RT.longCast` (long-primitive unbox across the carrier-fill chain,
   the pool counter, and each field's offset).
-- `PersistentArrayMap.indexOf` + `PersistentArrayMap$TransientArrayMap.indexOf`
-  (the writer's `(.get m kw)` per field and the reader's `assoc!` per
-  field; intrinsic to Clojure's map shape and the input contract).
+- `PersistentArrayMap.indexOf` (the writer's `(.get m kw)` per field;
+  intrinsic to Clojure's map shape and the input contract).
 - `pool_invoker` + `bind$general_arena_fn` per-call frames (the
-  outer invoker and the carrier-fill loop; further wins require
+  outer invoker and the carrier-fill chain; further wins require
   per-arity specialization, which is invasive).
 
 These are at or below the cost floor the JIT can extract from
 Clojure's invocation model without changing the public map-in/map-out
 contract for `deftypez` returns.
+
+### What's left on the slice path
+
+Slice sits at 78-84 ns against a 59-63 ns floor, so ~20 ns of overhead
+remains. The bulk of it is the per-call slice-data segment allocation
++ bulk copy from the caller's primitive array, plus the arena counter
+bump. Pooling the slice segment would only help fixed-length slices
+(the bench's length-3 case), but the public API allows any length, so
+a per-bind pool would be unsound. Closing the gap further would
+require an opt-in fixed-length-slice API or a different contract.
 
 ## Order and dependencies
 
