@@ -1103,20 +1103,22 @@
 (defn- slice-aware-writers
   "Build per-param writer closures for a slice-aware signature. Each
   writer takes `(arena, carriers, off, arg)` and writes the param's
-  carriers starting at `off`. A scalar/enum writer writes one slot; a
-  const-slice writer allocates a segment from `arena`, bulk-copies the
-  primitive array in, and writes (seg, len-long) at `off` and `(inc off)`.
-  Returns `[writers carrier-counts]` so the invoker can advance its
-  offset without rederiving the count per call."
+  carriers starting at `off`. A scalar/enum writer captures the
+  per-bind `scalar-param-coerce` (no per-call `to-carrier` dispatch)
+  and writes one slot; a const-slice writer allocates a segment from
+  `arena`, bulk-copies the primitive array in, and writes (seg, len-long)
+  at `off` and `(inc off)`. Returns `[writers carrier-counts]` so the
+  invoker can advance its offset without rederiving the count per call."
   [params]
   (let [entries
         (for [p params]
           (let [t (:type p)]
             (cond
-              (and (= :scalar (:kind t)) (not (i128-type? t)))
-              {:n 1
-               :write (fn [_arena ^objects cs ^long off arg]
-                        (aset cs off (to-carrier p arg)))}
+               (and (= :scalar (:kind t)) (not (i128-type? t)))
+               (let [coerce (scalar-param-coerce p)]
+                 {:n 1
+                  :write (fn [_arena ^objects cs ^long off arg]
+                           (aset cs off (coerce arg)))})
 
               (and (= :named (:kind t)) (enum-type? t))
               (let [layout  (:layout t)
@@ -1164,10 +1166,13 @@
 (defn- enum-param-coerce
   "Build a per-call coercion fn for one enum param: keyword to backing
   scalar carrier. Throws `:clj-zig/unknown-enum-member` for a non-member.
-  The enum index map is captured at bind time so the per-call body is a
-  single map lookup with no atom dereference."
+  The enum index map and the backing scalar's carrier coercion are both
+  captured at bind time so the per-call body is a single map lookup
+  followed by a specialized `.longValue`/`unchecked-*` path, with no
+  atom dereference and no per-call `case category`/`case bits` dispatch."
   [layout]
   (let [backing (:backing layout)
+        coerce  (scalar-param-coerce {:type backing})
         idx     (enum-index layout)
         kw->val (:kw->value idx)]
     (fn enum-coerce [arg]
@@ -1177,7 +1182,7 @@
                           {:level :error
                            :error/code :clj-zig/unknown-enum-member
                            :type (:name layout) :member arg})))
-        (to-carrier {:type backing} value)))))
+        (coerce value)))))
 
 (defn- enum-return-coerce
   "Build a per-call return coercion fn for an enum return: backing scalar
@@ -1207,15 +1212,15 @@
 
 (defn- enum-aware-coercions
   "Build `[param-coercions return-coercion]` for an enum- or handle-aware
-  signature: one coercion fn per param (scalar uses `to-carrier`, enum
-  uses the keyword-to-backing lookup, handle validates the type and
-  returns its segment) and one return fn (scalar uses `from-return`,
-  enum uses the int-to-keyword lookup)."
+  signature: one coercion fn per param (scalar uses the pre-bound
+  `scalar-param-coerce`, enum uses the keyword-to-backing lookup, handle
+  validates the type and returns its segment) and one return fn (scalar
+  uses `from-return`, enum uses the int-to-keyword lookup)."
   [params ret]
   [(vec (for [p params]
           (let [type (:type p)]
             (cond
-              (= :scalar (:kind type)) #(to-carrier p %)
+              (= :scalar (:kind type)) (scalar-param-coerce p)
               (enum-type? type)        (enum-param-coerce (:layout type))
               (= :handle (:kind type)) (handle-param-coerce (-> type :of :name))))))
    (if (= :named (:kind ret))
