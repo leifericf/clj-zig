@@ -63,7 +63,8 @@
 
 (declare marshal-struct read-struct-field read-bytes read-slice-values
          read-utf8-string write-scalar enum-member->value enum-value->member
-         enum-index coerce-scalar)
+         enum-index coerce-scalar
+         pool-enabled global-arena)
 
 ;; An opaque native resource handle: the symbol naming its Zig type and
 ;; the native pointer. The caller threads it back across calls and frees
@@ -1447,10 +1448,12 @@
   Carriers is the thread-local base array of size `(:n-base ctx) + 3`; the
   trailing three slots are filled with errbuf, errlen, and out before the
   invoke, then cleared so the next call on this thread starts clean."
-  [{:keys [^MethodHandle spreader ret record-factory free-handle error-buffer-bytes n-base struct-reader]}
+  [{:keys [^MethodHandle spreader ret record-factory free-handle error-buffer-bytes n-base struct-reader struct-out-tl]}
    ^Arena arena ^objects carriers copy-back!]
   (let [desc   (-> ret :of :layout)
-        out    ^MemorySegment (.allocate arena (long (:size desc)) (long (:align desc)))
+        out    ^MemorySegment (if struct-out-tl
+                                (.get ^ThreadLocal struct-out-tl)
+                                (.allocate arena (long (:size desc)) (long (:align desc))))
         errbuf ^MemorySegment (.allocate arena error-buffer-bytes 1)
         errlen ^MemorySegment (.allocate arena 8 8)
         i0     (int n-base)
@@ -1509,10 +1512,12 @@
 
   Carriers is the thread-local base array of size `base-count + 1`; the
   trailing slot is filled with the out-segment before the invoke."
-  [{:keys [^MethodHandle spreader ret record-factory free-handle n-base struct-reader]} ^Arena arena
+  [{:keys [^MethodHandle spreader ret record-factory free-handle n-base struct-reader struct-out-tl]} ^Arena arena
    ^objects carriers copy-back!]
   (let [desc (-> ret :of :layout)
-        out  ^MemorySegment (.allocate arena (long (:size desc)) (long (:align desc)))
+        out  ^MemorySegment (if struct-out-tl
+                              (.get ^ThreadLocal struct-out-tl)
+                              (.allocate arena (long (:size desc)) (long (:align desc))))
         i0   (int n-base)]
     (aset carriers i0 out)
     (.invokeExact spreader ^objects carriers)
@@ -1565,10 +1570,12 @@
 
   Carriers is the thread-local base array of size `(:n-base ctx) + 1`; the
   trailing slot is filled with the out-segment before the invoke."
-  [{:keys [^MethodHandle spreader ret record-factory n-base struct-reader]} ^Arena arena
+  [{:keys [^MethodHandle spreader ret record-factory n-base struct-reader struct-out-tl]} ^Arena arena
    ^objects carriers copy-back!]
   (let [desc (:layout ret)
-        out  ^MemorySegment (.allocate arena (long (:size desc)) (long (:align desc)))
+        out  ^MemorySegment (if struct-out-tl
+                              (.get ^ThreadLocal struct-out-tl)
+                              (.allocate arena (long (:size desc)) (long (:align desc))))
         i0   (int n-base)]
     (aset carriers i0 out)
     (.invokeExact spreader ^objects carriers)
@@ -1778,7 +1785,23 @@
                         :else                             nil)
         struct-reader (when struct-desc
                         (or (compiled-struct-reader struct-desc)
-                            (fn fallback-reader [seg] (read-struct seg struct-desc))))]
+                            (fn fallback-reader [seg] (read-struct seg struct-desc))))
+        ;; A per-thread pre-allocated out-segment for the struct-return
+        ;; shapes, allocated from the JVM-lifetime global arena so it is
+        ;; reused across calls instead of allocated per call from the
+        ;; pooled confined arena (saves a `SegmentFactories$1` plus a
+        ;; `NativeMemorySegmentImpl` per call, ~7% of struct allocation
+        ;; pressure per the Round 4 JFR). Only the pool-enabled path
+        ;; uses the pool; the disabled path keeps per-call allocation
+        ;; so each call's arena owns its out-segment for the duration.
+        struct-out-size  (when struct-desc (long (:size struct-desc)))
+        struct-out-align (when struct-desc (long (:align struct-desc)))
+        struct-out-tl    (when (and pool-enabled struct-out-size)
+                           (ThreadLocal/withInitial
+                            (reify java.util.function.Supplier
+                              (get [_]
+                                (.allocate ^Arena global-arena
+                                           struct-out-size struct-out-align)))))]
     {:handle handle :spreader spreader :params params :ret ret :arity arity
      :stream? stream? :eu-struct? eu-struct? :owned-rec? owned-rec?
      :owned-slice? owned-slice? :opt-struct? opt-struct? :struct-ret? struct-ret?
@@ -1788,7 +1811,8 @@
      :invoke-ctx {:spreader spreader :ret ret :record-factory record-factory
                   :free-handle free-handle :error-buffer-bytes error-buffer-bytes
                   :n-base n-base
-                  :struct-reader struct-reader}
+                  :struct-reader struct-reader
+                  :struct-out-tl struct-out-tl}
      :next-h next-h :free-h free-h :elem-lay elem-lay
      :var-sym (symbol (str (:ns spec)) (str (:name spec)))
      ;; The hot path for a scalar-only signature: no per-call arena, and a
@@ -1863,6 +1887,15 @@
 (def ^:private pool-enabled
   (let [v (System/getProperty "clj-zig.arena-pool")]
     (if (some? v) (Boolean/parseBoolean v) true)))
+
+;; A JVM-lifetime arena for per-thread reusable segments (the struct-out
+;; pool below). The segments it allocates are reused across calls on the
+;; owning thread; the arena itself is never closed. `ofShared` because
+;; the arena is created at ns load (no owning thread) but each thread's
+;; TL init allocates its own segment from it; the per-call access is
+;; confined to the owning thread by the ThreadLocal. The shared-arena
+;; allocation overhead is paid once at TL init.
+(def ^:private ^Arena global-arena (Arena/ofShared))
 
 (def ^:private refresh-interval 1024)
 
