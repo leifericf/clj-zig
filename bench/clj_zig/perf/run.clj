@@ -3,7 +3,7 @@
 
   This is the ONLY namespace in the project that requires Criterium, and
   it carries NO deftest, so cognitect-test-runner never loads it under
-  the :test lane (the load-bearing assertion verified in p2-t3).
+  the :test lane.
 
   The shell drives all seven shapes from clj-zig.perf.shape: for each
   shape it compiles the trivial body through clj-zig.core (the normal
@@ -13,23 +13,21 @@
   record EDN to ~/.agentic-sdk/clj-zig/artifacts/perf/.
 
   The floor for a non-allocating shape is a plain invoke of the cached
-  foreign handle against a reused object-array (the floor-invoke
-  pattern settled in p2-t2). The floor for an allocating shape
-  (:string, :owned-return, :handle) invokes the free shim after each
-  call inside the timed thunk, so the floor measures the minimal
-  correct native ROUND-TRIP (call + body + free) and leaks nothing in
-  the Criterium loop. The :free-shim field discriminates; the thunk
-  construction dispatches on :free-shim presence and on whether the
-  main :ret is :void (result via out-params) or non-:void (result via
-  return), so no per-shape kind case leaks into the shape loop.
+  foreign handle against a reused object-array. The floor for an
+  allocating shape (:string, :owned-return, :handle) invokes the free
+  shim after each call inside the timed thunk, so the floor measures
+  the minimal correct native ROUND-TRIP (call + body + free) and leaks
+  nothing in the Criterium loop. The :free-shim field discriminates;
+  the thunk construction dispatches on :free-shim presence and on
+  whether the main :ret is :void (result via out-params) or non-:void
+  (result via return), so no per-shape kind case leaks into the shape
+  loop.
 
-  Per-shape failures are isolated (p3-t2): a compile, floor-bind, or
-  Criterium fault on one shape is caught and shaped into one :errored
-  entry via stats/diagnostic-entry, and the run continues the rest.
+  Per-shape failures are isolated: a compile, floor-bind, or Criterium
+  fault on one shape is caught and shaped into one :errored entry via
+  stats/diagnostic-entry, and the run continues the rest.
 
-  Governing principle: MEASUREMENT ONLY. Nothing here optimizes; the
-  first optimization is a later backlog item, not pickable until this
-  feature and its baseline land."
+  Governing principle: MEASUREMENT ONLY. Nothing here optimizes."
   (:require [clj-zig.core :as clj-zig]
             [clj-zig.cache :as cache]
             [clj-zig.compile :as compile]
@@ -70,9 +68,9 @@
   "The per-shape registration namespace. Each shape compiles into its
   own ns so the named-type and defz registries clj-zig.core holds per-ns
   do not accumulate across shapes and a malformed setup decl on one
-  shape cannot pollute another's preamble (p3-t2 isolation). The ns is
-  only a registration key and a C-symbol prefix, never a Clojure
-  namespace the shell requires."
+  shape cannot pollute another's preamble. The ns is only a
+  registration key and a C-symbol prefix, never a Clojure namespace the
+  shell requires."
   [shape]
   (symbol (str "clj-zig.perf.shape-" (name (:kind shape)))))
 
@@ -619,11 +617,11 @@
 ;;
 ;; Axis-1 measures a defnz redefine's wall-clock across three cache tiers
 ;; and separates the zig build-lib subprocess wall-clock from JVM-side
-;; time. p1 found a single redefine is subprocess-dominated: the clj-zig
-;; authoring code (cache lookup, source generation, toolchain hand-off)
-;; runs for milliseconds, while the zig build-lib subprocess wait
-;; dominates the roughly one-second wall-clock. The separation lets
-;; optimization see where redefine time actually goes.
+;; time. A single redefine is subprocess-dominated: the clj-zig authoring
+;; code (cache lookup, source generation, toolchain hand-off) runs for
+;; milliseconds, while the zig build-lib subprocess wait dominates the
+;; roughly one-second wall-clock. The separation lets optimization see
+;; where redefine time actually goes.
 ;;
 ;; TIERS (the cache state each tier's timed loop sees):
 ;;   cold                clj-zig artifact cache (.clj-zig/cache) AND the
@@ -897,9 +895,9 @@
 
 (defn- select-shapes
   "The shapes to drive for this run. An optional `kind-arg` (a shape kind
-  keyword string like \"enum\") narrows the run to one shape -- the lever
-  the p3-t2 error-isolation smoke pulls: break one body, re-run just that
-  shape, confirm one diagnostic. With no arg, every shape runs."
+  keyword string like \"enum\") narrows the run to one shape -- the
+  error-isolation lever: break one body, re-run just that shape, confirm
+  one diagnostic. With no arg, every shape runs."
   [kind-arg]
   (if kind-arg
     (let [kw (keyword kind-arg)]

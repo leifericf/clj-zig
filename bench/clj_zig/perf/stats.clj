@@ -6,9 +6,9 @@
   (ADR 16). It consumes Criterium result maps as DATA -- the keys
   Criterium writes for one timed expression, chiefly :mean and :median
   -- and emits the entry maps the run shell hands to the perf log. It
-  does NOT require Criterium itself: the bench shell
-  (clj-zig.perf.run, landed in a later phase) is the only file that
-  requires Criterium, and stats consumes whatever it produces.
+  does NOT require Criterium itself: the bench shell clj-zig.perf.run is
+  the only file that requires Criterium, and stats consumes whatever it
+  produces.
 
   Derived quantities:
 
@@ -38,11 +38,11 @@
   per-call invoke cost; a floor above it flags the entry as
   :body-leak-suspect.
 
-  Recalibrated at 2/5 (was 1/10) when p2-t2 first wired the floor and
-  measured the scalar shape. The original 1/10 assumed the IDEAL
-  alloc-free Java-direct-invoke floor of foreign.clj PERFORMANCE (a
-  caller invokes the cached handle with typed primitive arguments),
-  projected at roughly 1-2 ns -- well under 10% of any defnz median.
+  The 2/5 threshold is calibrated against the alloc-free
+  `invokeWithArguments` floor clj-zig.foreign actually reaches, not the
+  IDEAL Java-direct-invoke floor its PERFORMANCE note describes (a
+  caller invokes the cached handle with typed primitive arguments,
+  projected at roughly 1-2 ns -- well under 10% of any defnz median).
   Clojure's compiler cannot emit that call site: a primitive-hinted
   defn around `(.invoke h x)` fails AbstractMethodError, and an inline
   `(.invoke h (long x))` fails ClassCastException (Clojure emits the
@@ -172,11 +172,11 @@
 ;;
 ;; Axis-1 measures a defnz redefine's wall-clock across three cache tiers
 ;; (cold, global-cache-hit, clj-zig-cache-hit) and separates the zig
-;; build-lib subprocess wall-clock from the JVM-side time. p1 found a
-;; single redefine is subprocess-dominated: the clj-zig authoring code
-;; runs for milliseconds, the zig build-lib subprocess wait dominates
-;; the roughly one-second wall-clock. The separation lets optimization
-;; see where redefine time actually goes without re-deriving it.
+;; build-lib subprocess wall-clock from the JVM-side time. A single
+;; redefine is subprocess-dominated: the clj-zig authoring code runs for
+;; milliseconds, the zig build-lib subprocess wait dominates the
+;; roughly one-second wall-clock. The separation lets optimization see
+;; where redefine time actually goes without re-deriving it.
 
 (defn tier-entry
   "Shape one Axis-1 shape's three-tier redefine timings into a

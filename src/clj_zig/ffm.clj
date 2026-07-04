@@ -1889,10 +1889,10 @@
         ;; shapes, allocated from the JVM-lifetime global arena so it is
         ;; reused across calls instead of allocated per call from the
         ;; pooled confined arena (saves a `SegmentFactories$1` plus a
-        ;; `NativeMemorySegmentImpl` per call, ~7% of struct allocation
-        ;; pressure per the Round 4 JFR). Only the pool-enabled path
-        ;; uses the pool; the disabled path keeps per-call allocation
-        ;; so each call's arena owns its out-segment for the duration.
+        ;; `NativeMemorySegmentImpl` per call). Only the pool-enabled
+        ;; path uses the pool; the disabled path keeps per-call
+        ;; allocation so each call's arena owns its out-segment for the
+        ;; duration.
         struct-out-size  (when struct-desc (long (:size struct-desc)))
         struct-out-align (when struct-desc (long (:align struct-desc)))
         struct-out-tl    (when (and pool-enabled struct-out-size)

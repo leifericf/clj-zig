@@ -208,8 +208,9 @@
   ;; or any clj-zig native namespace. The matchers target the
   ;; `:require` vector syntax (`[clj-zig.X :as ...]`, `[criterium.X ..]`)
   ;; so docstring prose mentioning the namespaces by name does not trip
-  ;; them. The runtime classpath check that Criterium itself is not
-  ;; resolvable under :test lands in p1-t3.
+  ;; them. (The runtime classpath check is implicit: under `:test`,
+  ;; Criterium is not on the classpath, so requiring `clj-zig.perf.run`
+  ;; from any test would throw.)
   (let [src (slurp "bench/clj_zig/perf/shape.clj")]
     (is (not (re-find #"\[\s*clj-zig\.core\b" src))
         "shape.clj must not require clj-zig.core")

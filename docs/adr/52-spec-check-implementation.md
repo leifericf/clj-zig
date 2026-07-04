@@ -7,7 +7,7 @@ Supersedes the spec-registration portion of ADR 49.
 ## Context
 
 ADR 49 established that spec registration is opt-in via
-`:clj-zig/spec true`, defaulting on at 1.0. The implementation landed in
+`:clj-zig/spec true`, defaulting on at 1.0. The implementation lives in
 `clj-zig.spec-check`, which maps every boundary type to a
 `clojure.spec.alpha` predicate.
 

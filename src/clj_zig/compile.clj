@@ -26,8 +26,8 @@
   absent on every production compile path -- so the seam is a no-op
   outside the bench and default behavior is byte-for-byte unchanged. The
   perf Axis-1 authoring-latency harness binds this to separate the zig
-  build-lib subprocess wall-clock from JVM-side time (p1 found a single
-  redefine is subprocess-dominated: the clj-zig authoring code runs for
+  build-lib subprocess wall-clock from JVM-side time: a single redefine
+  is subprocess-dominated (the clj-zig authoring code runs for
   milliseconds, the zig build-lib wait dominates the ~1s wall-clock)."
   nil)
 

@@ -64,10 +64,7 @@ The governing principle is measurement only: nothing is optimized to
 make the floor lower. Forcing the two flagged floors lower with a
 combined handle that chains main and free without the intermediate
 adapter, or with a Clojure-emitted `invokeExact` site, would optimize
-the measurement rather than report it. A later optimization backlog
-item may revisit whether a combined handle or a generated `invokeExact`
-call site lifts the two flagged floors into the clean-isolate regime;
-until then the baseline records them as measured.
+the measurement rather than report it.
 
 ## Alternatives
 
