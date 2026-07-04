@@ -2,8 +2,7 @@
 
 How to capture a profile of the clj-zig bench and of a `defnz`
 redefine. This is the diagnosis layer: it tells you WHERE time and
-allocations go. It does not change anything. The first optimization is
-a separate backlog item, pickable once a profile points at it.
+allocations go. It does not change anything.
 
 ## Prerequisites
 
