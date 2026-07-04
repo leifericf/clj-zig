@@ -1352,6 +1352,26 @@
             (fn [_arena _carriers _args] nil)
             (reverse indexed))))
 
+(defn- build-marshal-chain
+  "Build a 3-arg `[arena args carriers]` fn that calls each per-bind
+  marshal fn at its pre-computed offset, replacing the general invoker's
+  per-call loop over `(nth marshal-fns i)` with the offset accumulator.
+  Each link captures one marshal fn, its offset, and its arg index, so
+  the per-call body is a direct closure call with no loop counter, no
+  `nth` of the marshal-fns vector per call, and no per-call offset
+  arithmetic. Mirrors `slice-aware-chain`'s pattern."
+  [marshal-fns carrier-counts base-offset]
+  (let [offs    (reductions (fn [acc c] (+ acc c))
+                            (long base-offset)
+                            (drop-last (seq carrier-counts)))
+        indexed (map vector marshal-fns offs (range))]
+    (reduce (fn [next-k [marshal-fn off idx]]
+              (fn marshal-chain-link [^Arena arena args ^objects carriers]
+                (marshal-fn arena (nth args idx) carriers off)
+                (next-k arena args carriers)))
+            (fn [_arena _args _carriers] nil)
+            (reverse indexed))))
+
 (defn- enum-param-coerce
   "Build a per-call coercion fn for one enum param: keyword to backing
   scalar carrier. Throws `:clj-zig/unknown-enum-member` for a non-member.
@@ -2074,65 +2094,65 @@
                          (return-coerce (.invokeExact ^MethodHandle spreader ^objects carriers))))]
         (pool-invoker var-sym arity arena-fn))
 
-      :else
-      (let [;; Specialize the per-call dispatch to the bind's single return
-            ;; shape. The general invoker used to run a `(cond stream? ...
-            ;; eu-struct? ... ...)` walk per call; that's dead work since
-            ;; exactly one branch ever fires for a given bind. Capturing the
-            ;; branch as `dispatch` at bind time leaves the per-call body
-            ;; with one direct invoke, no cond walk.
-            dispatch (cond
-                       stream?                      (fn stream-dispatch [_arena ^objects carriers copy-back!]
-                                                      (let [iter-addr (.invokeExact ^MethodHandle spreader ^objects carriers)]
-                                                        (copy-back!)
-                                                        (make-stream-reducible iter-addr next-h free-h ret elem-lay)))
-                       eu-struct?                   (fn eu-struct-dispatch [_arena ^objects carriers copy-back!]
-                                                      (invoke-eu-struct invoke-ctx _arena carriers copy-back!))
-                       (= :error-union (:kind ret)) (fn error-union-dispatch [_arena ^objects carriers copy-back!]
-                                                      (invoke-error-union invoke-ctx _arena carriers copy-back!))
-                       owned-rec?                   (fn owned-rec-dispatch [_arena ^objects carriers copy-back!]
-                                                      (invoke-owned-record invoke-ctx _arena carriers copy-back!))
-                       owned-slice?                 (fn owned-slice-dispatch [_arena ^objects carriers copy-back!]
-                                                      (invoke-owned-slice invoke-ctx _arena carriers copy-back!))
-                       opt-struct?                  (fn opt-struct-dispatch [_arena ^objects carriers copy-back!]
-                                                      (invoke-optional-struct invoke-ctx _arena carriers copy-back!))
-                       struct-ret?                  (fn struct-ret-dispatch [_arena ^objects carriers copy-back!]
-                                                      (invoke-struct-return invoke-ctx _arena carriers copy-back!))
-                       :else                        (fn scalar-dispatch [_arena ^objects carriers copy-back!]
-                                                      (invoke-scalar invoke-ctx _arena carriers copy-back!)))
-            arena-fn (fn general-arena-fn [^Arena arena args]
-                       (let [^objects carriers (.get ^ThreadLocal gen-carriers-tl)
-                             base-offset (long gen-base-offset)]
-                         ;; Fill the base carriers. When no param can produce a
-                         ;; copy-back thunk, skip the per-call cb-count loop and use a
-                         ;; constant noop for copy-back!, saving the per-call closure
-                         ;; allocation. When any param may copy back, count and
-                         ;; collect the thunks; the copy-back! body is a tight loop
-                         ;; over the pre-sized array.
-                         (let [copy-back! (if has-mutable-args?
-                                            (let [^objects copybacks (.get ^ThreadLocal gen-copybacks-tl)
-                                                  cb-count (loop [i (long 0) off base-offset cb (long 0)]
-                                                             (if (>= i (long arity))
-                                                               cb
-                                                               (let [copy-back ((nth gen-marshal-fns i)
-                                                                                 arena (nth args i) carriers off)]
-                                                                 (when copy-back
-                                                                   (aset copybacks cb copy-back))
-                                                                 (recur (inc i)
-                                                                        (+ off (long (nth gen-carrier-counts i)))
-                                                                        (if copy-back (inc cb) cb)))))]
-                                              (fn []
-                                                (loop [i (long 0)]
-                                                  (when (< i cb-count)
-                                                    ((aget copybacks i))
-                                                    (recur (inc i))))))
-                                            (do (loop [i (long 0) off base-offset]
-                                                  (when (< i (long arity))
-                                                    ((nth gen-marshal-fns i) arena (nth args i) carriers off)
-                                                    (recur (inc i) (+ off (long (nth gen-carrier-counts i))))))
-                                                noop-copy-back!))]
-                           (dispatch arena carriers copy-back!))))]
-        (pool-invoker var-sym arity arena-fn)))))
+       :else
+       (let [;; Specialize the per-call dispatch to the bind's single return
+             ;; shape. The general invoker used to run a `(cond stream? ...
+             ;; eu-struct? ... ...)` walk per call; that's dead work since
+             ;; exactly one branch ever fires for a given bind. Capturing the
+             ;; branch as `dispatch` at bind time leaves the per-call body
+             ;; with one direct invoke, no cond walk.
+             dispatch (cond
+                        stream?                      (fn stream-dispatch [_arena ^objects carriers copy-back!]
+                                                       (let [iter-addr (.invokeExact ^MethodHandle spreader ^objects carriers)]
+                                                         (copy-back!)
+                                                         (make-stream-reducible iter-addr next-h free-h ret elem-lay)))
+                        eu-struct?                   (fn eu-struct-dispatch [_arena ^objects carriers copy-back!]
+                                                       (invoke-eu-struct invoke-ctx _arena carriers copy-back!))
+                        (= :error-union (:kind ret)) (fn error-union-dispatch [_arena ^objects carriers copy-back!]
+                                                       (invoke-error-union invoke-ctx _arena carriers copy-back!))
+                        owned-rec?                   (fn owned-rec-dispatch [_arena ^objects carriers copy-back!]
+                                                       (invoke-owned-record invoke-ctx _arena carriers copy-back!))
+                        owned-slice?                 (fn owned-slice-dispatch [_arena ^objects carriers copy-back!]
+                                                       (invoke-owned-slice invoke-ctx _arena carriers copy-back!))
+                        opt-struct?                  (fn opt-struct-dispatch [_arena ^objects carriers copy-back!]
+                                                       (invoke-optional-struct invoke-ctx _arena carriers copy-back!))
+                        struct-ret?                  (fn struct-ret-dispatch [_arena ^objects carriers copy-back!]
+                                                       (invoke-struct-return invoke-ctx _arena carriers copy-back!))
+                        :else                        (fn scalar-dispatch [_arena ^objects carriers copy-back!]
+                                                       (invoke-scalar invoke-ctx _arena carriers copy-back!)))
+             ;; Split the arena-fn by `has-mutable-args?` at bind time. The
+             ;; no-mutable-args branch (struct-by-value, const slices, etc.)
+             ;; runs a pre-built marshal chain -- no per-call loop, no `nth`
+             ;; of the marshal-fns vector, no offset accumulator -- and uses
+             ;; the constant `noop-copy-back!`. The mutable-args branch
+             ;; keeps the per-call loop and copy-back collection.
+             arena-fn (if has-mutable-args?
+                        (fn general-arena-fn-mutable [^Arena arena args]
+                          (let [^objects carriers (.get ^ThreadLocal gen-carriers-tl)
+                                base-offset (long gen-base-offset)
+                                ^objects copybacks (.get ^ThreadLocal gen-copybacks-tl)
+                                cb-count (loop [i (long 0) off base-offset cb (long 0)]
+                                           (if (>= i (long arity))
+                                             cb
+                                             (let [copy-back ((nth gen-marshal-fns i)
+                                                               arena (nth args i) carriers off)]
+                                               (when copy-back
+                                                 (aset copybacks cb copy-back))
+                                               (recur (inc i)
+                                                      (+ off (long (nth gen-carrier-counts i)))
+                                                      (if copy-back (inc cb) cb)))))]
+                            (dispatch arena carriers
+                                      (fn []
+                                        (loop [i (long 0)]
+                                          (when (< i cb-count)
+                                            ((aget copybacks i))
+                                            (recur (inc i))))))))
+                        (let [chain (build-marshal-chain gen-marshal-fns gen-carrier-counts gen-base-offset)]
+                          (fn general-arena-fn-immutable [^Arena arena args]
+                            (let [^objects carriers (.get ^ThreadLocal gen-carriers-tl)]
+                              (chain arena args carriers)
+                              (dispatch arena carriers noop-copy-back!)))))]
+         (pool-invoker var-sym arity arena-fn)))))
 
 (comment
   ;; A whole small pipeline: build, compile, bind, call.
