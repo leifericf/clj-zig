@@ -185,13 +185,12 @@
     "A"))
 
 (defn- optional-inner-ok?
-  "True when `t` is a shape an `:optional` argument may wrap: a single or
-  many-item pointer, a carrier scalar (which lowers to a nullable pointer-
-  to-const-scalar, `?*const T`), or a named struct (which lowers to a
-  nullable pointer-to-const-struct, `?*const Type`). A slice, array, an
+  "True when `t` is a shape an `:optional` may wrap: one of `ptr-kinds`
+  (`#{:ptr :manyptr}` for arguments, `#{:ptr}` for returns), a carrier
+  scalar (non-128-bit), or a named non-enum struct. A slice, array, an
   enum, a carrierless scalar, or a 128-bit integer is rejected."
-  [t]
-  (or (contains? #{:ptr :manyptr} (:kind t))
+  [ptr-kinds t]
+  (or (contains? ptr-kinds (:kind t))
       (and (= :scalar (:kind t))
            (type/has-carrier? (:name t))
            (not (type/i128-type? (:name t))))
@@ -251,7 +250,7 @@
             (str (:name type) " is not a valid argument type.")
             {}))
     (when (and (= :optional (:kind type))
-               (not (optional-inner-ok? (:of type))))
+               (not (optional-inner-ok? #{:ptr :manyptr} (:of type))))
       (fail spec :clj-zig/unsupported-optional
             "An :optional argument must wrap a :ptr, :manyptr, or a carrier scalar." {}))
     (when (= :error-union (:kind type))
@@ -311,13 +310,7 @@
   carrier."
   [{:keys [ret] :as spec}]
   (when (and (= :optional (:kind ret))
-             (not (or (= :ptr (:kind (:of ret)))
-                      (and (= :scalar (:kind (:of ret)))
-                           (type/has-carrier? (:name (:of ret)))
-                           (not (type/i128-type? (:name (:of ret)))))
-                      (and (= :named (:kind (:of ret)))
-                           (get-in (:of ret) [:layout])
-                           (not (get-in (:of ret) [:layout :enum]))))))
+             (not (optional-inner-ok? #{:ptr} (:of ret))))
     (fail spec :clj-zig/unsupported-optional
           "An :optional return must wrap a :ptr, carrier scalar, or named struct." {}))
   (when (and (= :error-union (:kind ret))
@@ -423,14 +416,14 @@
   is permissive (`array?` or `coll?`). A scalar is exact."
   [param]
   (let [t (:type param)]
-    (cond
-      (= :slice (:kind t))     '(clojure.spec.alpha/or :array array? :coll coll?)
-      (= :string (:kind t))    '(clojure.spec.alpha/or :str string? :bytes bytes?)
-      (= :named (:kind t))     (if (get-in t [:layout :enum])
-                                 (spec-for-type t)
-                                 'map?)
-      (= :array (:kind t))     'array?
-      :else                     (spec-for-type t))))
+    (case (:kind t)
+      :slice  '(clojure.spec.alpha/or :array array? :coll coll?)
+      :string '(clojure.spec.alpha/or :str string? :bytes bytes?)
+      :named  (if (get-in t [:layout :enum])
+                (spec-for-type t)
+                'map?)
+      :array  'array?
+      (spec-for-type t))))
 
 (defn register!
   "Register `clojure.spec.alpha` predicates for the `defnz` Var's

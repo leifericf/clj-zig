@@ -114,8 +114,8 @@
 (deftest a-slice-of-structs-argument-round-trips
   (testing "a const slice of maps is read element by element in the body"
     (is (= {:x 6.0 :y 9.0}
-           (sum-points [{:x 1.0 :y 2.0} {:x 2.0 :y 3.0} {:x 3.0 :y 4.0}]))
-        (= {:x 0.0 :y 0.0} (sum-points [])))))
+           (sum-points [{:x 1.0 :y 2.0} {:x 2.0 :y 3.0} {:x 3.0 :y 4.0}])))
+    (is (= {:x 0.0 :y 0.0} (sum-points [])))))
 
 (deftest an-owned-slice-of-structs-return-is-a-vector-of-maps
   (testing "the body's allocation is copied out and freed"
