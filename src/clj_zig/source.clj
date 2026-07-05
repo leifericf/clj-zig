@@ -213,6 +213,66 @@
                  (zig/raw-expr (str src-path "." name)))]))
            (:fields layout))))
 
+(defn- simple-slice-reconstruction
+  "The const binding rebinding a slice or string arg from its `_ptr`/`_len`
+  pair: `const binding = binding_ptr[0..binding_len]`."
+  [binding]
+  [(zig/const-stmt binding
+     (zig/slice (zig/ref (str binding "_ptr"))
+                (zig/lit "0")
+                (zig/ref (str binding "_len"))))])
+
+(defn- deref-reconstruction
+  "The const binding dereferencing a single-element pointer arg."
+  [binding]
+  [(zig/const-stmt binding (zig/deref (zig/ref (str binding "_ptr"))))])
+
+(defn- nice-slice-reconstruction
+  "Reconstruct a buffer-carrying struct slice: allocate a nice-record
+  slice, copy each wire element into a nice record, free the allocation
+  in a defer, then rebind the name."
+  [binding layout alloc]
+  (let [type-name (:name layout)
+        copies   (wire-to-nice-copy-stmts layout)]
+    [(zig/const-stmt
+      (str "__nice_" binding)
+      (zig/raw-expr (str alloc ".alloc(" type-name ", " binding "_len) catch @panic(\"oom\")")))
+     (zig/for-stmt
+      (str "(__nice_" binding ", 0..) |*__dst, __i|")
+      (vec (concat [(zig/const-stmt "__src" (zig/raw-expr (str binding "_ptr[__i]")))]
+                   copies)))
+     (zig/defer-stmt
+      (zig/call (str alloc ".free") [(zig/ref (str "__nice_" binding))]))
+     (zig/const-stmt binding (zig/ref (str "__nice_" binding)))]))
+
+(defn- nice-array-reconstruction
+  "Reconstruct a buffer-carrying struct array: declare a stack array of
+  nice records, copy each wire element, then rebind the name."
+  [binding layout n]
+  (let [type-name (:name layout)
+        copies    (wire-to-nice-copy-stmts layout)]
+    [(zig/raw-stmt (str "var __nice_" binding ": [" n "]" type-name " = undefined;"))
+     (zig/for-stmt
+      (str "(0.." n ") |__i|")
+      (vec (concat [(zig/const-stmt "__src" (zig/raw-expr (str binding "_ptr.*[__i]")))
+                    (zig/raw-stmt (str "var __dst = &__nice_" binding "[__i];"))]
+                   copies)))
+     (zig/const-stmt binding (zig/ref (str "__nice_" binding)))]))
+
+(defn- nice-named-reconstruction
+  "Reconstruct a buffer-carrying named struct: deref the wire pointer into
+  a source, declare a nice record, copy the fields, then rebind the name."
+  [binding layout]
+  (let [type-name (:name layout)
+        copies    (wire-to-nice-copy-stmts layout
+                                           (str "__nice_" binding)
+                                           (str "__src_" binding))]
+    (vec (concat
+          [(zig/const-stmt (str "__src_" binding) (zig/deref (zig/ref (str binding "_ptr"))))
+           (zig/raw-stmt (str "var __nice_" binding ": " type-name " = undefined;"))]
+          copies
+          [(zig/const-stmt binding (zig/ref (str "__nice_" binding)))]))))
+
 (defn- reconstruction
   "Statement nodes rebuilding a binding the body uses by name: a slice or
   string from its pointer and length, an array value from its pointer, or
@@ -226,55 +286,18 @@
                  "@import(\"std\").heap.c_allocator"
                  "std.heap.c_allocator")]
      (case (:kind type)
-       :slice (if (buffer-carrying-slice-element? (:of type))
-                (let [layout    (:layout (:of type))
-                      type-name (:name layout)
-                      copies    (wire-to-nice-copy-stmts layout)]
-                  [(zig/const-stmt
-                    (str "__nice_" binding)
-                    (zig/raw-expr (str alloc ".alloc(" type-name ", " binding "_len) catch @panic(\"oom\")")))
-                   (zig/for-stmt
-                    (str "(__nice_" binding ", 0..) |*__dst, __i|")
-                    (vec (concat [(zig/const-stmt "__src" (zig/raw-expr (str binding "_ptr[__i]")))]
-                                 copies)))
-                   (zig/defer-stmt
-                    (zig/call (str alloc ".free") [(zig/ref (str "__nice_" binding))]))
-                   (zig/const-stmt binding (zig/ref (str "__nice_" binding)))])
-                [(zig/const-stmt binding
-                  (zig/slice (zig/ref (str binding "_ptr"))
-                             (zig/lit "0")
-                             (zig/ref (str binding "_len"))))])
-       :string [(zig/const-stmt binding
-                 (zig/slice (zig/ref (str binding "_ptr"))
-                            (zig/lit "0")
-                            (zig/ref (str binding "_len"))))]
+       :slice  (if (buffer-carrying-slice-element? (:of type))
+                 (nice-slice-reconstruction binding (:layout (:of type)) alloc)
+                 (simple-slice-reconstruction binding))
+       :string (simple-slice-reconstruction binding)
        :array  (if (buffer-carrying-slice-element? (:of type))
-                 (let [layout    (:layout (:of type))
-                       type-name (:name layout)
-                       n         (:length type)
-                       copies    (wire-to-nice-copy-stmts layout)]
-                   [(zig/raw-stmt (str "var __nice_" binding ": [" n "]" type-name " = undefined;"))
-                    (zig/for-stmt
-                     (str "(0.." n ") |__i|")
-                     (vec (concat [(zig/const-stmt "__src" (zig/raw-expr (str binding "_ptr.*[__i]")))
-                                   (zig/raw-stmt (str "var __dst = &__nice_" binding "[__i];"))]
-                                  copies)))
-                    (zig/const-stmt binding (zig/ref (str "__nice_" binding)))])
-                 [(zig/const-stmt binding (zig/deref (zig/ref (str binding "_ptr"))))])
+                 (nice-array-reconstruction binding (:layout (:of type)) (:length type))
+                 (deref-reconstruction binding))
        :named  (cond
                  (enum-type? type) nil
                  (some :target (get-in type [:layout :fields]))
-                 (let [layout    (:layout type)
-                       type-name (:name layout)
-                       copies    (wire-to-nice-copy-stmts layout
-                                                          (str "__nice_" binding)
-                                                          (str "__src_" binding))]
-                   (vec (concat
-                         [(zig/const-stmt (str "__src_" binding) (zig/deref (zig/ref (str binding "_ptr"))))
-                          (zig/raw-stmt (str "var __nice_" binding ": " type-name " = undefined;"))]
-                         copies
-                         [(zig/const-stmt binding (zig/ref (str "__nice_" binding)))])))
-                 :else [(zig/const-stmt binding (zig/deref (zig/ref (str binding "_ptr"))))])
+                 (nice-named-reconstruction binding (:layout type))
+                 :else (deref-reconstruction binding))
        nil))))
 
 (defn- param-args

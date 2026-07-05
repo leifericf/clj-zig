@@ -65,7 +65,8 @@
          read-utf8-string write-scalar enum-member->value enum-value->member
          enum-index coerce-scalar
          pool-enabled global-arena
-         compiled-struct-writer-chain)
+         compiled-struct-writer-chain
+         throw-unknown-enum-member throw-handle-mismatch)
 
 ;; An opaque native resource handle: the symbol naming its Zig type and
 ;; the native pointer. The caller threads it back across calls and frees
@@ -228,113 +229,12 @@
 (declare marshal-struct-into! marshal-buffer-field buffer-field-element marshal-array
          compiled-struct-writer compiled-struct-reader)
 
-(defn- marshal-arg-into!
-  "Marshal one boundary `arg` for `param` directly into `carriers` at
-  `offset`, returning the param's copy-back thunk or nil. The hot-path
-  companion to `marshal-arg`: same per-case semantics, no per-arg
-  `{:carriers [...]}` map allocation, and no intermediate carrier vector.
-  The caller pre-sized `carriers` for `base-offset + n-base + n-trailing`
-  and pre-computed each param's carrier count at bind time so the loop
-  that calls this can advance its offset without realizing a layout vec."
-  [^Arena arena param arg ^objects carriers offset]
-  (let [type (:type param)
-        off  (long offset)
-        ^objects cs carriers]
-    (case (:kind type)
-      :string (let [bs (if (string? arg)
-                         (.getBytes ^String arg StandardCharsets/UTF_8)
-                         (do (when-not (bytes? arg)
-                               (throw (ex-info (str "A :string argument must be a String or a byte[]"
-                                                    " of UTF-8; got " (pr-str (type arg)) ".")
-                                               {:level :error
-                                                :error/code :clj-zig/string-argument
-                                                :actual (type arg)})))
-                             arg))
-                    len (alength ^bytes bs)
-                    seg ^MemorySegment (.allocate arena (long len) 1)]
-                (when (pos? len)
-                  (MemorySegment/copy bs (long 0) seg ValueLayout/JAVA_BYTE (long 0) (long len)))
-                (aset cs off seg)
-                (aset cs (inc off) (Long/valueOf (long len)))
-                nil)
-      :slice (let [{:keys [address length copy-back]} (marshal-array arena param arg)]
-               (aset cs off address)
-               (aset cs (inc off) length)
-               copy-back)
-      :manyptr (let [{:keys [address copy-back]} (marshal-array arena param arg)]
-                 (aset cs off address)
-                 copy-back)
-      :ptr (do (when (not= 1 (Array/getLength arg))
-                 (throw (ex-info "A :ptr argument must be a one-element array."
-                                 {:level :error
-                                  :error/code :clj-zig/pointer-arity
-                                  :expected 1
-                                  :actual (Array/getLength arg)})))
-               (let [{:keys [address copy-back]} (marshal-array arena param arg)]
-                 (aset cs off address)
-                 copy-back))
-      :array (let [n (-> param :type :length)
-                   actual (if (= :named (:kind (:of (:type param))))
-                            (count arg)
-                            (Array/getLength arg))]
-               (when (not= n actual)
-                 (throw (ex-info (str "An :array argument must have length " n ".")
-                                 {:level :error
-                                  :error/code :clj-zig/array-length
-                                  :expected n
-                                  :actual actual})))
-               (aset cs off (:address (marshal-array arena param arg)))
-               nil)
-      :optional (let [pointed (-> param :type :of)]
-                  (cond
-                    (nil? arg) (do (aset cs off MemorySegment/NULL) nil)
-                    (= :scalar (:kind pointed))
-                    (let [layout (value-layout pointed)
-                          seg    ^MemorySegment (.allocate arena
-                                                           (.byteSize layout)
-                                                           (.byteSize layout))]
-                      (write-scalar seg pointed 0 (to-carrier {:type pointed} arg))
-                      (aset cs off seg)
-                      nil)
-                    :else (let [{:keys [copy-back]} (marshal-arg-into! arena
-                                                                       (update param :type :of)
-                                                                       arg cs off)]
-                            copy-back)))
-      :named (let [layout (-> type :layout)]
-               (if (:enum layout)
-                 (let [value (enum-member->value layout arg)]
-                   (when (nil? value)
-                     (throw (ex-info (str arg " is not a member of enum " (:name layout) ".")
-                                     {:level :error
-                                      :error/code :clj-zig/unknown-enum-member
-                                      :type (:name layout) :member arg})))
-                   (aset cs off (to-carrier {:type (:backing layout)} value))
-                   nil)
-                 (do (aset cs off (marshal-struct arena layout arg))
-                     nil)))
-      :handle (let [expected (-> type :of :name)]
-                (when-not (and (instance? Handle arg) (= expected (.type ^Handle arg)))
-                  (throw (ex-info (str "Expected a :handle of " expected
-                                       " but got " (pr-str arg) ".")
-                                  {:level :error
-                                   :error/code :clj-zig/handle-type-mismatch
-                                   :expected expected :actual arg})))
-                (aset cs off (.segment ^Handle arg))
-                nil)
-      (if (i128-type? type)
-        (do (aset cs off (bigint->i128-segment arena (biginteger arg)))
-            nil)
-        (do (aset cs off (to-carrier param arg))
-            nil)))))
-
 (defn- marshal-arg-fn
   "Build a per-param marshal closure that captures the param's kind, type,
   and any inner bindings at bind time. The returned fn takes
   `[arena arg carriers off]` and writes the param's carrier(s) at offset,
-  returning the copy-back thunk or nil. Mirrors `marshal-arg-into!`'s case
-  dispatch but each closure captures one case's body, eliminating the
-  per-call `case (:kind type)` walk. The bench shows that walk is a
-  measurable fraction of the struct-by-value path."
+  returning the copy-back thunk or nil. Each closure captures one case's
+  body, eliminating the per-call `case (:kind type)` walk."
   [param]
   (let [type (:type param)]
     (case (:kind type)
@@ -421,15 +321,11 @@
       (let [layout (:layout type)]
         (if (:enum layout)
           (let [kw->val (:kw->value (enum-index layout))
-                coerce  (scalar-param-coerce {:type (:backing layout)})
-                lname   (:name layout)]
+                coerce  (scalar-param-coerce {:type (:backing layout)})]
             (fn enum-marshal [^Arena arena arg ^objects cs ^long off]
               (let [value (get kw->val arg)]
                 (when (nil? value)
-                  (throw (ex-info (str arg " is not a member of enum " lname ".")
-                                  {:level :error
-                                   :error/code :clj-zig/unknown-enum-member
-                                   :type lname :member arg})))
+                  (throw-unknown-enum-member layout arg))
                 (aset cs off (coerce value))
                 nil)))
           (let [[msize malign chain] (or (compiled-struct-writer-chain layout)
@@ -456,11 +352,7 @@
       (let [expected (-> type :of :name)]
         (fn handle-marshal [^Arena arena arg ^objects cs ^long off]
           (when-not (and (instance? Handle arg) (= expected (.type ^Handle arg)))
-            (throw (ex-info (str "Expected a :handle of " expected
-                                 " but got " (pr-str arg) ".")
-                            {:level :error
-                             :error/code :clj-zig/handle-type-mismatch
-                             :expected expected :actual arg})))
+            (throw-handle-mismatch expected arg))
           (aset cs off (.segment ^Handle arg))
           nil))
 
@@ -511,10 +403,7 @@
         (dotimes [i len]
           (let [v (enum-member->value layout (nth arr i))]
             (when (nil? v)
-              (throw (ex-info (str (nth arr i) " is not a member of enum " (:name layout) ".")
-                              {:level :error
-                               :error/code :clj-zig/unknown-enum-member
-                               :type (:name layout) :member (nth arr i)})))
+              (throw-unknown-enum-member layout (nth arr i)))
             (write-scalar seg backing (* (long i) bb) (to-carrier {:type backing} v))))
         {:address seg :length len :copy-back nil})
 
@@ -603,21 +492,14 @@
                 (if (:enum layout)
                   (let [value (enum-member->value layout arg)]
                     (when (nil? value)
-                      (throw (ex-info (str arg " is not a member of enum " (:name layout) ".")
-                                      {:level :error
-                                       :error/code :clj-zig/unknown-enum-member
-                                       :type (:name layout) :member arg})))
+                      (throw-unknown-enum-member layout arg))
                     ;; An enum crosses as its backing scalar, so coerce to the
                     ;; backing's carrier width (byte for u8, int for i32, ...).
                     {:carriers [(to-carrier {:type (:backing layout)} value)]})
                   {:carriers [(marshal-struct arena layout arg)]}))
     :handle   (let [expected (-> param :type :of :name)]
                 (when-not (and (instance? Handle arg) (= expected (.type ^Handle arg)))
-                  (throw (ex-info (str "Expected a :handle of " expected
-                                       " but got " (pr-str arg) ".")
-                                  {:level :error
-                                   :error/code :clj-zig/handle-type-mismatch
-                                   :expected expected :actual arg})))
+                  (throw-handle-mismatch expected arg))
                 {:carriers [(.segment ^Handle arg)]})
     (if (i128-type? (:type param))
       ;; A 128-bit integer crosses as a 16-byte segment allocated in the call
@@ -701,6 +583,26 @@
   (throw (ex-info (str "Struct " descriptor-name " is missing field " field-name ".")
                   {:level :error :error/code :clj-zig/missing-field
                    :type descriptor-name :field field-name})))
+
+(defn- throw-unknown-enum-member
+  "Throw the `:clj-zig/unknown-enum-member` diagnostic for a keyword the
+  enum layout does not carry. Cold validation path; the hot lookup stays
+  inline at each call site."
+  [layout member]
+  (throw (ex-info (str member " is not a member of enum " (:name layout) ".")
+                  {:level :error
+                   :error/code :clj-zig/unknown-enum-member
+                   :type (:name layout) :member member})))
+
+(defn- throw-handle-mismatch
+  "Throw the `:clj-zig/handle-type-mismatch` diagnostic for a wrong-typed
+  Handle argument. Cold validation path."
+  [expected actual]
+  (throw (ex-info (str "Expected a :handle of " expected
+                       " but got " (pr-str actual) ".")
+                  {:level :error
+                   :error/code :clj-zig/handle-type-mismatch
+                   :expected expected :actual actual})))
 
 (defn- build-struct-writer-chain
   "Build `[size align chain]` for an all-scalar struct, or nil if any
@@ -913,9 +815,7 @@
   (doseq [{:keys [name type offset len-offset target nested]} (:fields descriptor)]
     (let [v (get m (keyword name))]
       (when (nil? v)
-        (throw (ex-info (str "Struct " (:name descriptor) " is missing field " name ".")
-                        {:level :error :error/code :clj-zig/missing-field
-                         :type (:name descriptor) :field name})))
+        (throw-missing-field (:name descriptor) name))
       (cond
         target
         (let [{:keys [address length]} (marshal-buffer-field arena type v)]
@@ -1327,10 +1227,7 @@
                  :write (fn [_arena ^objects cs ^long off arg]
                           (let [value (get kw->val arg)]
                             (when (nil? value)
-                              (throw (ex-info (str arg " is not a member of enum " (:name layout) ".")
-                                              {:level :error
-                                               :error/code :clj-zig/unknown-enum-member
-                                               :type (:name layout) :member arg})))
+                              (throw-unknown-enum-member layout arg))
                             (aset cs off (to-carrier {:type backing} value))))})
 
               (const-slice-of-scalar? p)
@@ -1389,10 +1286,7 @@
     (fn enum-coerce [arg]
       (let [value (get kw->val arg)]
         (when (nil? value)
-          (throw (ex-info (str arg " is not a member of enum " (:name layout) ".")
-                          {:level :error
-                           :error/code :clj-zig/unknown-enum-member
-                           :type (:name layout) :member arg})))
+          (throw-unknown-enum-member layout arg))
         (coerce value)))))
 
 (defn- enum-return-coerce
@@ -1410,15 +1304,11 @@
   "Build a per-call coercion fn for one [:handle Type] param: validate the
   arg is a Handle of the expected type and return its native segment for
   aset into the carrier array. Throws `:clj-zig/handle-type-mismatch`
-  for a wrong-typed handle, mirroring the general path's marshal-arg-into!."
+  for a wrong-typed handle."
   [expected]
   (fn handle-coerce [arg]
     (when-not (and (instance? Handle arg) (= expected (.type ^Handle arg)))
-      (throw (ex-info (str "Expected a :handle of " expected
-                           " but got " (pr-str arg) ".")
-                      {:level :error
-                       :error/code :clj-zig/handle-type-mismatch
-                       :expected expected :actual arg})))
+      (throw-handle-mismatch expected arg))
     (.segment ^Handle arg)))
 
 (defn- handle-return-coerce
@@ -1747,9 +1637,27 @@
                                   (FunctionDescriptor/of ValueLayout/JAVA_BOOLEAN
                                     (into-array MemoryLayout [ValueLayout/JAVA_LONG ValueLayout/ADDRESS]))
                                   (into-array Linker$Option [])))
-     :free-h   (when stream?
-                 (free-shim-handle linker lookup free-sym [ValueLayout/JAVA_LONG]))
-     :elem-lay (when stream? (value-layout (:of ret)))}))
+      :free-h   (when stream?
+                  (free-shim-handle linker lookup free-sym [ValueLayout/JAVA_LONG]))
+      :elem-lay (when stream? (value-layout (:of ret)))}))
+
+(defn- build-slice-setup
+  "The slice-aware path's bind-time state, or a map of nils when the
+  signature is not slice-aware. Assembled once so `bind-context` binds
+  each field without repeating the `when slice-path?` guard."
+  [params ret scalar-path? enum-path?]
+  (if (and (not scalar-path?) (not enum-path?) (slice-aware? params ret))
+    (let [[writers counts] (slice-aware-writers params)]
+      {:slice-path?   true
+       :slice-writers writers
+       :slice-counts  counts
+       :slice-chain   (slice-aware-chain writers counts)
+       :slice-total   (reduce + counts)})
+    {:slice-path?   false
+     :slice-writers nil
+     :slice-counts  nil
+     :slice-chain   nil
+     :slice-total   nil}))
 
 (defn- bind-context
   "The per-bind context shared by the scalar hot path and the general
@@ -1760,12 +1668,7 @@
   from it."
   [spec library-path]
   (let [linker foreign/linker
-        ;; Loading a native library is a restricted operation; a JVM that
-        ;; denies native access fails here, so translate it into a
-        ;; diagnostic that names the flag rather than the raw FFM error.
-        ;; `foreign/library-lookup` opens the file and degrades a bad path
-        ;; as data; `with-native-access` layers the native-access diagnostic
-        ;; on top, so both failure modes read clearly.
+        ;; with-native-access layers the native-access diagnostic on library-lookup's bad-path data.
         lookup (with-native-access #(foreign/library-lookup library-path))
         sym    (foreign/find-symbol lookup (:symbol spec))
         handle ^MethodHandle (.downcallHandle linker sym (descriptor spec)
@@ -1776,12 +1679,8 @@
         classify     (classify-return ret)
         {:keys [eu-struct? owned-rec? owned-slice? opt-struct? struct-ret? stream?]}
         classify
-        ;; An owned/borrowed record and an error-union over a struct both
-        ;; wrap the value's named type under :of; everything else (a plain
-        ;; struct return, an enum, a scalar, a scalar/void/enum error-union)
-        ;; names the value type directly on ret. Unwrapping consistently is
-        ;; safe: the record-factory lookup below returns nil for any
-        ;; non-named or enum-named value.
+        ;; Unwrap :of for ownership/error-union/optional; safe because the
+        ;; record-factory lookup returns nil for non-named or enum-named values.
         ret-value    (if (contains? #{:owned :borrowed :error-union :optional} (:kind ret))
                        (:of ret)
                        ret)
@@ -1801,13 +1700,12 @@
         ;; return, where FFM prepends the arena as SegmentAllocator.
         scalar-path? (scalar-only? params ret)
         enum-path?   (enum-aware-scalar? params ret)
-         slice-path?  (and (not scalar-path?) (not enum-path?)
-                           (slice-aware? params ret))
-         slice-setup  (when slice-path? (slice-aware-writers params))
-         slice-writers (when slice-path? (first slice-setup))
-         slice-counts  (when slice-path? (second slice-setup))
-         slice-chain   (when slice-path? (slice-aware-chain slice-writers slice-counts))
-         slice-total  (when slice-path? (reduce + slice-counts))
+        {slice-path?   :slice-path?
+         slice-writers :slice-writers
+         slice-counts  :slice-counts
+         slice-chain   :slice-chain
+         slice-total   :slice-total}
+        (build-slice-setup params ret scalar-path? enum-path?)
         i128-ret?    (i128-type? ret)
         base-offset  (if i128-ret? 1 0)
         n-base       (reduce + (map param-carrier-count params))
@@ -1944,11 +1842,7 @@
   "Return the current thread's pooled confined Arena, bumping the
   per-thread call counter in place. The arena is refreshed (closed and
   replaced) when the counter reaches `refresh-interval`, bounding the
-  pool's memory growth. The pool path's per-call work is this counter
-  bump; there is no per-call release (the next call's acquire handles
-  refresh). Reads the counter exactly once on the steady path so the
-  JIT sees a single `laload` and `lastore` pair with no redundant
-  ThreadLocal/field reads between them."
+  pool's memory growth."
   ^Arena []
   (let [entry   ^PoolEntry (.get tl-arena)
         counter ^longs (.counter entry)
@@ -1968,24 +1862,6 @@
       (do
         (aset counter 0 (inc n))
         (.arena entry)))))
-
-(defn- with-pooled-arena
-  "Run `f` with an Arena. When pooling is enabled (the default), the
-  arena comes from `acquire-pooled-arena` (a thread-local confined
-  arena reused across calls, with a per-call counter bump in place via
-  `aset` on a one-element long array; no per-call allocation). When
-  disabled with -Dclj-zig.arena-pool=false, allocates a fresh confined
-  arena per call and closes it in a `with-open`.
-
-  The hot-path invokers (`bind`'s slice and general branches) skip
-  this wrapper and call `acquire-pooled-arena` directly with a
-  pre-bound arena-fn, so they avoid the per-call callback closure this
-  helper would otherwise allocate."
-  [f]
-  (if pool-enabled
-    (f (acquire-pooled-arena))
-    (with-open [arena (Arena/ofConfined)]
-      (f arena))))
 
 (defn- pool-invoker
   "Build the per-call invoker fn for an arena-using signature, given a
@@ -2017,7 +1893,7 @@
   invokes. Every other signature keeps the general path, whose confined
   arena holds the native copies of slice/pointer/struct args for the call
   (ADR 37/39). With `-Dclj-zig.arena-pool=true` the arena is a pooled
-  thread-local one reused across calls (`with-pooled-arena`), so its
+  thread-local one reused across calls, so its
   lifetime is logically call-bounded but physically extended."
   [spec library-path]
   (let [{:keys [spreader params ret arity invoke-ctx next-h free-h elem-lay var-sym

@@ -281,6 +281,27 @@
                  "immutable maps. Declare it [:slice :const " (:name (:of type)) "].")
             {:element (select-keys (:of type) [:kind :name])}))))
 
+(defn- validate-stream-return!
+  "Validate a :stream return's element and iterator shape."
+  [spec ret]
+  (let [elem (:of ret)]
+    (when-not (and (= :scalar (:kind elem))
+                   (type/has-carrier? (:name elem))
+                   (not (type/i128-type? (:name elem))))
+      (fail spec :clj-zig/unsupported-stream
+            (str "A :stream return must hold a carrier scalar element (the "
+                 "read path is scalar-only, no 128-bit); got "
+                 (pr-str (:kind elem)) ".")
+            {:element (select-keys elem [:kind :name])}))
+    (let [iter (:iter-layout ret)]
+      (when-not (and iter
+                     (get-in iter [:clj-zig/iter :next])
+                     (get-in iter [:clj-zig/iter :deinit]))
+        (fail spec :clj-zig/unsupported-stream
+              (str "A :stream's iterator type " (:iter-type ret)
+                   " must be a deftypez carrying :clj-zig/iter {:next :deinit}.")
+              {:iter-type (:iter-type ret)})))))
+
 (defn- validate-return!
   "Reject contracts FFM cannot honor in return position: an `:optional`,
   `:error-union`, `:owned`/`:borrowed`, `:bytes`, or `:handle` return of a
@@ -319,23 +340,7 @@
   (when (and (= :handle (:kind ret)) (not= :named (:kind (:of ret))))
     (fail spec :clj-zig/unsupported-handle "A :handle must wrap a named type." {}))
   (when (= :stream (:kind ret))
-    (let [elem (:of ret)]
-      (when-not (and (= :scalar (:kind elem))
-                     (type/has-carrier? (:name elem))
-                     (not (type/i128-type? (:name elem))))
-        (fail spec :clj-zig/unsupported-stream
-              (str "A :stream return must hold a carrier scalar element (the "
-                   "read path is scalar-only, no 128-bit); got "
-                   (pr-str (:kind elem)) ".")
-              {:element (select-keys elem [:kind :name])}))
-      (let [iter (:iter-layout ret)]
-        (when-not (and iter
-                       (get-in iter [:clj-zig/iter :next])
-                       (get-in iter [:clj-zig/iter :deinit]))
-          (fail spec :clj-zig/unsupported-stream
-                (str "A :stream's iterator type " (:iter-type ret)
-                     " must be a deftypez carrying :clj-zig/iter {:next :deinit}.")
-                {:iter-type (:iter-type ret)})))))
+    (validate-stream-return! spec ret))
   (check-element! spec ret)
   (when (borrowed-buffer-slice? ret)
     (fail spec :clj-zig/unsupported-borrowed-buffer-slice

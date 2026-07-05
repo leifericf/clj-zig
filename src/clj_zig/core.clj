@@ -673,6 +673,29 @@
                     {:level :error :error/code :clj-zig/ambiguous-body-form
                      :var fn-name}))))
 
+(defn- validate-single-arity-form!
+  "Validate the parsed single-arity defnz form, throwing for a malformed
+  body, ambiguous file/attr, or trailing forms. Returns the body-shape
+  flags the macro needs downstream."
+  [fn-name parsed]
+  (let [{:keys [attr-map signature body trailing]} parsed
+        file-body? (and (map? body) (contains? body :zig/file))
+        bodyless?  (and (nil? body) (vector? signature))
+        infer?     (and (nil? body) (nil? signature))]
+    (when (map? attr-map) (descriptor/validate-descriptor-keys attr-map))
+    (when (map? body) (descriptor/validate-descriptor-keys body))
+    (reject-ambiguous-file-attr! fn-name attr-map)
+    (when (seq trailing)
+      (throw (ex-info (str "defnz " fn-name " has " (count trailing)
+                           " form(s) after the body; nothing may follow the Zig body.")
+                      {:level :error :error/code :clj-zig/malformed-defnz
+                       :var fn-name})))
+    (when-not (or (string? body) file-body? bodyless? infer?)
+      (throw (ex-info "defnz needs a Zig body: a string, a {:zig/file ...} descriptor, or a signature with the body in the namespace's .zig."
+                      {:level :error :error/code :clj-zig/malformed-defnz
+                       :var fn-name})))
+    {:file-body? file-body? :bodyless? bodyless? :infer? infer?}))
+
 (defmacro defnz
   "Define a Clojure function whose body is Zig. The signature vector is
   the boundary contract; the trailing form is the Zig body, a string or a
@@ -763,30 +786,16 @@
            '~var-meta)
           ~@(when (:clj-zig/spec attr-map)
               `((clj-zig.spec/register! (var ~fn-name))))))
-      (let [{:keys [docstring attr-map signature body trailing]} parsed
-            file-body? (and (map? body) (contains? body :zig/file))
-            bodyless?  (and (nil? body) (vector? signature))
-            infer?     (and (nil? body) (nil? signature))]
-        (when (map? attr-map) (descriptor/validate-descriptor-keys attr-map))
-        (when (map? body) (descriptor/validate-descriptor-keys body))
-        (reject-ambiguous-file-attr! fn-name attr-map)
-        (when (seq trailing)
-          (throw (ex-info (str "defnz " fn-name " has " (count trailing)
-                               " form(s) after the body; nothing may follow the Zig body.")
-                          {:level :error :error/code :clj-zig/malformed-defnz
-                           :var fn-name})))
-        (when-not (or (string? body) file-body? bodyless? infer?)
-          (throw (ex-info "defnz needs a Zig body: a string, a {:zig/file ...} descriptor, or a signature with the body in the namespace's .zig."
-                          {:level :error :error/code :clj-zig/malformed-defnz
-                           :var fn-name})))
-        (let [the-ns        (ns-name *ns*)
-              defining-file *file*
-              raw-signature (if infer?
-                               (infer/infer-signature
-                                (:text (source/resolve-and-read
-                                        defining-file (source/namespace-zig-file defining-file)))
-                               (str/replace (name fn-name) "-" "_"))
-                              signature)
+      (let [{:keys [docstring attr-map signature body]} parsed
+            {:keys [bodyless? infer?]} (validate-single-arity-form! fn-name parsed)
+            the-ns        (ns-name *ns*)
+            defining-file *file*
+            raw-signature (if infer?
+                             (infer/infer-signature
+                              (:text (source/resolve-and-read
+                                      defining-file (source/namespace-zig-file defining-file)))
+                              (str/replace (name fn-name) "-" "_"))
+                            signature)
               raw-norm      (signature/normalize raw-signature)
               rest-arg      (some #(when (:rest? %) %) (:args raw-norm))
               comptime-args (vec (filter #(-> % :binding meta :comptime) (:args raw-norm)))
@@ -836,7 +845,7 @@
                 `(establish-binding-from! (var ~fn-name) '~spec ~descriptor ~defining-file
                                           '~var-meta ~wrap))
              ~@(when (:clj-zig/spec attr-map)
-                 `((clj-zig.spec/register! (var ~fn-name))))))))))
+                 `((clj-zig.spec/register! (var ~fn-name)))))))))
 
 (defn resolve-decl-source
   "The Zig text for a `defz` declaration: a string as-is, or the contents

@@ -62,6 +62,29 @@
         {:args (:args (parse-args-region signature args-region))
          :ret  (peek signature)}))))
 
+(defn- parse-rest-arg
+  "Validate and normalize the trailing `& binding type` rest argument at
+  `i` in `region`, returning the rest-flagged arg. Throws a diagnostic
+  for a misplaced `&`, a non-symbol rest binding, or a rest element that
+  is not a carrier scalar."
+  [signature region i]
+  (let [rest-start (inc i)]
+    (when-not (= rest-start (- (count region) 2))
+      (fail signature :clj-zig/misplaced-rest
+            "& must introduce the final rest argument: & binding type." {}))
+    (let [binding (nth region rest-start)
+          elem    (nth region (inc rest-start))]
+      (when-not (symbol? binding)
+        (fail signature :clj-zig/invalid-binding
+              "A rest argument's binding must be a symbol." {:binding binding}))
+      (when-not (and (type/has-carrier? elem) (not (type/i128-type? elem)))
+        (fail signature :clj-zig/unsupported-rest-element
+              (str "A rest argument's element must be a primitive carrier scalar; "
+                   "& cannot carry " (pr-str elem) ".")
+              {:element elem}))
+      (-> (normalize-arg signature [binding [:slice :const elem]])
+          (assoc :rest? true)))))
+
 (defn- parse-args-region
   "Walk the args region (everything before `:ret`) into a vector of
   normalized args. Leading binding/type pairs are consumed in order; a
@@ -76,22 +99,7 @@
       {:args args}
 
       (= (nth region i) rest-marker)
-      (let [rest-start (inc i)]
-        (when-not (= rest-start (- (count region) 2))
-          (fail signature :clj-zig/misplaced-rest
-                "& must introduce the final rest argument: & binding type." {}))
-        (let [binding (nth region rest-start)
-              elem    (nth region (inc rest-start))]
-          (when-not (symbol? binding)
-            (fail signature :clj-zig/invalid-binding
-                  "A rest argument's binding must be a symbol." {:binding binding}))
-          (when-not (and (type/has-carrier? elem) (not (type/i128-type? elem)))
-            (fail signature :clj-zig/unsupported-rest-element
-                  (str "A rest argument's element must be a primitive carrier scalar; "
-                       "& cannot carry " (pr-str elem) ".")
-                  {:element elem}))
-          {:args (conj args (-> (normalize-arg signature [binding [:slice :const elem]])
-                                (assoc :rest? true)))}))
+      {:args (conj args (parse-rest-arg signature region i))}
 
       :else
       (if (>= (inc i) (count region))
