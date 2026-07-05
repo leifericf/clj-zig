@@ -906,9 +906,8 @@
                     :owned-record       (generate-owned-struct-return spec body)
                     :ownership          (generate-ownership spec body)
                     :optional-struct    (generate-optional-struct-return spec body)
-                    :named-enum         (generate-plain spec body)
                     :named-struct       (generate-struct-return spec body)
-                    :plain              (generate-plain spec body))
+                    (:named-enum :plain) (generate-plain spec body))
         wire-decls (buffer-wire-decls spec)
         std?       (needs-std? spec)]
     (vec (concat
@@ -1139,9 +1138,8 @@
                      :owned-record       (file-owned-struct-return spec entry)
                      :ownership          (file-ownership spec entry)
                      :optional-struct    (file-optional-struct-return spec entry)
-                     :named-enum         (file-plain spec entry)
                      :named-struct       (file-struct-return spec entry)
-                     (:stream :plain)    (file-plain spec entry))]
+                     (:stream :named-enum :plain) (file-plain spec entry))]
     (vec (concat wire-decls core))))
 
 (defn inline-nodes

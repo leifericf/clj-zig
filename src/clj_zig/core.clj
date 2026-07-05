@@ -113,8 +113,7 @@
    (let [preamble    (preamble-nodes (:ns spec))
          mods        (modules-in (:ns spec))
          body-nodes  (case mode
-                       :raw  (if (str/blank? body) [] [(zig/raw-decl body)])
-                       :file (if (str/blank? body) [] [(zig/raw-decl body)])
+                       (:raw :file) (if (str/blank? body) [] [(zig/raw-decl body)])
                        [])
          wrapper-nodes (case mode
                          :raw  []
