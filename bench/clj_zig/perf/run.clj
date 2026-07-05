@@ -43,8 +43,7 @@
             [criterium.core :as criterium])
   (:import (java.lang ProcessHandle)
            (java.lang.foreign Arena MemorySegment ValueLayout)
-           (java.nio.charset StandardCharsets)
-           (java.util ArrayList List)))
+           (java.nio.charset StandardCharsets)))
 
 ;; output location
 

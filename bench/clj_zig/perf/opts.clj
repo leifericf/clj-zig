@@ -49,35 +49,45 @@
       (= a attach-window-flag) (some-> (first rest) parse-attach-window)
       :else                    (recur rest))))
 
+(defn- truthy-env?
+  "True when `env` carries `key` set to a truthy value (1, true, yes, on,
+  case-insensitive). Any other value or absence is false."
+  [env key]
+  (let [v (some-> (get env key) str/lower-case str/trim)]
+    (boolean (and v (#{"1" "true" "yes" "on"} v)))))
+
+(defn- flag-present?
+  "True when `args` carries the bare switch `flag`."
+  [args flag]
+  (boolean (some #(= % flag) args)))
+
 (defn- track-allocations-from-args?
   "True when `args` carries the --track-allocations flag (a bare switch,
   no value). Walks the arg list so the flag may appear in any position
   alongside the kind positional and the --attach-window value."
   [args]
-  (boolean (some #(= % track-allocations-flag) args)))
+  (flag-present? args track-allocations-flag))
 
 (defn- track-allocations-from-env?
   "True when the CLJ_ZIG_TRACK_ALLOCATIONS env var is set to a truthy
   value (1, true, yes, on, case-insensitive). Any other value (0, empty,
   unset) keeps the profiling build off so the default library is built."
   [env]
-  (let [v (some-> (get env track-allocations-env) str/lower-case str/trim)]
-    (boolean (and v (#{ "1" "true" "yes" "on"} v)))))
+  (truthy-env? env track-allocations-env))
 
 (defn- axis1-from-args?
   "True when `args` carries the --axis1 bare switch. The switch selects
   the Axis-1 authoring-latency harness instead of the default per-call
   overhead run."
   [args]
-  (boolean (some #(= % axis1-flag) args)))
+  (flag-present? args axis1-flag))
 
 (defn- axis1-from-env?
   "True when the CLJ_ZIG_AXIS1 env var is set to a truthy value (1, true,
   yes, on, case-insensitive). Any other value (0, empty, unset) keeps
   Axis-1 off so the default run is unchanged."
   [env]
-  (let [v (some-> (get env axis1-env) str/lower-case str/trim)]
-    (boolean (and v (#{ "1" "true" "yes" "on"} v)))))
+  (truthy-env? env axis1-env))
 
 (defn- parse-jfr-flag
   "Walk `args` and return the value of the --jfr flag (a path string),
