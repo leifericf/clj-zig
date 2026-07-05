@@ -10,6 +10,14 @@
       ;; => full markdown for every defnz in the namespace"
   (:require [clojure.string :as str]))
 
+(defn- of-type-str
+  "A readable string for the element under a slice or stream wrapper's `:of`."
+  [t]
+  (case (get-in t [:of :kind])
+    :scalar (name (get-in t [:of :name]))
+    :named  (str (get-in t [:of :name]))
+    (pr-str (:of t))))
+
 (defn- type-str
   "A readable string for a normalized boundary type."
   [t]
@@ -19,14 +27,8 @@
     :string "string"
     :void   "void"
     :slice  (str "[:slice " (when (:const? t) ":const ")
-                 (case (get-in t [:of :kind])
-                   :scalar (name (get-in t [:of :name]))
-                   :named  (str (get-in t [:of :name]))
-                   (pr-str t))
-                 "]")
-    :stream (str "[:stream " (case (get-in t [:of :kind])
-                               :scalar (name (get-in t [:of :name]))
-                               (pr-str (:of t))) "]")
+                 (of-type-str t) "]")
+    :stream (str "[:stream " (of-type-str t) "]")
     (pr-str t)))
 
 (defn- param-table-row

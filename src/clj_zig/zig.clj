@@ -136,17 +136,14 @@
     (str prefix " " name "(" params-str ") " ret " {\n" body-str "}")))
 
 (defmethod render-decl :struct [{:keys [name kind fields]}]
-  (let [kw (case kind :extern "extern" :packed "packed" "")
-        head (if (str/blank? kw)
-               (str "const " name " = struct {")
-               (str "const " name " = " kw " struct {"))
-        fields-str (if (seq fields)
+  (let [prefix (case kind :extern "extern " :packed "packed " "")
+        head   (str "const " name " = " prefix "struct {")
+        fields-str (when (seq fields)
                      (->> (map (fn [{:keys [name type]}]
                                  (str (indent 1) name ": " type ","))
                                fields)
-                          (str/join "\n"))
-                     "")]
-    (if (seq fields)
+                          (str/join "\n")))]
+    (if fields-str
       (str head "\n" fields-str "\n};")
       (str head "};"))))
 

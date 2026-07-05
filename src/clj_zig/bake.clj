@@ -39,7 +39,7 @@
   "True when a function links a C library beyond libc and libm. Such a
   function cannot cross-compile freely, so it is baked for the host only."
   [options]
-  (boolean (some (fn [lib] (not (#{"c" "m"} lib))) (:link options))))
+  (boolean (some (complement #{"c" "m"}) (:link options))))
 
 (defn- function-inputs
   "The build inputs for an established `defnz`, from the inspection data its

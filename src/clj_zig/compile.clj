@@ -24,11 +24,7 @@
   build-lib subprocess records its wall-clock (in milliseconds) into the
   box just before the result is returned. Default nil -- the binding is
   absent on every production compile path -- so the seam is a no-op
-  outside the bench and default behavior is byte-for-byte unchanged. The
-  perf Axis-1 authoring-latency harness binds this to separate the zig
-  build-lib subprocess wall-clock from JVM-side time: a single redefine
-  is subprocess-dominated (the clj-zig authoring code runs for
-  milliseconds, the zig build-lib wait dominates the ~1s wall-clock)."
+  outside the bench and default behavior is byte-for-byte unchanged."
   nil)
 
 (defn dynamic-library-extension
@@ -46,10 +42,11 @@
   paths (`-L`), and linked libraries (`-l`). Returns a flat vector of argv
   tokens, empty when there is nothing to add. Pure."
   [{:keys [include-path system-include-path link-path link]}]
-  (vec (concat (mapcat (fn [p] ["-I" p]) include-path)
-               (mapcat (fn [p] ["-isystem" p]) system-include-path)
-               (mapcat (fn [p] ["-L" p]) link-path)
-               (map (fn [lib] (str "-l" lib)) link))))
+  (letfn [(flag-pairs [flag xs] (mapcat (fn [p] [flag p]) xs))]
+    (vec (concat (flag-pairs "-I" include-path)
+                 (flag-pairs "-isystem" system-include-path)
+                 (flag-pairs "-L" link-path)
+                 (map #(str "-l" %) link)))))
 
 (defn global-cache-dir
   "The project-local directory Zig memoizes its intermediate build artifacts

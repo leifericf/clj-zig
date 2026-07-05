@@ -220,6 +220,26 @@
                  :modules (:modules info)}
          :lifecycle {}))
 
+(defn- failure-data
+  "The diagnostic data map for a build-time exception, carrying an
+  ExceptionInfo's data through or wrapping a non-iex in a
+  `:clj-zig/shell-failure`. Adds `:body` so the failure context reaches
+  the diagnostic renderer. The single source for the failure-data shape
+  so `establish-binding!` and `try-establish-arity` cannot drift."
+  [e body]
+  (-> (if (instance? clojure.lang.ExceptionInfo e)
+        (ex-data e)
+        {:level      :error
+         :error/code :clj-zig/shell-failure
+         :message    (.getMessage e)
+         :cause      e})
+      (assoc :body body)))
+
+(defn- failed-results
+  "The failed-arity results in `results`, in order."
+  [results]
+  (filter #(= :failed (:status %)) results))
+
 (defn establish-binding!
   "Establish the native function for `the-var` and rebind it. `wrap` turns
   the raw invoker into the public fn (it carries the arglist and any
@@ -244,18 +264,14 @@
                     #(-> (merge % var-meta {:clj-zig/info info})
                          (dissoc :clj-zig/failed-attempt)))
        the-var)
-      (catch Throwable e
-        (let [data (if (instance? clojure.lang.ExceptionInfo e)
-                     (ex-data e)
-                     {:level      :error
-                      :error/code :clj-zig/shell-failure
-                      :message    (str "clj-zig hit an unexpected failure while"
-                                       " building the native function: "
-                                       (.getMessage e))
-                      :cause      e})]
-          (alter-meta! the-var assoc
-                       :clj-zig/failed-attempt (assoc data :body body))
-          (throw (ex-info (diagnostics/render data) data e)))))))
+     (catch Throwable e
+       (let [data (cond-> (failure-data e body)
+                    (not (instance? clojure.lang.ExceptionInfo e))
+                    (assoc :message (str "clj-zig hit an unexpected failure while"
+                                         " building the native function: "
+                                         (.getMessage e))))]
+         (alter-meta! the-var assoc :clj-zig/failed-attempt data)
+         (throw (ex-info (diagnostics/render data) data e)))))))
 
 (defn gen-from-info
   "The build `gen` map reconstructed from a Var's inspection info: the
@@ -404,12 +420,7 @@
        :invoke invoke :info info
        :spec spec :body body})
     (catch Throwable e
-      (let [data (if (instance? clojure.lang.ExceptionInfo e)
-                   (assoc (ex-data e) :body body)
-                   {:level :error
-                    :error/code :clj-zig/shell-failure
-                    :message (.getMessage e)
-                    :cause e :body body})]
+      (let [data (failure-data e body)]
         {:status :failed :arity-count arity-count
          :error e :error-data data
          :spec spec :body body}))))
@@ -429,9 +440,9 @@
   "The Var's root fn: dispatch by argument count to each arity's invoke
   fn, throwing :clj-zig/arity for a count no arity owns."
   [arity-specs new-table]
-  (let [var-sym  (symbol (str (-> arity-specs first :spec :ns))
-                         (str (-> arity-specs first :spec :name)))
-        expected (sort (keys new-table))]
+  (let [first-spec (-> arity-specs first :spec)
+        var-sym    (symbol (str (:ns first-spec)) (str (:name first-spec)))
+        expected   (sort (keys new-table))]
     (fn [& args]
       (let [n (count args)]
         (if-let [invk (get new-table n)]
@@ -465,11 +476,11 @@
         flat-info (or (:info first-ok)
                       (-> (get prev-arities (:arity-count first-ok))
                           (dissoc :failed-attempt)))
-        any-fail? (some #(= :failed (:status %)) results)]
+        failed    (failed-results results)]
     (cond-> (assoc flat-info :lifecycle {:arities arities-info})
-      any-fail?
+      (seq failed)
       (assoc-in [:lifecycle :failed-attempt]
-                (:error-data (first (filter #(= :failed (:status %)) results)))))))
+                (:error-data (first failed))))))
 
 (defn establish-multi-binding!
   "Establish a multi-arity `defnz` function (ADR 51). Each arity is
@@ -483,6 +494,7 @@
         prev-table  (:invoke-table prev-entry)
         prev-arities (get-in (meta the-var) [:clj-zig/info :lifecycle :arities] {})
         results     (mapv try-establish-arity arity-specs)
+        failed      (failed-results results)
         first-hard-fail (first (filter #(and (= :failed (:status %))
                                              (nil? (get prev-table (:arity-count %))))
                                        results))]
@@ -495,13 +507,12 @@
       (alter-var-root the-var (constantly dispatch))
       (swap! multi-rebinders assoc the-var
              {:arity-specs arity-specs :invoke-table new-table})
-      (let [info      (multi-arity-info results prev-table prev-arities)
-            any-fail? (some #(= :failed (:status %)) results)]
+      (let [info (multi-arity-info results prev-table prev-arities)]
         (swap! rebinders assoc the-var :multi-arity)
         (alter-meta! the-var
                      #(-> (merge % var-meta {:clj-zig/info info})
-                          (cond-> (not any-fail?) (dissoc :clj-zig/failed-attempt)))))
-      (when-let [first-fail (first (filter #(= :failed (:status %)) results))]
+                          (cond-> (empty? failed) (dissoc :clj-zig/failed-attempt)))))
+      (when-let [first-fail (first failed)]
         (let [data (:error-data first-fail)]
           (throw (ex-info (diagnostics/render data) data (:error first-fail)))))
       the-var)))
@@ -893,10 +904,8 @@
         opts       (when (and (next after-doc) (map? (second after-doc)))
                      (second after-doc))
         the-ns     (ns-name *ns*)
-        descriptor (layout/describe type-name fields (types-in the-ns) opts)
-        descriptor (if-let [iter (:clj-zig/iter opts)]
-                     (assoc descriptor :clj-zig/iter iter)
-                     descriptor)]
+        descriptor (-> (layout/describe type-name fields (types-in the-ns) opts)
+                       (cond-> (:clj-zig/iter opts) (assoc :clj-zig/iter (:clj-zig/iter opts))))]
     `(do
        (register-type! '~the-ns '~descriptor)
        (def ~type-name '~descriptor)
@@ -930,10 +939,6 @@
     `(do
        (defrecord ~type-name ~field-syms)
        (register-type! '~the-ns '~descriptor)
-       ;; `type-name` is a defrecord class, not a Var, so its doc cannot
-       ;; attach the way `deftypez`/`defenumz` attach `:doc` to the type
-       ;; Var. The map-factory Var is the closest interned Var; it is also
-       ;; the one FFM resolves to rebuild a record return.
        ~@(when docstring
            [`(alter-meta! (var ~factory) assoc :doc ~docstring)])
        ~type-name)))

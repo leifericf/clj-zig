@@ -133,6 +133,19 @@
     :stream (scalar-names (:of t))
     (if-let [of (:of t)] (scalar-names of) #{})))
 
+(defn- slice-carryable?
+  "True when a slice/array element crosses the C ABI as a carrier scalar,
+  a named enum, or a slice-element named struct."
+  [elem]
+  (and (map? elem)
+       (or (and (= :scalar (:kind elem))
+                (not (type/i128-type? (:name elem)))
+                (type/has-carrier? (:name elem)))
+           (and (= :named (:kind elem))
+                (get-in elem [:layout])
+                (or (get-in elem [:layout :enum])
+                    (layout/slice-element-layout? (get-in elem [:layout])))))))
+
 (defn- find-non-scalar-element
   "Return the first indirection node (`:slice`, `:array`, `:ptr`, or
   `:manyptr`) in `t` whose immediate `:of` element the marshaller cannot
@@ -151,18 +164,7 @@
       (cond
         (contains? #{:slice :array} k)
         (let [elem (:of t)]
-          (if (or (and (map? elem) (= :scalar (:kind elem))
-                       (not (type/i128-type? (:name elem)))
-                       (type/has-carrier? (:name elem)))
-                  (and (map? elem) (= :named (:kind elem))
-                       (get-in elem [:layout])
-                       (get-in elem [:layout :enum]))
-                  (and (map? elem) (= :named (:kind elem))
-                       (get-in elem [:layout])
-                       (not (get-in elem [:layout :enum]))
-                       (layout/slice-element-layout? (get-in elem [:layout]))))
-            nil
-            t))
+          (if (slice-carryable? elem) nil t))
 
         (contains? #{:ptr :manyptr} k)
         (let [elem (:of t)]
@@ -386,49 +388,29 @@
   `coll-of`; strings to `string?`; bytes to `bytes?`; optional wraps in
   `nilable`; handle to `some?`; void to `nil?`."
   [t]
-  (cond
-    (= :scalar (:kind t))
-    (case (:category (type/scalar-info (:name t)))
-      :int   'int?
-      :float 'double?
-      :bool  'boolean?
-      :void  'nil?
-      'some?)
-
-    (= :string (:kind t))
-    'string?
-
-    (contains? #{:slice :stream} (:kind t))
-    (list 'clojure.spec.alpha/coll-of (spec-for-type (:of t)))
-
-    (= :array (:kind t))
-    (list 'clojure.spec.alpha/coll-of (spec-for-type (:of t)) :count (:length t))
-
-    (= :optional (:kind t))
-    (list 'clojure.spec.alpha/nilable (spec-for-type (:of t)))
-
-    (= :handle (:kind t))
-    'some?
-
-    (= :bytes (:kind t))
-    'bytes?
-
-    (= :named (:kind t))
-    (if (get-in t [:layout :enum])
-      (set (for [v (get-in t [:layout :values])]
-             (keyword (str (:name v)))))
-      'map?)
-
-    (and (contains? #{:owned :borrowed} (:kind t)) (= :slice (get-in t [:of :kind])))
-    (list 'clojure.spec.alpha/coll-of (spec-for-type (get-in t [:of :of])))
-
-    (and (contains? #{:owned :borrowed} (:kind t)) (= :named (get-in t [:of :kind])))
-    'map?
-
-    (= :error-union (:kind t))
-    (spec-for-type (:of t))
-
-    :else 'some?))
+  (case (:kind t)
+    :scalar  (case (:category (type/scalar-info (:name t)))
+               :int   'int?
+               :float 'double?
+               :bool  'boolean?
+               :void  'nil?
+               'some?)
+    :string  'string?
+    (:slice :stream) (list 'clojure.spec.alpha/coll-of (spec-for-type (:of t)))
+    :array   (list 'clojure.spec.alpha/coll-of (spec-for-type (:of t)) :count (:length t))
+    :optional (list 'clojure.spec.alpha/nilable (spec-for-type (:of t)))
+    :handle  'some?
+    :bytes   'bytes?
+    :named   (if (get-in t [:layout :enum])
+               (set (for [v (get-in t [:layout :values])]
+                      (keyword (str (:name v)))))
+               'map?)
+    (:owned :borrowed) (case (get-in t [:of :kind])
+                         :slice (list 'clojure.spec.alpha/coll-of (spec-for-type (get-in t [:of :of])))
+                         :named 'map?
+                         'some?)
+    :error-union (spec-for-type (:of t))
+    'some?))
 
 (defn spec-for-param
   "The argument-side spec for a boundary param. A slice argument is

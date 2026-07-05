@@ -10,18 +10,25 @@
 
 (declare zig-build-flags)
 
-(defn c-options
+(def ^:private c-key-map
+  "The `:c/*` descriptor keys mapped to their compile-option key names."
+  {:c/include-path        :include-path
+   :c/system-include-path :system-include-path
+   :c/link-path           :link-path
+   :c/link                :link})
+
+(defn c-interop-options
   "The C-interop compile options a descriptor's `:c/*` keys carry, or nil
   when it carries none. These reach `zig build-lib` as flags and enter the
   content hash. Shared by a per-function `{:zig/file ...}` descriptor and a
   namespace-level `zig-deps`."
   [descriptor]
   (not-empty
-   (cond-> {}
-     (:c/include-path descriptor)        (assoc :include-path (vec (:c/include-path descriptor)))
-     (:c/system-include-path descriptor) (assoc :system-include-path (vec (:c/system-include-path descriptor)))
-     (:c/link-path descriptor)           (assoc :link-path (vec (:c/link-path descriptor)))
-     (:c/link descriptor)                (assoc :link (vec (:c/link descriptor))))))
+   (into {}
+         (keep (fn [[src dst]]
+                 (when-let [v (descriptor src)]
+                   [dst (vec v)])))
+         c-key-map)))
 
 (def optimize-modes
   "The Zig optimize modes a descriptor or `zig-deps` may name. The keyword
@@ -66,7 +73,7 @@
   per-function descriptor and a namespace-level `zig-deps`, so both
   paths layer options the same way."
   [descriptor]
-  (not-empty (merge (c-options descriptor)
+  (not-empty (merge (c-interop-options descriptor)
                     (optimize-option descriptor)
                     (track-allocations-option descriptor)
                     (zig-build-flags descriptor))))

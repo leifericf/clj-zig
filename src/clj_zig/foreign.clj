@@ -41,8 +41,6 @@
            (java.nio.charset StandardCharsets)))
 
 ;; linker and layout shorthands
-;; The linker is a process-wide singleton; the layouts are interned
-;; ValueLayout constants, so they are safe cache keys (see `downcall`).
 
 (def ^Linker linker (Linker/nativeLinker))
 
@@ -132,9 +130,6 @@
   (.isPresent (.find lookup nm)))
 
 ;; downcalls (Clojure to native)
-;; Cached by [lookup nm ret arg-layouts]: the key is stable (SymbolLookup
-;; is process-lifetime, layouts are interned) and a real-time loop skips
-;; per-call linker work by invoking the cached handle directly.
 
 (defonce ^:private handle-cache (atom {}))
 
@@ -170,8 +165,6 @@
   (.invokeWithArguments h (object-array args)))
 
 ;; upcalls (native to Clojure callbacks)
-;; Synchronous only: the native side fires the stub inside a downcall on
-;; the calling thread (ADR 10). A stub is built once at setup, never per frame.
 
 (defn- upcall-method-handle
   "Reflect a `MethodHandle` onto `IFn.invoke` at `arity` args, bind it to

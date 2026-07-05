@@ -287,6 +287,12 @@
     :named           (if (enum-type? type) [(str binding)] [(str binding "_ptr")])
     [(str binding)]))
 
+(defn- args-list
+  "The comma-joined argument list a wrapper passes to its inner impl fn,
+  mirroring `param-args`."
+  [params]
+  (str/join ", " (mapcat param-args params)))
+
 (def ^:private error-name-cap
   "The byte length the error-name buffer is clamped to before copy-out."
   255)
@@ -334,7 +340,7 @@
   failure, and returns the value (or void)."
   [{:keys [params ret] sym :symbol} body]
   (let [params-data (mapcat param-decls params)
-        args-str    (str/join ", " (mapcat param-args params))
+        args-str    (args-list params)
         err-set     (str (:error ret))
         value-t     (zig-type (:of ret))
         void?       (= "void" value-t)
@@ -362,7 +368,7 @@
   The aggregate crosses the C ABI by reference."
   [{:keys [params ret] sym :symbol} body]
   (let [params-data (mapcat param-decls params)
-        args-str    (str/join ", " (mapcat param-args params))
+        args-str    (args-list params)
         ret-t       (zig-type ret)]
     [(zig/fn-decl
       (str sym "__impl")
@@ -378,12 +384,8 @@
         (zig/raw-expr (str sym "__impl(" args-str ")")))])]))
 
 (defn- ownership-slice
-  "The conceptual element-slice an ownership return writes out as a pointer
-  and length. A `:string` return lowers to `[]u8` exactly like a `:bytes`
-  return over a `[:slice :u8]`, so its inner `__impl` returns `[]u8` and the
-  wrapper writes its pointer and length to two out-params and emits a free
-  shim; the only difference from `:bytes` is the Clojure-side read (UTF-8
-  decode with replacement instead of a raw byte[])."
+  "The element-slice an ownership return writes out as a pointer and
+  length. `:string` lowers as a `[:slice :u8]`."
   [ret]
   (case (:kind ret)
     :string {:const? false :of {:kind :scalar :name :u8}}
@@ -411,7 +413,7 @@
   and always carries the free shim."
   [{:keys [params ret] sym :symbol} body]
   (let [params-data (mapcat param-decls params)
-        args-str    (str/join ", " (mapcat param-args params))
+        args-str    (args-list params)
         slice       (ownership-slice ret)
         elem-t      (zig-type (:of slice))
         ret-t       (str "[]" (when (:const? slice) "const ") elem-t)
@@ -456,7 +458,7 @@
         type-name   (:name layout)
         wire-t      (str (wire-struct-name type-name))
         params-data (mapcat param-decls params)
-        args-str    (str/join ", " (mapcat param-args params))
+        args-str    (args-list params)
         all-params  (conj (vec params-data)
                           (zig/param "__ptr" "*usize")
                           (zig/param "__len" "*usize"))
@@ -502,12 +504,7 @@
       (generate-simple-slice-ownership spec body))))
 
 (defn- needs-std?
-  "True when a function's generated wrapper needs `std` in scope: an owned
-  or `:string` return uses `std.heap.c_allocator` in its free shim, a handle
-  in any position is allocated or freed with `std`, an error-union over a
-  struct emits a per-field free shim, and a const slice or array of
-  buffer-carrying struct arguments allocates a nice-record slab with
-  `c_allocator` in its reconstruction."
+  "True when the generated wrapper for `spec` needs `std` in scope."
   [{:keys [params ret]}]
   (or (contains? #{:owned :bytes :string} (:kind ret))
       (= :stream (:kind ret))
@@ -626,7 +623,7 @@
         type-name  (:name layout)
         wire-t     (str (wire-struct-name type-name))
         params-data (mapcat param-decls params)
-        args-str   (str/join ", " (mapcat param-args params))
+        args-str   (args-list params)
         writes     (wire-write-stmts layout)
         owned?     (= :owned (:kind ret))
         free-stmts (wire-struct-free-stmts layout)
@@ -662,7 +659,7 @@
         type-name   (:name layout)
         wire-t      (str (wire-struct-name type-name))
         params-data (mapcat param-decls params)
-        args-str    (str/join ", " (mapcat param-args params))
+        args-str    (args-list params)
         err-set     (str (:error ret))
         out-params  [(zig/param "__err" "[*]u8")
                      (zig/param "__errlen" "*usize")
@@ -764,6 +761,26 @@
                          free-stmts
                          [(zig/raw-stmt "@import(\"std\").heap.c_allocator.destroy(__p);")])))]))))
 
+(defn- ret-wire-layout
+  "The single wire-bearing layout an ownership or error-union return lowers
+  to, or nil when the return carries no buffer-carrying wire struct. The
+  named-struct path covers `:owned`/`:borrowed`/`:error-union` returns over
+  a non-enum named type; the slice path covers an ownership return over a
+  buffer-carrying slice element."
+  [ret]
+  (cond
+    (and (contains? #{:owned :borrowed} (:kind ret))
+         (= :slice (get-in ret [:of :kind]))
+         (buffer-carrying-slice-element? (get-in ret [:of :of])))
+    (get-in ret [:of :of :layout])
+
+    (and (contains? #{:owned :borrowed :error-union} (:kind ret))
+         (= :named (get-in ret [:of :kind]))
+         (not (enum-type? (:of ret))))
+    (get-in ret [:of :layout])
+
+    :else nil))
+
 (defn- buffer-wire-decls
   "Wire struct declaration nodes for every struct type the spec references
   in a wire position. Deduplicated by name and emitted once at the top
@@ -792,23 +809,7 @@
                                   :else nil)))
                             (:params spec))
         ret            (:ret spec)
-        ret-layouts    (cond
-                         (and (contains? #{:owned :borrowed} (:kind ret))
-                              (= :slice (get-in ret [:of :kind]))
-                              (buffer-carrying-slice-element? (get-in ret [:of :of])))
-                         [(get-in ret [:of :of :layout])]
-
-                         (and (contains? #{:owned :borrowed} (:kind ret))
-                              (= :named (get-in ret [:of :kind]))
-                              (not (enum-type? (:of ret))))
-                         [(get-in ret [:of :layout])]
-
-                         (and (= :error-union (:kind ret))
-                              (= :named (get-in ret [:of :kind]))
-                              (not (enum-type? (:of ret))))
-                         [(get-in ret [:of :layout])]
-
-                         :else [])
+        ret-layouts    (if-let [l (ret-wire-layout ret)] [l] [])
         all-layouts    (distinct (mapcat collect-wire (concat param-layouts ret-layouts)))]
     (map wire-struct all-layouts)))
 
@@ -823,7 +824,7 @@
         next-fn   (get-in ret [:iter-layout :clj-zig/iter :next])
         deinit-fn (get-in ret [:iter-layout :clj-zig/iter :deinit])
         params-data (mapcat param-decls params)
-        args-str   (str/join ", " (mapcat param-args params))]
+        args-str   (args-list params)]
     [(zig/fn-decl
       (str sym "__impl")
       params-data

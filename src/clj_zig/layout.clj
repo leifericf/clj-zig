@@ -116,10 +116,7 @@
   128-bit integer), an enum, a nested struct that is itself slice-element-
   capable (recursively, so a nested buffer-carrying struct is accepted),
   or a buffer field (string, bytes, or a slice of a carrier scalar).
-  Broader than `scalar-only-layout?`: the wrapper transforms the body's
-  nice-record slice into a wire (extern) slab the marshaller reads, and
-  the free shim walks each element freeing its buffers (recursing into
-  nested buffer-carrying structs)."
+  Broader than `scalar-only-layout?`."
   [layout]
   (and (not (:enum layout))
        (seq (:fields layout))
@@ -135,6 +132,20 @@
                        (:target f))))
                (:fields layout))))
 
+(defn- field-error
+  "Build the diagnostic ex-info for a rejected field, with the common data
+  map. `code` defaults to `:clj-zig/unsupported-field`; pass
+  `:clj-zig/unknown-field` for an unresolved named type."
+  ([type-name fname ftype message]
+   (field-error type-name fname ftype :clj-zig/unsupported-field message))
+  ([type-name fname ftype code message]
+   (ex-info message
+            {:level              :error
+             :error/code         code
+             :type               type-name
+             :field              fname
+             :clj-zig/type-form  ftype})))
+
 (defn- classify-field
   "The wire shape of a normalized field type: `:scalar` for a carrier
   scalar, `:nested` for a struct field whose inner type is a scalar-only
@@ -148,16 +159,12 @@
   integer backing)."
   [type-name fname ftype t]
   (cond
-    ;; A 128-bit integer scalar is a valid top-level arg/return, but a struct
-    ;; field of one is not yet wired into the field marshaller (read/write at
-    ;; a 16-byte stride). Reject it here with a clear message rather than
-    ;; crashing at the call.
+    ;; 128-bit struct fields are not yet wired; reject now to fail fast.
     (and (= :scalar (:kind t)) (type/i128-type? (:name t)))
-    (throw (ex-info (str "Field " fname " of " type-name
-                         " is " (:name t) "; a 128-bit-integer struct field is"
-                         " not yet supported. Use it as a top-level argument or return.")
-                    {:level :error :error/code :clj-zig/unsupported-field
-                     :type type-name :field fname :clj-zig/type-form ftype}))
+    (throw (field-error type-name fname ftype
+                        (str "Field " fname " of " type-name
+                             " is " (:name t) "; a 128-bit-integer struct field is"
+                             " not yet supported. Use it as a top-level argument or return.")))
 
     (and (= :scalar (:kind t)) (type/has-carrier? (:name t)))
     {:wire :scalar}
@@ -177,31 +184,25 @@
     (= :named (:kind t))
     (cond
       (nil? (get t :layout))
-      (throw (ex-info (str "Field " fname " of " type-name
-                           " names an undeclared type " (:name t) ".")
-                      {:level :error :error/code :clj-zig/unknown-field
-                       :type type-name :field fname :clj-zig/type-form ftype}))
+      (throw (field-error type-name fname ftype :clj-zig/unknown-field
+                          (str "Field " fname " of " type-name
+                               " names an undeclared type " (:name t) ".")))
       (get-in t [:layout :enum])
       {:wire :scalar}
       (or (scalar-only-layout? (get t :layout))
           (slice-element-layout? (get t :layout)))
       {:wire :nested}
       :else
-      (throw (ex-info (str "Field " fname " of " type-name
-                           " nests " (:name t) ", whose fields are not all"
-                           " carrier scalars or supported buffer fields.")
-                      {:level :error :error/code :clj-zig/unsupported-field
-                       :type type-name :field fname :clj-zig/type-form ftype})))
+      (throw (field-error type-name fname ftype
+                          (str "Field " fname " of " type-name
+                               " nests " (:name t) ", whose fields are not all"
+                               " carrier scalars or supported buffer fields."))))
 
     :else
-    (throw (ex-info (str "Field " fname " of " type-name
-                         " must be a carrier scalar, an enum, a nested scalar struct,"
-                         " or a buffer field ([:bytes [:slice :u8]], a slice, or :string).")
-                    {:level         :error
-                     :error/code    :clj-zig/unsupported-field
-                     :type          type-name
-                     :field         fname
-                     :clj-zig/type-form ftype}))))
+    (throw (field-error type-name fname ftype
+                        (str "Field " fname " of " type-name
+                             " must be a carrier scalar, an enum, a nested scalar struct,"
+                             " or a buffer field ([:bytes [:slice :u8]], a slice, or :string).")))))
 
 (defn- normalize-field
   "Normalize one `[name type]` field pair. A carrier scalar or a named
@@ -284,10 +285,7 @@
                                 :align  (max align word)})
 
                              (:nested f)
-                             ;; A nested struct field: the inner extern struct is
-                             ;; embedded by value, so its size and alignment are the
-                             ;; inner layout's, and the field carries the inner layout
-                             ;; for the FFM reader to recurse into.
+                             ;; Embedded by value; carry inner layout so the FFM reader can recurse.
                              (let [inner-layout (get type :layout)
                                    inner-size   (:size inner-layout)
                                    inner-align  (:align inner-layout)
@@ -369,6 +367,34 @@
       [(- half) (dec half)]
       [0 (dec (* 2 half))])))
 
+(defn- validate-enum-member
+  "Validate one `[member-name value]` pair against the identifier, integer,
+  and backing-range rules; returns `{:name :value}` or throws the matching
+  diagnostic."
+  [type-name backing-kw lo hi [mname value]]
+  (when-not (re-matches #"[A-Za-z_][A-Za-z0-9_]*" (str mname))
+    (throw (ex-info (str "Member " mname " of " type-name
+                         " is not a valid Zig identifier.")
+                    {:level :error :error/code :clj-zig/bad-field-name
+                     :type type-name :member mname})))
+  (when-not (integer? value)
+    (throw (ex-info (str "Member " mname " of " type-name
+                         " needs an integer value.")
+                    {:level :error
+                     :error/code :clj-zig/non-integer-member
+                     :type type-name :member mname})))
+  (when (or (< value lo) (> value hi))
+    (throw (ex-info (str "Member " mname " of " type-name
+                         " has value " value " which does not fit "
+                         "the " backing-kw " backing range "
+                         "[" lo ", " hi "].")
+                    {:level :error
+                     :error/code :clj-zig/enum-value-overflow
+                     :type type-name :member mname
+                     :value value :backing backing-kw
+                     :lo lo :hi hi})))
+  {:name mname :value (long value)})
+
 (defn describe-enum
   "The descriptor for a `defenumz` type: an enum whose members cross as
   keywords, backed by an integer scalar (default `:i32`). The optional
@@ -388,29 +414,7 @@
      {:name    type-name
       :enum    true
       :backing {:kind :scalar :name backing-kw}
-      :values  (mapv (fn [[mname value]]
-                       (when-not (re-matches #"[A-Za-z_][A-Za-z0-9_]*" (str mname))
-                         (throw (ex-info (str "Member " mname " of " type-name
-                                              " is not a valid Zig identifier.")
-                                         {:level :error :error/code :clj-zig/bad-field-name
-                                          :type type-name :member mname})))
-                       (when-not (integer? value)
-                         (throw (ex-info (str "Member " mname " of " type-name
-                                              " needs an integer value.")
-                                         {:level :error
-                                          :error/code :clj-zig/non-integer-member
-                                          :type type-name :member mname})))
-                       (when (or (< value lo) (> value hi))
-                         (throw (ex-info (str "Member " mname " of " type-name
-                                              " has value " value " which does not fit "
-                                              "the " backing-kw " backing range "
-                                              "[" lo ", " hi "].")
-                                         {:level :error
-                                          :error/code :clj-zig/enum-value-overflow
-                                          :type type-name :member mname
-                                          :value value :backing backing-kw
-                                          :lo lo :hi hi})))
-                       {:name mname :value (long value)})
+      :values  (mapv (partial validate-enum-member type-name backing-kw lo hi)
                      (partition 2 members))})))
 
 (defn enum?

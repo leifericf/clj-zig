@@ -20,10 +20,11 @@
   (:require [clojure.string :as str]))
 
 (defn- well-formed-signature? [sig]
-  (and (vector? sig)
-       (>= (count sig) 2)
-       (= :ret (nth sig (- (count sig) 2)))
-       (even? (- (count sig) 2))))
+  (let [n (count sig)]
+    (and (vector? sig)
+         (>= n 2)
+         (= :ret (nth sig (- n 2)))
+         (even? (- n 2)))))
 
 (defn- format-signature
   "Lay the signature out one binding/type pair per line, the return last."
