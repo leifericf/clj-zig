@@ -665,13 +665,13 @@
                           (let [v (.get m kw)]
                             (when (nil? v) (throw-missing-field descriptor-name field-name))
                             (.set seg ValueLayout/JAVA_BOOLEAN (long off) (boolean v))))))))]
-       (let [chain (reduce (fn [next-k fw]
-                            (fn [seg m]
-                              (fw seg m)
-                              (next-k seg m)))
-                          (fn [_seg _m] nil)
-                          (reverse field-writers))]
-        [(long size) (long align) chain]))))
+       [(long size) (long align)
+        (reduce (fn [next-k fw]
+                  (fn [seg m]
+                    (fw seg m)
+                    (next-k seg m)))
+                (fn [_seg _m] nil)
+                (reverse field-writers))])))
 
 (defn- build-struct-writer
   "Build a tight writer closure for an all-scalar struct, or nil if any
