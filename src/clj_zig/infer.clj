@@ -128,16 +128,9 @@
       :else (symbol s))))
 
 (defn zig-type->boundary
-  "The boundary type form for a Zig type string. The default reads a
-  parameter, whose shape is fully determined by the type. A `[]const u8`
-  PARAMETER infers to `:string`, since a string argument is always const
-  bytes and a `:string` argument accepts both a Clojure `String` and a Java
-  `byte[]` (so promoting inferred params is backward-compatible). A
-  `:return` position yields `::policy-needed` when the type is a slice or a
-  pointer, because a returned `[]T` or `*T` carries no ownership or handle
-  policy in its type; that policy is a Clojure-side decision and needs an
-  explicit signature. The promotion is param-only and u8-only: `[]u8` and
-  `[]const f64` parameters keep their slice shapes."
+  "The boundary type form for a Zig type string at `position` (`:param`
+  default, `:return`). A `[]const u8` param infers to `:string`; a
+  returned slice or pointer yields `::policy-needed`."
   ([type-str] (zig-type->boundary type-str :param))
   ([type-str position]
    (let [b (parse-type type-str)]

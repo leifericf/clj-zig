@@ -297,24 +297,26 @@
     :float (str value)
     :int   (str value)))
 
+(defn- comptime-const
+  "Render one comptime `const` declaration, throwing for a nil value."
+  [{:keys [binding type]} value]
+  (when (nil? value)
+    (throw (ex-info (str "Comptime parameter " binding
+                         " cannot be nil; pass a "
+                         (name type) " value.")
+                    {:level :error
+                     :error/code :clj-zig/comptime-nil-value
+                     :param binding})))
+  (str "const " binding ": " (name type) " = "
+       (zig-literal value type) ";"))
+
 (defn- comptime-prefix
   "The `const` declarations prepended to the body for a set of comptime
   values. Each `param` is `{:binding :type}`, and `values` is a parallel
   vector of the caller's comptime arguments. Throws for nil values since
   a null comptime argument has no valid Zig literal."
   [params values]
-  (str/join "\n"
-            (for [[p v] (map vector params values)]
-              (do
-                (when (nil? v)
-                  (throw (ex-info (str "Comptime parameter " (:binding p)
-                                       " cannot be nil; pass a "
-                                       (name (:type p)) " value.")
-                                  {:level :error
-                                   :error/code :clj-zig/comptime-nil-value
-                                   :param (:binding p)})))
-                (str "const " (:binding p) ": " (name (:type p)) " = "
-                     (zig-literal v (:type p)) ";")))))
+  (str/join "\n" (mapv comptime-const params values)))
 
 (defn establish-comptime-binding!
   "Bind a comptime-specialized `defnz` Var. The body is compiled once per

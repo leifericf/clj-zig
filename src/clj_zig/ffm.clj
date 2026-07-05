@@ -17,7 +17,7 @@
            (java.lang.reflect Array)
            (java.math BigInteger)
            (java.nio.charset StandardCharsets)
-           (clojure.lang PersistentArrayMap RT)))
+           (clojure.lang PersistentArrayMap)))
 
 (def ^:private two-to-64 (.shiftLeft BigInteger/ONE 64))
 (def ^:private two-to-64-minus-1 (.subtract two-to-64 BigInteger/ONE))
@@ -322,7 +322,7 @@
         (if (:enum layout)
           (let [kw->val (:kw->value (enum-index layout))
                 coerce  (scalar-param-coerce {:type (:backing layout)})]
-            (fn enum-marshal [^Arena arena arg ^objects cs ^long off]
+            (fn enum-marshal [_arena arg ^objects cs ^long off]
               (let [value (get kw->val arg)]
                 (when (nil? value)
                   (throw-unknown-enum-member layout arg))
@@ -350,7 +350,7 @@
 
       :handle
       (let [expected (-> type :of :name)]
-        (fn handle-marshal [^Arena arena arg ^objects cs ^long off]
+        (fn handle-marshal [_arena arg ^objects cs ^long off]
           (when-not (and (instance? Handle arg) (= expected (.type ^Handle arg)))
             (throw-handle-mismatch expected arg))
           (aset cs off (.segment ^Handle arg))
@@ -361,7 +361,7 @@
           (aset cs off (bigint->i128-segment arena (biginteger arg)))
           nil)
         (let [coerce (scalar-param-coerce param)]
-          (fn scalar-marshal [^Arena arena arg ^objects cs ^long off]
+          (fn scalar-marshal [_arena arg ^objects cs ^long off]
             (aset cs off (coerce arg))
             nil))))))
 
@@ -1896,11 +1896,11 @@
   thread-local one reused across calls, so its
   lifetime is logically call-bounded but physically extended."
   [spec library-path]
-  (let [{:keys [spreader params ret arity invoke-ctx next-h free-h elem-lay var-sym
+  (let [{:keys [spreader ret arity invoke-ctx next-h free-h elem-lay var-sym
                 scalar? enum? enum-coercions scalar-coercions carriers-tl
-                slice? slice-writers slice-counts slice-chain slice-carriers-tl
+                slice? slice-chain slice-carriers-tl
                 stream? eu-struct? owned-rec? owned-slice? opt-struct? struct-ret?
-                gen-carriers-tl gen-copybacks-tl gen-base-offset gen-n-base
+                gen-carriers-tl gen-copybacks-tl gen-base-offset
                 gen-marshal-fns gen-carrier-counts
                 has-mutable-args?]}
         (bind-context spec library-path)]
