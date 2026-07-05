@@ -18,9 +18,7 @@
 (def default-targets
   "The release target matrix: a clj-zig target id (which keys the content
   hash and the resource path) paired with the Zig target triple to compile
-  for. The musl ids carry a libc-portable build alongside the glibc one; a
-  host whose resolved id is `linux-<arch>` selects the glibc build, so the
-  musl artifacts await a musl-aware target resolver."
+  for."
   [{:id "linux-x86_64"       :triple "x86_64-linux-gnu"}
    {:id "linux-aarch64"      :triple "aarch64-linux-gnu"}
    {:id "linux-x86_64-musl"  :triple "x86_64-linux-musl"}

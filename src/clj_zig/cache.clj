@@ -176,9 +176,9 @@
    :hash   (segment :hash (:hash coords))})
 
 (def default-cache-root
-  "The default artifact cache root. Public so the bench (Axis-1
-  tier-clearing) reuses the same root the build writes, and a future
-  move of the default stays in one place."
+  "The default artifact cache root. Public so the bench reuses the same
+  root the build writes, and a future move of the default stays in one
+  place."
   ".clj-zig/cache")
 
 (defn artifact-paths
@@ -236,7 +236,9 @@
 
 ;; Effectful: environment
 
-(defn- var-symbol [spec]
+(defn- var-symbol
+  "The fully-qualified symbol for a build spec's ns and name."
+  [spec]
   (symbol (str (:ns spec)) (str (:name spec))))
 
 (defn target-triple
