@@ -256,6 +256,14 @@
     (when (nil? (:target m))
       (throw (ex-info (str "Dispatch map :mode " mode " requires :target")
                       {:foreign/error :invalid-dispatch-map :mode mode})))
+    (when (and (= :executor mode)
+               (not (instance? java.util.concurrent.Executor (:target m))))
+      (throw (ex-info ":executor :target must be a java.util.concurrent.Executor"
+                      {:foreign/error :invalid-dispatch-map :mode mode})))
+    (when (and (= :agent mode)
+               (not (instance? clojure.lang.Agent (:target m))))
+      (throw (ex-info ":agent :target must be a Clojure agent"
+                      {:foreign/error :invalid-dispatch-map :mode mode})))
     {:mode          mode
      :target        (:target m)
      :error-handler (or (:error-handler m) default-error-handler)}))
