@@ -311,6 +311,47 @@
     (is (instance? java.util.concurrent.RejectedExecutionException
                    (:throwable @errs)))))
 
+(deftest error-handler-that-throws-does-not-propagate
+  (let [exec  (Executors/newSingleThreadExecutor)
+        desc  (ff/descriptor :void [])
+        latch (CountDownLatch. 1)
+        stub  (ff/async-upcall-stub
+               (fn [] (throw (ex-info "fn boom" {})))
+               desc (Arena/global)
+               (ff/onto-executor exec
+                 {:error-handler (fn [_ _] (.countDown latch)
+                                   (throw (ex-info "eh boom" {})))}))
+        fire  (ff/downcall (lookup) "fire_cb" :void [ff/c-ptr])]
+    (try
+      (ff/call fire stub)
+      (is (.await latch 5 TimeUnit/SECONDS)
+          "the error handler was called")
+      (let [latch2 (CountDownLatch. 1)
+            stub2  (ff/async-upcall-stub
+                    (fn [] (.countDown latch2))
+                    desc (Arena/global)
+                    (ff/onto-executor exec))]
+        (ff/call fire stub2)
+        (is (.await latch2 5 TimeUnit/SECONDS)
+            "the executor survived the error handler failure"))
+      (finally (.shutdown exec)))))
+
+(deftest multi-threaded-executor-runs-invocations-concurrently
+  (let [pool  (Executors/newFixedThreadPool 4)
+        desc  (ff/descriptor :void [])
+        gate  (CountDownLatch. 4)
+        stub  (ff/async-upcall-stub
+               (fn []
+                 (.countDown gate)
+                 (.await gate 5 TimeUnit/SECONDS))
+               desc (Arena/global) (ff/onto-executor pool))
+        fire  (ff/downcall (lookup) "fire_loop" :void [ff/c-ptr ff/c-long])]
+    (try
+      (ff/call fire stub (long 4))
+      (is (.await gate 10 TimeUnit/SECONDS)
+          "four invocations ran concurrently on the thread pool")
+      (finally (.shutdown pool)))))
+
 ;;; Shutdown drain
 
 (deftest shutdown-async-stubs-marks-all-stubs-quiesced

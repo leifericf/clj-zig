@@ -241,7 +241,10 @@
             or a Clojure agent (:agent)
 
   Optional:
-    :error-handler (fn [throwable invocation]); default logs to *err*
+    :error-handler (fn [throwable invocation]); default logs to *err*.
+    The handler may run on the dispatch target's thread (when f throws)
+    or on the native thread (for dispatch errors). It must be thread-safe.
+    clj-zig wraps it so a throwing handler never propagates.
 
   The dispatch target's own queue bound, thread count, and rejection
   policy are the back-pressure mechanism. Configure them on the target."
@@ -318,18 +321,21 @@
   "Build the routing fn and the quiesced volatile for an async stub.
   The routing fn runs on the native thread: it reads the args, builds
   the invocation envelope, submits to the dispatch target, and returns
-  nil (void). Dispatch errors route to the error handler so they never
-  escape into the native run loop."
+  nil (void). The error handler is wrapped so it can never propagate,
+  protecting both the native run loop and the agent's state."
   [f stub-id dispatch-map]
   (let [quiesced? (volatile! false)
-        eh        (:error-handler dispatch-map)]
+        raw-eh    (:error-handler dispatch-map)
+        safe-eh   (fn [t env]
+                    (try (raw-eh t env) (catch Throwable _ nil)))
+        safe-map  (assoc dispatch-map :error-handler safe-eh)]
     {:router
      (fn async-route [& args]
        (when-not @quiesced?
          (let [env (make-envelope stub-id args)]
            (try
-             (dispatch-invocation env f dispatch-map)
-             (catch Throwable t (eh t env)))))
+             (dispatch-invocation env f safe-map)
+             (catch Throwable t (safe-eh t env)))))
        nil)
      :quiesced? quiesced?}))
 
