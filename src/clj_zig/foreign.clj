@@ -38,7 +38,9 @@
   (:import (java.lang.foreign Arena FunctionDescriptor Linker Linker$Option
                               MemoryLayout MemorySegment SymbolLookup ValueLayout)
            (java.lang.invoke MethodHandle MethodHandles MethodType)
-           (java.nio.charset StandardCharsets)))
+           (java.nio.charset StandardCharsets)
+           (java.util.concurrent LinkedBlockingQueue TimeUnit)
+           (java.util.concurrent.atomic AtomicBoolean)))
 
 ;; linker and layout shorthands
 
@@ -307,42 +309,77 @@
 
 (defonce ^:private stub-registry (atom {}))
 
-(defn- dispatch-invocation
-  "Submit the invocation envelope to the dispatch target. The target's
-  thread applies `f` to the args under try/catch routing to the error
-  handler. For :executor and :agent, the submit is the only work done
-  on the native thread; `f` runs on the target. For :custom, `route-fn`
-  runs on the native thread and must route the envelope elsewhere."
-  [env f dispatch-map]
-  (let [eh (:error-handler dispatch-map)
-        run-fn (fn []
-                 (try (apply f (:args env))
-                      (catch Throwable t (eh t env))))]
-    (case (:mode dispatch-map)
-      :executor (.execute ^java.util.concurrent.Executor (:target dispatch-map)
-                          ^Runnable run-fn)
-      :agent    (send (:target dispatch-map) (fn [_] (run-fn) nil))
-      :custom   (try ((:fn dispatch-map) env)
-                     (catch Throwable t (eh t env))))))
-
 (defn- build-async-router
-  "Build the routing fn that the FFM stub calls on the native thread and
-  the quiesced volatile that gates it. The fn reads the args, builds the
-  envelope, submits to the dispatch target, and returns nil (void).
-  Dispatch-level errors (a rejected execution, a closed target) route to
-  the error handler so they never escape into the native run loop."
+  "Build the routing fn, the bounded queue, the drain state, and the
+  quiesced volatile for an async stub.
+
+  For :executor and :agent modes the routing fn enqueues the invocation
+  on a bounded LinkedBlockingQueue (capacity :bound) with the overflow
+  policy, then ensures a drain task is running on the dispatch target.
+  The drain task processes queued invocations under try/catch routing
+  errors to the handler. The native thread never runs the user's fn.
+
+  For :custom mode the routing fn calls (:fn dispatch-map) with the
+  envelope directly on the native thread. The caller owns their own
+  routing and queue discipline."
   [f stub-id dispatch-map]
-  (let [quiesced? (volatile! false)
-        eh        (:error-handler dispatch-map)]
-    {:router
-     (fn async-route [& args]
-       (when-not @quiesced?
-         (let [env (make-envelope stub-id args)]
-           (try
-             (dispatch-invocation env f dispatch-map)
-             (catch Throwable t (eh t env)))))
-       nil)
-     :quiesced? quiesced?}))
+  (let [quiesced?      (volatile! false)
+        eh             (:error-handler dispatch-map)
+        mode           (:mode dispatch-map)
+        overflow       (:overflow dispatch-map)
+        ^long bound    (:bound dispatch-map)
+        target         (:target dispatch-map)
+        custom-fn      (:fn dispatch-map)
+        queue          (LinkedBlockingQueue. bound)
+        drain-running? (AtomicBoolean. false)]
+    (letfn [(run-env [env]
+              (try (apply f (:args env))
+                   (catch Throwable t (eh t env))))
+            (overflow-ex [reason]
+              (ex-info (str "async overflow: " reason)
+                       {:foreign/error :async-overflow :overflow overflow}))
+            (enqueue [env]
+              (case overflow
+                :drop-oldest  (when-not (.offer queue env)
+                                (.poll queue)
+                                (.offer queue env))
+                :drop-current (when-not (.offer queue env)
+                                (eh (overflow-ex "dropped current") env))
+                :block-timeout
+                (when-not (.offer queue env 100 TimeUnit/MILLISECONDS)
+                  (eh (overflow-ex "timed out") env))))
+            (submit-drain []
+              (try
+                (case mode
+                  :executor (.execute ^java.util.concurrent.Executor target
+                                      ^Runnable (fn [] (drain)))
+                  :agent    (send target (fn [_] (drain) nil)))
+                (catch Throwable t
+                  (.set drain-running? false)
+                  (eh t (or (.peek queue) (make-envelope stub-id []))))))
+            (drain []
+              (try
+                (loop []
+                  (when-let [env (.poll queue)]
+                    (run-env env)
+                    (recur)))
+                (finally (.set drain-running? false)))
+              (when (and (not (.isEmpty queue))
+                         (.compareAndSet drain-running? false true))
+                (submit-drain)))]
+      {:router
+       (fn async-route [& args]
+         (when-not @quiesced?
+           (let [env (make-envelope stub-id args)]
+             (if (= :custom mode)
+               (try (custom-fn env)
+                    (catch Throwable t (eh t env)))
+               (do
+                 (enqueue env)
+                 (when (.compareAndSet drain-running? false true)
+                   (submit-drain))))))
+         nil)
+       :quiesced? quiesced?})))
 
 (defn async-upcall-stub
   "Build a native upcall stub that ROUTES rather than RUNS. The native

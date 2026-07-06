@@ -119,8 +119,9 @@
 
 (def ^:private fixture-source
   "C-ABI exports exercising the async routing path through real native
-  code: synchronous callers for the build-and-release lane, and a
-  detached std.Thread caller for the lifecycle lane."
+  code: synchronous callers for the build-and-release lane, a detached
+  std.Thread caller for the lifecycle lane, and a tight loop for the
+  leak and back-pressure lanes."
   (str "const std = @import(\"std\");\n\n"
        "export fn fire_cb(cb: *const fn () callconv(.c) void) void {\n"
        "    cb();\n"
@@ -133,6 +134,12 @@
        "}\n"
        "fn worker(cb: *const fn () callconv(.c) void) void {\n"
        "    cb();\n"
+       "}\n"
+       "export fn fire_loop(cb: *const fn () callconv(.c) void, n: u64) void {\n"
+       "    var i: u64 = 0;\n"
+       "    while (i < n) : (i += 1) {\n"
+       "        cb();\n"
+       "    }\n"
        "}\n"))
 
 (defn- scratch-dir []
@@ -379,3 +386,90 @@
     (ff/call fire stub)
     (is (.await latch 5 TimeUnit/SECONDS))
     (is (= "agent boom" (ex-message @errs)))))
+
+;;; Leak lane: high-volume fire drains without accumulation
+
+(deftest high-volume-fire-drains-completely
+  (let [exec   (Executors/newSingleThreadExecutor)
+        total  5000
+        desc   (ff/descriptor :void [])
+        latch  (CountDownLatch. total)
+        stub   (ff/async-upcall-stub
+                (fn [] (.countDown latch))
+                desc (Arena/global)
+                (ff/onto-executor exec {:bound total}))
+        fire   (ff/downcall (lookup) "fire_loop" :void [ff/c-ptr ff/c-long])]
+    (try
+      (ff/call fire stub (long total))
+      (is (.await latch 10 TimeUnit/SECONDS)
+          "all invocations drained within the timeout")
+      (finally (.shutdown exec)))))
+
+;;; Back-pressure: bounded queue overflow policies
+
+(defn- blocked-executor
+  "Return [exec gate]: a single-thread executor whose first task parks on
+  a latch so the dispatch queue fills deterministically."
+  []
+  (let [gate (CountDownLatch. 1)
+        exec (Executors/newSingleThreadExecutor)]
+    (.execute exec (fn [] (.await gate 30 TimeUnit/SECONDS)))
+    (Thread/sleep 200)
+    [exec gate]))
+
+(deftest overflow-drop-current-invokes-the-error-handler
+  (let [[exec gate] (blocked-executor)
+        errs   (atom 0)
+        desc   (ff/descriptor :void [])
+        stub   (ff/async-upcall-stub
+                (fn [])
+                desc (Arena/global)
+                (ff/onto-executor exec {:bound      2
+                                         :overflow   :drop-current
+                                         :error-handler (fn [_ _] (swap! errs inc))}))
+        fire   (ff/downcall (lookup) "fire_loop" :void [ff/c-ptr ff/c-long])]
+    (try
+      (ff/call fire stub (long 20))
+      (is (pos? @errs) "the error handler was called for dropped invocations")
+      (is (< @errs 20) "not every invocation was dropped")
+      (.countDown gate)
+      (finally (.shutdown exec)))))
+
+(deftest overflow-drop-oldest-keeps-the-newest
+  (let [[exec gate] (blocked-executor)
+        highest (atom -1)
+        desc    (ff/descriptor :void [ff/c-long])
+        latch   (CountDownLatch. 1)
+        stub    (ff/async-upcall-stub
+                 (fn [x]
+                   (swap! highest max (long x))
+                   (.countDown latch))
+                 desc (Arena/global)
+                 (ff/onto-executor exec {:bound 3 :overflow :drop-oldest}))
+        fire    (ff/downcall (lookup) "fire_cb_i64" :void [ff/c-ptr ff/c-long])]
+    (try
+      (dotimes [i 20] (ff/call fire stub (long i)))
+      (.countDown gate)
+      (.await latch 5 TimeUnit/SECONDS)
+      (Thread/sleep 300)
+      (is (> @highest 15)
+          "the newest invocations survived; the oldest were evicted")
+      (is (< @highest 20))
+      (finally (.shutdown exec)))))
+
+(deftest overflow-block-timeout-does-not-hang
+  (let [[exec gate] (blocked-executor)
+        errs    (atom 0)
+        desc    (ff/descriptor :void [])
+        stub    (ff/async-upcall-stub
+                 (fn [])
+                 desc (Arena/global)
+                 (ff/onto-executor exec {:bound      2
+                                          :overflow   :block-timeout
+                                          :error-handler (fn [_ _] (swap! errs inc))}))
+        fire    (ff/downcall (lookup) "fire_loop" :void [ff/c-ptr ff/c-long])]
+    (try
+      (ff/call fire stub (long 50))
+      (is (pos? @errs) "the block timeout expired and errors were routed")
+      (.countDown gate)
+      (finally (.shutdown exec)))))
