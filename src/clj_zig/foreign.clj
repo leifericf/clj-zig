@@ -376,10 +376,14 @@
   THREADING: your fn runs on the dispatch target's thread(s), not the
   native thread. The native thread does only read-envelope-submit-return.
 
-  SEGMENT SAFETY: pointer args arrive as MemorySegment. If your fn
-  captures a segment in a closure that outlives the fire, copy its data
-  (use read-utf8-bounded for strings, read-bytes-bounded for raw bytes)
-  before the closure escapes. The routing handle does not copy segments.
+  SEGMENT SAFETY: pointer args arrive as MemorySegment, but the fn runs
+  on the dispatch target's thread after the routing handle has returned.
+  The native caller may free or reuse the buffer before the fn reads it.
+  The routing handle does not copy segment data, and there is no hook to
+  copy on the native thread. A pointer arg is safe only when the native
+  caller keeps the buffer alive past the dispatch drain. When it does,
+  copy the bytes out at the start of the fn (read-utf8-bounded for
+  strings, read-bytes-bounded for raw bytes) before doing other work.
 
   BACK-PRESSURE: configure the executor's queue bound and rejection
   policy; they are the back-pressure mechanism. A rejected execution

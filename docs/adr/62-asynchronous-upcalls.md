@@ -64,7 +64,8 @@ Callback-driven APIs that fire from native threads are reachable without
 an embedded JVM and without executing Clojure on a thread the caller does
 not control. The cost is the caller's: they supply the dispatch target and
 own its lifecycle. The governing principle is the contract: the native
-thread reads, copies, enqueues, and returns; it never calls the fn.
+thread reads the args, submits an invocation to the dispatch target, and
+returns; it never calls the fn.
 
 This narrows ADR 10 further. The permanent non-goals stay: no embedded
 JVM, no arbitrary object marshalling, no async stub with a non-void
@@ -73,7 +74,9 @@ Arena, route not run.
 
 The threading contract is documented in the primitive's docstring, in the
 convenience constructors, and in this ADR. The caller's fn runs on the
-dispatch target's thread(s), not the native thread.
+dispatch target's thread(s), not the native thread. The routing handle
+submits arg references only; it does not copy native memory, so a pointer
+arg is the caller's lifetime responsibility, documented at the primitive.
 
 ## Alternatives
 
