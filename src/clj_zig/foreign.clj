@@ -289,7 +289,11 @@
 
 (defn onto-agent
   "Build a dispatch map routing async invocations onto `agent`, a Clojure
-  agent. The optional `opts` map may carry :error-handler."
+  agent. Dispatch uses `send`, so actions run on Clojure's fixed send pool
+  (sized to the CPU count). Use this for non-blocking fns; a blocking fn
+  starves the shared pool and can deadlock unrelated agents. Route onto an
+  executor instead when the fn blocks. The optional `opts` map may carry
+  :error-handler."
   ([agnt] (onto-agent agnt {}))
   ([agnt opts]
    (validate-dispatch-map (assoc opts :mode :agent :target agnt))))
