@@ -27,13 +27,26 @@ jobs:
       - run: clj-kondo --lint src test --fail-level error
 
   test:
-    name: Test (Java ${{ matrix.java }})
+    name: Test (Java ${{ matrix.java }} on ${{ matrix.os }})
     needs: lint
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         java: ["22", "26"]
+        # Java 22 is the supported floor (FFM finalized, JEP 454); the 22
+        # lane guards against accidental use of a 23+/26+-only API that
+        # would break the "Java 22+" claim. That coverage is Java-version
+        # behavior and belongs on one OS -- Linux is cheapest. macOS and
+        # Windows run the dev version (26); their job is platform-specific
+        # behavior (library suffixes, loading, paths), which is orthogonal
+        # to the Java version. 4 lanes instead of 6.
+        exclude:
+          - os: macos-latest
+            java: "22"
+          - os: windows-latest
+            java: "22"
     steps:
       - uses: actions/checkout@v4
 
