@@ -27,9 +27,27 @@
 (defn- exe-name []
   (if (windows?) "zig.exe" "zig"))
 
-(defn- executable? [path]
+(def ^:private windows-exe-extensions
+  "File extensions Windows treats as runnable programs. Windows has no
+  exec bit; executability is decided by extension (and ACL), so the
+  override validation checks these instead of `.canExecute`, which always
+  reads true for an owner-readable file on Windows."
+  #{"exe" "bat" "cmd" "com" "ps1"})
+
+(defn- executable?
+  "True when `path` is a runnable program. On Unix this is a regular file
+  with the exec bit set; on Windows it is a regular file with a runnable
+  extension, since Windows has no exec bit and `.canExecute` follows the
+  ACL (always true for an owner file) rather than a usable signal."
+  [path]
   (let [f (io/file path)]
-    (and (.isFile f) (.canExecute f))))
+    (and (.isFile f)
+         (if (windows?)
+           (let [n    (.toLowerCase (.getName f))
+                 dots (.lastIndexOf n ".")]
+             (and (pos? dots)
+                  (contains? windows-exe-extensions (subs n (inc dots)))))
+           (.canExecute f)))))
 
 (defn- override
   "An explicit Zig path from a system property or environment variable, or
