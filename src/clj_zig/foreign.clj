@@ -442,19 +442,20 @@
   clear the registry. Installed as a JVM shutdown hook so pending work
   quiesces before the JVM exits; also callable directly. Idempotent.
 
-  The registry is cleared in one atomic step (reset! returns the prior
-  map), so a stub registered during shutdown is not lost: it stays
-  registered and is not quiesced, while the snapshot is exactly the set
-  that was live when shutdown began.
+  Quiesce and removal run per key over a snapshot, so a stub registered
+  during shutdown is not clobbered: it stays registered and active, and a
+  later shutdown will pick it up. A bulk reset! would drop such a stub
+  without quiescing it.
 
   Executor targets are NOT drained here: the caller owns the executor's
   lifecycle. A blocking native callback that cannot quiesce is the
   caller's responsibility."
   []
-  (let [entries (vals (reset! stub-registry {}))]
-    (doseq [entry entries]
-      (vreset! (:quiesced? entry) true))
-    (doseq [entry entries]
+  (let [snapshot @stub-registry]
+    (doseq [[seg entry] snapshot]
+      (vreset! (:quiesced? entry) true)
+      (swap! stub-registry dissoc seg))
+    (doseq [entry (vals snapshot)]
       (when (= :agent (:mode (:dispatch entry)))
         (await-for 2000 (:target (:dispatch entry)))))
     nil))
