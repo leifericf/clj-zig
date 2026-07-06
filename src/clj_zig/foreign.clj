@@ -208,6 +208,101 @@
         mh    (upcall-method-handle f arity desc)]
     (.upcallStub linker mh desc arena no-options)))
 
+;; async upcalls (route, not run)
+
+(defn- default-error-handler
+  "The floor of error visibility for async dispatch failures: print the
+  throwable and invocation to *err*. The dispatch map's :error-handler
+  overrides this for structured handling."
+  [throwable invocation]
+  (binding [*out* *err*]
+    (println "clj-zig async upcall error on stub" (:stub invocation))
+    (println "  args:" (pr-str (:args invocation)))
+    (println "  cause:" (ex-message throwable)))
+  nil)
+
+(defn- make-envelope
+  "Build the invocation envelope: which stub fired, the copied args, and
+  a nanoTime stamp for ordering and latency diagnosis."
+  [stub-id args]
+  {:stub stub-id :args (vec args) :stamp (System/nanoTime)})
+
+(def ^:private async-modes     #{:executor :agent :custom})
+(def ^:private async-overflows #{:drop-oldest :drop-current :block-timeout})
+
+(defn validate-dispatch-map
+  "Validate `m` as an async dispatch map, apply defaults, and return the
+  normalized map. Throws ex-info tagged `:foreign/error
+  :invalid-dispatch-map` when the map is malformed.
+
+  Required keys by mode:
+    :executor  :target (a java.util.concurrent.Executor)
+    :agent     :target (a Clojure agent)
+    :custom    :fn     (an IFn that receives the invocation envelope)
+
+  Optional keys (defaulted):
+    :overflow       :drop-oldest (also :drop-current, :block-timeout)
+    :bound          1024 (the queue bound for back-pressure)
+    :copy-segments? true (copy segment args at the stub boundary)
+    :error-handler  default-error-handler (fn [throwable invocation])"
+  [m]
+  (let [mode (:mode m)]
+    (when-not (async-modes mode)
+      (throw (ex-info (str "Invalid dispatch map :mode: " (pr-str mode))
+                      {:foreign/error :invalid-dispatch-map :mode mode})))
+    (when (and (#{:executor :agent} mode) (nil? (:target m)))
+      (throw (ex-info (str "Dispatch map :mode " mode " requires :target")
+                      {:foreign/error :invalid-dispatch-map :mode mode})))
+    (when (and (= :custom mode) (not (ifn? (:fn m))))
+      (throw (ex-info "Dispatch map :mode :custom requires a :fn"
+                      {:foreign/error :invalid-dispatch-map :mode mode})))
+    (let [overflow (or (:overflow m) :drop-oldest)]
+      (when-not (async-overflows overflow)
+        (throw (ex-info (str "Invalid :overflow: " (pr-str overflow))
+                        {:foreign/error :invalid-dispatch-map :overflow overflow})))
+      (let [bound (if (contains? m :bound) (:bound m) 1024)]
+        (when-not (and (int? bound) (pos-int? bound))
+          (throw (ex-info (str "Invalid :bound: " (pr-str bound))
+                          {:foreign/error :invalid-dispatch-map :bound bound})))
+        {:mode           mode
+         :target         (:target m)
+         :fn             (:fn m)
+         :error-handler  (or (:error-handler m) default-error-handler)
+         :overflow       overflow
+         :bound          bound
+         :copy-segments? (boolean (:copy-segments? m true))}))))
+
+(defn onto-executor
+  "Build a dispatch map routing async invocations onto `exec`, a
+  `java.util.concurrent.Executor`. The optional `opts` map overrides the
+  defaults (see `validate-dispatch-map` for the full key list). The
+  returned map is validated and normalized."
+  ([exec] (onto-executor exec {}))
+  ([exec opts]
+   (validate-dispatch-map (assoc opts :mode :executor :target exec))))
+
+(defn onto-agent
+  "Build a dispatch map routing async invocations onto `agent`, a Clojure
+  agent. The optional `opts` map overrides the defaults (see
+  `validate-dispatch-map`)."
+  ([agnt] (onto-agent agnt {}))
+  ([agnt opts]
+   (validate-dispatch-map (assoc opts :mode :agent :target agnt))))
+
+(defn read-bytes-bounded
+  "Read up to `max-bytes` from `seg` into a fresh byte array. The cap is
+  the guard: never more than `max-bytes` cross the boundary. Returns nil
+  for a NULL segment, and a shorter array when the segment's own size is
+  below the cap. The caller-side counterpart to `read-utf8-bounded` for
+  raw byte buffers."
+  (^bytes [^MemorySegment seg ^long max-bytes]
+   (when (and seg (not (.equals MemorySegment/NULL seg)))
+     (let [size (min (.byteSize seg) max-bytes)
+           out  (byte-array size)]
+       (when (pos? size)
+         (MemorySegment/copy seg ValueLayout/JAVA_BYTE (long 0) out (int 0) (int size)))
+       out))))
+
 ;; reading bounded native strings
 
 (defn read-utf8-bounded
