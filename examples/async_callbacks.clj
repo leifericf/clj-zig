@@ -8,7 +8,7 @@
   (:require [clj-zig.compile :as compile]
             [clj-zig.foreign :as ff])
   (:import (java.lang.foreign Arena)
-           (java.util.concurrent Executors TimeUnit)))
+           (java.util.concurrent Executors)))
 
 (def ^:private source
   "const std = @import(\"std\");

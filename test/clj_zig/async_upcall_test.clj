@@ -75,7 +75,7 @@
   (with-open [arena (Arena/ofShared)]
     (letfn [(alloc [bs]
               (let [seg (.allocate arena ValueLayout/JAVA_BYTE (long (alength bs)))]
-                (MemorySegment/copy bs (int 0) seg ValueLayout/JAVA_BYTE (long 0) (int (alength bs)))
+                (MemorySegment/copy bs (int 0) seg ValueLayout/JAVA_BYTE (long 0) (alength bs))
                 seg))]
       (testing "copies all bytes when the segment fits the cap"
         (let [src  (byte-array (map byte (range 10)))
