@@ -303,6 +303,98 @@
          (MemorySegment/copy seg ValueLayout/JAVA_BYTE (long 0) out (int 0) (int size)))
        out))))
 
+;; async upcall stubs (route, not run)
+
+(defonce ^:private stub-registry (atom {}))
+
+(defn- dispatch-invocation
+  "Submit the invocation envelope to the dispatch target. The target's
+  thread applies `f` to the args under try/catch routing to the error
+  handler. For :executor and :agent, the submit is the only work done
+  on the native thread; `f` runs on the target. For :custom, `route-fn`
+  runs on the native thread and must route the envelope elsewhere."
+  [env f dispatch-map]
+  (let [eh (:error-handler dispatch-map)
+        run-fn (fn []
+                 (try (apply f (:args env))
+                      (catch Throwable t (eh t env))))]
+    (case (:mode dispatch-map)
+      :executor (.execute ^java.util.concurrent.Executor (:target dispatch-map)
+                          ^Runnable run-fn)
+      :agent    (send (:target dispatch-map) (fn [_] (run-fn) nil))
+      :custom   (try ((:fn dispatch-map) env)
+                     (catch Throwable t (eh t env))))))
+
+(defn- build-async-router
+  "Build the routing fn that the FFM stub calls on the native thread and
+  the quiesced volatile that gates it. The fn reads the args, builds the
+  envelope, submits to the dispatch target, and returns nil (void)."
+  [f stub-id dispatch-map]
+  (let [quiesced? (volatile! false)]
+    {:router
+     (fn async-route [& args]
+       (when-not @quiesced?
+         (let [env (make-envelope stub-id args)]
+           (dispatch-invocation env f dispatch-map)))
+       nil)
+     :quiesced? quiesced?}))
+
+(defn async-upcall-stub
+  "Build a native upcall stub that ROUTES rather than RUNS. The native
+  thread that fires this stub reads the args, builds an invocation
+  envelope, submits it to the dispatch target, and returns void
+  immediately. The user's fn runs on the dispatch target's thread(s),
+  never on the native thread.
+
+  CONTRACT (enforced at build time):
+  - `desc` MUST be void-returning. A non-void async stub is incoherent:
+    the native caller cannot consume a value it will never synchronously
+    receive. Use `upcall-stub` for value-returning callbacks.
+  - `arena` MUST be the global Arena. A confined arena closes when this
+    call returns; the stub fires later, from anywhere. Only the global
+    Arena survives every possible fire.
+  - `dispatch-map` routes the invocation. Build one with
+    `onto-executor` or `onto-agent`.
+
+  THREADING: your fn runs on the dispatch target's thread(s), not the
+  native thread. The native thread does only read-copy-enqueue-return.
+
+  Call `release-stub!` to stop dispatch after native code has stopped
+  firing."
+  ^MemorySegment [f ^FunctionDescriptor desc ^Arena arena dispatch-map]
+  (when (.isPresent (.returnLayout desc))
+    (throw (ex-info "async-upcall-stub requires a void descriptor"
+                    {:foreign/error :async-non-void-descriptor})))
+  (when-not (= arena (Arena/global))
+    (throw (ex-info "async-upcall-stub requires the global Arena"
+                    {:foreign/error :async-non-global-arena})))
+  (let [validated            (validate-dispatch-map dispatch-map)
+        stub-id              (keyword (gensym "async-stub"))
+        {:keys [router quiesced?]} (build-async-router f stub-id validated)
+        arity                (count (.argumentLayouts desc))
+        mh                   (upcall-method-handle router arity desc)
+        stub                 (.upcallStub linker mh desc arena no-options)]
+    (swap! stub-registry assoc stub {:id stub-id :quiesced? quiesced?})
+    stub))
+
+(defn release-stub!
+  "Mark the stub registered for `seg` as quiesced and remove it from the
+  registry. The dispatch target stops receiving invocations after any
+  in-flight ones drain. The segment itself is not freed (the global
+  Arena owns it for the process). The caller MUST signal native code to
+  stop firing BEFORE calling this."
+  [^MemorySegment seg]
+  (when-let [entry (get @stub-registry seg)]
+    (vreset! (:quiesced? entry) true)
+    (swap! stub-registry dissoc seg))
+  nil)
+
+(defn registered-stub-count
+  "The number of currently registered async stubs. Intended for testing
+  and diagnostics."
+  ^long []
+  (count @stub-registry))
+
 ;; reading bounded native strings
 
 (defn read-utf8-bounded

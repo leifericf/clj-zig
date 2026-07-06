@@ -4,9 +4,10 @@
   native-thread fire path. The pure-core tests need no Zig; the shell
   tests compile a tiny fixture with a worker thread."
   (:require [clojure.test :refer [deftest is testing]]
+            [clj-zig.compile :as compile]
             [clj-zig.foreign :as ff])
   (:import (java.lang.foreign Arena MemorySegment ValueLayout)
-           (java.util.concurrent Executors ThreadPoolExecutor TimeUnit)))
+           (java.util.concurrent Executors TimeUnit CountDownLatch)))
 
 ;;; Pure core: dispatch map validation and constructors
 
@@ -113,3 +114,115 @@
         (is (nil? result))
         (is (re-find #"boom" (.toString sw)))
         (is (re-find #":s" (.toString sw)))))))
+
+;;; Shell: async-upcall-stub build, route, and release
+
+(def ^:private fixture-source
+  "A pair of C-ABI exports that call a void callback synchronously, so the
+  routing path is exercised through real native code without a worker
+  thread."
+  (str "export fn fire_cb(cb: *const fn () callconv(.c) void) void {\n"
+       "    cb();\n"
+       "}\n"
+       "export fn fire_cb_i64(cb: *const fn (i64) callconv(.c) void, x: i64) void {\n"
+       "    cb(x);\n"
+       "}\n"))
+
+(defn- scratch-dir []
+  (str (java.nio.file.Files/createTempDirectory
+        "clj-zig-async" (make-array java.nio.file.attribute.FileAttribute 0))))
+
+(def ^:private fixture-lib
+  (delay
+    (let [dir (scratch-dir)]
+      (:library (compile/compile!
+                 {:source       (apply str fixture-source)
+                  :source-path  (str dir "/fixture.zig")
+                  :library-path (str dir "/libasync." (compile/dynamic-library-extension))
+                  :ctx          {:var 'clj-zig.async-upcall-test/fixture}})))))
+
+(defn- lookup [] (ff/library-lookup @fixture-lib))
+
+(deftest async-upcall-stub-rejects-a-non-void-descriptor
+  (let [exec (Executors/newSingleThreadExecutor)
+        desc  (ff/descriptor ff/c-int [ff/c-int])]
+    (try
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo #"void descriptor"
+           (ff/async-upcall-stub (fn [_]) desc (Arena/global) (ff/onto-executor exec))))
+      (finally (.shutdown exec)))))
+
+(deftest async-upcall-stub-rejects-a-confined-arena
+  (let [exec (Executors/newSingleThreadExecutor)
+        desc  (ff/descriptor :void [])]
+    (try
+      (with-open [arena (Arena/ofConfined)]
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo #"global Arena"
+             (ff/async-upcall-stub (fn []) desc arena (ff/onto-executor exec)))))
+      (finally (.shutdown exec)))))
+
+(deftest async-stub-routes-to-an-executor
+  (let [exec   (Executors/newSingleThreadExecutor)
+        desc   (ff/descriptor :void [ff/c-long])
+        latch  (CountDownLatch. 1)
+        result (atom nil)
+        stub   (ff/async-upcall-stub
+                (fn [x]
+                  (reset! result [(Thread/currentThread) (long x)])
+                  (.countDown latch))
+                desc (Arena/global) (ff/onto-executor exec))
+        fire   (ff/downcall (lookup) "fire_cb_i64" :void [ff/c-ptr ff/c-long])]
+    (try
+      (ff/call fire stub (long 42))
+      (is (.await latch 5 TimeUnit/SECONDS))
+      (is (= 42 (second @result)) "the arg round-trips through the routing path")
+      (is (not (identical? (Thread/currentThread) (first @result)))
+          "the fn ran on the executor thread, not the calling thread")
+      (finally (.shutdown exec)))))
+
+(deftest async-stub-routes-to-an-agent
+  (let [agnt   (agent nil)
+        desc   (ff/descriptor :void [ff/c-long])
+        latch  (CountDownLatch. 1)
+        result (atom nil)
+        stub   (ff/async-upcall-stub
+                (fn [x]
+                  (reset! result (long x))
+                  (.countDown latch))
+                desc (Arena/global) (ff/onto-agent agnt))
+        fire   (ff/downcall (lookup) "fire_cb_i64" :void [ff/c-ptr ff/c-long])]
+    (ff/call fire stub (long 99))
+    (is (.await latch 5 TimeUnit/SECONDS))
+    (is (= 99 @result) "the arg round-trips through the agent dispatch")))
+
+(deftest release-stub-stops-dispatch
+  (let [exec   (Executors/newSingleThreadExecutor)
+        desc   (ff/descriptor :void [])
+        latch  (CountDownLatch. 1)
+        fired  (atom 0)
+        stub   (ff/async-upcall-stub
+                (fn [] (swap! fired inc) (.countDown latch))
+                desc (Arena/global) (ff/onto-executor exec))
+        fire   (ff/downcall (lookup) "fire_cb" :void [ff/c-ptr])]
+    (try
+      (ff/call fire stub)
+      (.await latch 5 TimeUnit/SECONDS)
+      (is (= 1 @fired) "the pre-release invocation fired")
+      (ff/release-stub! stub)
+      (ff/call fire stub)
+      (Thread/sleep 200)
+      (is (= 1 @fired) "no invocation after release")
+      (finally (.shutdown exec)))))
+
+(deftest release-removes-the-stub-from-the-registry
+  (let [before (ff/registered-stub-count)
+        exec   (Executors/newSingleThreadExecutor)
+        desc   (ff/descriptor :void [])
+        stub   (ff/async-upcall-stub (fn [])
+                                     desc (Arena/global) (ff/onto-executor exec))]
+    (try
+      (is (= (inc before) (ff/registered-stub-count)))
+      (ff/release-stub! stub)
+      (is (= before (ff/registered-stub-count)))
+      (finally (.shutdown exec)))))
