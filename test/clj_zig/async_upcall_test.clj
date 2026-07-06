@@ -118,14 +118,21 @@
 ;;; Shell: async-upcall-stub build, route, and release
 
 (def ^:private fixture-source
-  "A pair of C-ABI exports that call a void callback synchronously, so the
-  routing path is exercised through real native code without a worker
-  thread."
-  (str "export fn fire_cb(cb: *const fn () callconv(.c) void) void {\n"
+  "C-ABI exports exercising the async routing path through real native
+  code: synchronous callers for the build-and-release lane, and a
+  detached std.Thread caller for the lifecycle lane."
+  (str "const std = @import(\"std\");\n\n"
+       "export fn fire_cb(cb: *const fn () callconv(.c) void) void {\n"
        "    cb();\n"
        "}\n"
        "export fn fire_cb_i64(cb: *const fn (i64) callconv(.c) void, x: i64) void {\n"
        "    cb(x);\n"
+       "}\n"
+       "export fn fire_async(cb: *const fn () callconv(.c) void) void {\n"
+       "    _ = std.Thread.spawn(.{}, worker, .{cb}) catch return;\n"
+       "}\n"
+       "fn worker(cb: *const fn () callconv(.c) void) void {\n"
+       "    cb();\n"
        "}\n"))
 
 (defn- scratch-dir []
@@ -225,4 +232,41 @@
       (is (= (inc before) (ff/registered-stub-count)))
       (ff/release-stub! stub)
       (is (= before (ff/registered-stub-count)))
+      (finally (.shutdown exec)))))
+
+;;; Lifecycle: fire from a native worker thread
+
+(deftest async-stub-fires-from-a-native-thread
+  (let [exec    (Executors/newSingleThreadExecutor)
+        desc    (ff/descriptor :void [])
+        latch   (CountDownLatch. 1)
+        caller  (Thread/currentThread)
+        result  (atom nil)
+        stub    (ff/async-upcall-stub
+                 (fn []
+                   (reset! result (Thread/currentThread))
+                   (.countDown latch))
+                 desc (Arena/global) (ff/onto-executor exec))
+        fire    (ff/downcall (lookup) "fire_async" :void [ff/c-ptr])]
+    (try
+      (ff/call fire stub)
+      (is (.await latch 5 TimeUnit/SECONDS)
+          "the callback landed from the native worker thread")
+      (is (not (identical? caller @result))
+          "the fn ran on the executor thread, not the registering caller")
+      (finally (.shutdown exec)))))
+
+(deftest async-stub-survives-after-the-registering-call-returns
+  (let [exec   (Executors/newSingleThreadExecutor)
+        desc   (ff/descriptor :void [])
+        latch  (CountDownLatch. 1)
+        fired? (atom false)
+        stub   (ff/async-upcall-stub
+                (fn [] (reset! fired? true) (.countDown latch))
+                desc (Arena/global) (ff/onto-executor exec))
+        fire   (ff/downcall (lookup) "fire_async" :void [ff/c-ptr])]
+    (try
+      (ff/call fire stub)
+      (is (.await latch 5 TimeUnit/SECONDS))
+      (is @fired? "the global Arena kept the stub valid after the downcall returned")
       (finally (.shutdown exec)))))
