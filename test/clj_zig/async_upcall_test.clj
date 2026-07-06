@@ -372,6 +372,28 @@
             "the executor survived the error handler failure"))
       (finally (.shutdown exec)))))
 
+(deftest throwing-error-handler-falls-back-to-err
+  (let [exec (Executors/newSingleThreadExecutor)
+        desc (ff/descriptor :void [])
+        sw   (java.io.StringWriter.)
+        stub (ff/async-upcall-stub
+              (fn [] (throw (ex-info "fn boom" {})))
+              desc (Arena/global)
+              (ff/onto-executor exec
+                {:error-handler (fn [_ _] (throw (ex-info "eh boom" {})))}))
+        fire (ff/downcall (lookup) "fire_cb" :void [ff/c-ptr])]
+    (try
+      (binding [*err* sw]
+        (ff/call fire stub)
+        (.shutdown exec)
+        (is (.awaitTermination exec 5 TimeUnit/SECONDS)
+            "the executor drained so the fallback ran"))
+      (is (re-find #"fn boom" (.toString sw))
+          "the original error reached *err* via the fallback")
+      (is (re-find #"eh boom" (.toString sw))
+          "the handler failure reached *err* via the fallback")
+      (finally (.shutdownNow exec)))))
+
 (deftest agent-survives-an-error-handler-that-throws
   (let [agnt  (agent {:ok true})
         desc  (ff/descriptor :void [])

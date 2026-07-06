@@ -347,12 +347,17 @@
   The routing fn runs on the native thread: it reads the args, builds
   the invocation envelope, submits to the dispatch target, and returns
   nil (void). The error handler is wrapped so it can never propagate,
-  protecting both the native run loop and the agent's state."
+  protecting both the native run loop and the agent's state. A throwing
+  handler falls back to default-error-handler so both failures reach
+  *err* rather than vanishing."
   [f stub-id dispatch-map]
   (let [quiesced? (volatile! false)
         raw-eh    (:error-handler dispatch-map)
         safe-eh   (fn [t env]
-                    (try (raw-eh t env) (catch Throwable _ nil)))
+                    (try (raw-eh t env)
+                         (catch Throwable h
+                           (default-error-handler h env)
+                           (default-error-handler t env))))
         safe-map  (assoc dispatch-map :error-handler safe-eh)]
     {:router
      (fn async-route [& args]
