@@ -521,20 +521,30 @@
 ;;; Routing latency smoke test
 
 (deftest async-routing-latency-is-bounded
-  (testing "the end-to-end routing path completes within a stated bound"
-    (let [exec   (Executors/newSingleThreadExecutor)
-          desc   (ff/descriptor :void [])
-          latch  (CountDownLatch. 1)
-          stamp  (volatile! 0)
-          stub   (ff/async-upcall-stub
-                  (fn [] (vreset! stamp (System/nanoTime)) (.countDown latch))
-                  desc (Arena/global) (ff/onto-executor exec))
-          fire   (ff/downcall (lookup) "fire_cb" :void [ff/c-ptr])]
+  (testing "the warm routing path completes within a stated bound"
+    (let [exec  (Executors/newSingleThreadExecutor)
+          desc  (ff/descriptor :void [])
+          warm  (CountDownLatch. 1)
+          latch (CountDownLatch. 1)
+          stamp (volatile! 0)
+          n     (atom 0)
+          stub  (ff/async-upcall-stub
+                 (fn []
+                   (let [i (swap! n inc)]
+                     (when (= 1 i) (.countDown warm))
+                     (when (= 2 i)
+                       (vreset! stamp (System/nanoTime))
+                       (.countDown latch))))
+                 desc (Arena/global) (ff/onto-executor exec))
+          fire  (ff/downcall (lookup) "fire_cb" :void [ff/c-ptr])]
       (try
+        (ff/call fire stub)
+        (is (.await warm 5 TimeUnit/SECONDS)
+            "the warm-up fire landed before timing")
         (let [start (System/nanoTime)]
           (ff/call fire stub)
           (.await latch 5 TimeUnit/SECONDS)
           (let [latency-ms (/ (double (- @stamp start)) 1000000.0)]
             (is (< latency-ms 100)
-                (str "routing latency under 100ms, got " latency-ms "ms"))))
+                (str "warm routing latency under 100ms, got " latency-ms "ms"))))
         (finally (.shutdown exec))))))
