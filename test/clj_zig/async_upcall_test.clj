@@ -62,6 +62,13 @@
     (is (= :invalid-dispatch-map (:foreign/error (ex-data ex))))
     (is (= #{:overflo} (:unknown-keys (ex-data ex))))))
 
+(deftest validate-dispatch-map-rejects-a-non-fn-error-handler
+  (let [ex (try (ff/validate-dispatch-map {:mode  :executor
+                                            :target (Executors/newSingleThreadExecutor)
+                                            :error-handler "not a fn"})
+                (catch clojure.lang.ExceptionInfo e e))]
+    (is (= :invalid-dispatch-map (:foreign/error (ex-data ex))))))
+
 ;;; Pure core: segment copy helper
 
 (deftest read-bytes-bounded-copies-up-to-the-cap
