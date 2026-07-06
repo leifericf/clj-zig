@@ -184,14 +184,23 @@
 (defn artifact-paths
   "The artifact directory and file paths for a build, under `root`
   (default `.clj-zig/cache`). Each path component is checked, so a malformed
-  spec cannot write outside the cache."
-  [{:keys [root] :as coords}]
+  spec cannot write outside the cache.
+
+  An optional `:build-id` (a validated path segment) makes the directory
+  and library names unique. `recompile!` uses it so a forced rebuild never
+  targets the content-addressed path of a library the JVM has already
+  mapped: Windows holds a loaded DLL's file locked against overwrite and
+  deletion, so a fresh path is the only portable way to force a rebuild.
+  The `:build-id` never enters `cache-key`, so the content hash and the
+  bake/recompile invariant are unchanged."
+  [{:keys [root build-id] :as coords}]
   (let [root              (or root default-cache-root)
         {:keys [target ns name hash]} (segment-coords coords)
-        dir               (str root "/" target "/" ns "/" name "-" hash)]
+        suffix            (if build-id (str "-" (segment :build-id build-id)) "")
+        dir               (str root "/" target "/" ns "/" name "-" hash suffix)]
     {:dir           dir
      :source-path   (str dir "/source.zig")
-     :library-path  (str dir "/lib" name "-" hash "." (extension-for-target target))
+     :library-path  (str dir "/lib" name "-" hash suffix "." (extension-for-target target))
      :manifest-path (str dir "/manifest.edn")}))
 
 (def native-resource-root
@@ -420,14 +429,17 @@
   [{:keys [spec source root aux-files] :as inputs} compile!-fn]
   (let [artifact-key (cache-key inputs)
         coords       {:target (:target inputs) :ns (:ns spec) :name (:name spec)
-                      :hash artifact-key}
+                      :hash artifact-key :build-id (:build-id inputs)}
         paths        (artifact-paths (assoc coords :root root))
         bundled      (bundled-library coords)]
     (cond
       (library-present? paths)
       (assoc paths :hash artifact-key :cached? true)
 
-      bundled
+      ;; A :build-id forces a fresh build to a unique path (recompile!), so a
+      ;; baked classpath library is deliberately ignored: the caller asked to
+      ;; rebuild from source, not to reuse a shipped artifact.
+      (and bundled (not (:build-id inputs)))
       (do
         (extract-bundled! bundled (:library-path paths))
         (write-manifest! paths inputs artifact-key)

@@ -109,7 +109,7 @@
   body that imports other Zig files carries them as `:aux-files`, reproduced
   beside the source."
   ([spec body] (build-inputs spec body {:mode :inline}))
-  ([spec body {:keys [mode entry options-extra aux-files] :or {mode :inline}}]
+  ([spec body {:keys [mode entry options-extra aux-files build-id] :or {mode :inline}}]
    (let [preamble    (preamble-nodes (:ns spec))
          mods        (modules-in (:ns spec))
          body-nodes  (case mode
@@ -129,16 +129,17 @@
          src         (if (:track-allocations options)
                        (source/tracking-wrap rendered (:symbol spec))
                        rendered)]
-     (cond-> {:spec        spec
-              :body        body
-              :source      src
-              :deps        (zig/render preamble)
-              :options     options
-              :zig-version toolchain/pinned-version
-              :target      (cache/target-triple)}
-       aux-files (assoc :aux-files aux-files)
-       mods      (assoc :modules      (cache/modules-fingerprint mods)
-                       :module-roots (cache/module-roots mods))))))
+      (cond-> {:spec        spec
+               :body        body
+               :source      src
+               :deps        (zig/render preamble)
+               :options     options
+               :zig-version toolchain/pinned-version
+               :target      (cache/target-triple)}
+        aux-files (assoc :aux-files aux-files)
+        build-id  (assoc :build-id build-id)
+        mods      (assoc :modules      (cache/modules-fingerprint mods)
+                        :module-roots (cache/module-roots mods))))))
 
 (defn- module-info
   "The external modules a build linked, for inspection (ADR 34): each
@@ -192,6 +193,10 @@
 (defonce ^:private multi-rebinders (atom {}))
 
 (defonce ^:private comptime-rebinders (atom {}))
+
+;; A per-process counter for `recompile!` build-ids, so each forced rebuild
+;; targets a unique cache path (see `recompile!`).
+(defonce ^:private recompile-counter (atom 0))
 
 (declare establish-multi-binding!)
 
@@ -376,13 +381,18 @@
   rebinds, so each distinct comptime combination rebuilds lazily on its
   next call (the values to build for are not known until called)."
   [the-var]
-  (let [wrap (get @rebinders the-var)]
+  (let [wrap (get @rebinders the-var)
+        ;; A forced rebuild targets a unique path (a per-process build-id
+        ;; nonce), so it never writes to the content-addressed path of a
+        ;; library the JVM has already mapped. Windows holds a loaded DLL
+        ;; locked against overwrite and deletion, so evicting and rewriting
+        ;; the same path -- the Unix flow -- is not portable. The build-id
+        ;; never enters the cache hash; only the on-disk path differs.
+        build-id (str "rc" (swap! recompile-counter inc))]
     (cond
       (= :multi-arity wrap)
       (let [{:keys [arity-specs]} (get @multi-rebinders the-var)]
-        (doseq [{:keys [spec body]} arity-specs]
-          (cache/evict! (build-inputs spec body)))
-        (establish-multi-binding! the-var arity-specs {}))
+        (establish-multi-binding! the-var arity-specs {} {:build-id build-id}))
 
       (= :comptime wrap)
       (let [{:keys [spec body comptime-params var-meta wrap]} (get @comptime-rebinders the-var)]
@@ -395,8 +405,7 @@
           (throw (ex-info "recompile! needs a defnz Var with a current binding."
                           {:level :error :error/code :clj-zig/not-recompilable
                            :var the-var})))
-        (cache/evict! (build-inputs spec body gen))
-        (establish-binding! the-var spec body {} wrap gen))
+        (establish-binding! the-var spec body {} wrap (assoc gen :build-id build-id)))
 
       :else
       (throw (ex-info "recompile! needs a defnz Var with a current binding."
@@ -411,9 +420,9 @@
   or `{:status :failed ...}` with the rendered diagnostic data on failure.
   The catch isolates a failed arity so its siblings can still compile and
   keep their previous bindings."
-  [{:keys [spec body wrap arity-count]}]
+  [{:keys [spec body wrap arity-count]} gen]
   (try
-    (let [result (establish! spec body)
+    (let [result (establish! spec body gen)
           invoke (wrap (:invoke result))
           info   (-> (merge (dissoc result :invoke) {:source-mode :inline})
                      (nested-info spec))]
@@ -490,12 +499,14 @@
   each arity is recompiled independently: a failed arity keeps its
   previous invoke fn while successful arities get new ones, so a
   redefinition that breaks one arity leaves the others callable."
-  [the-var arity-specs var-meta]
-  (let [prev-entry  (get @multi-rebinders the-var)
-        prev-table  (:invoke-table prev-entry)
-        prev-arities (get-in (meta the-var) [:clj-zig/info :lifecycle :arities] {})
-        results     (mapv try-establish-arity arity-specs)
-        failed      (failed-results results)
+  ([the-var arity-specs var-meta]
+   (establish-multi-binding! the-var arity-specs var-meta {:mode :inline}))
+  ([the-var arity-specs var-meta gen]
+   (let [prev-entry  (get @multi-rebinders the-var)
+         prev-table  (:invoke-table prev-entry)
+         prev-arities (get-in (meta the-var) [:clj-zig/info :lifecycle :arities] {})
+         results     (mapv #(try-establish-arity % gen) arity-specs)
+         failed      (failed-results results)
         first-hard-fail (first (filter #(and (= :failed (:status %))
                                              (nil? (get prev-table (:arity-count %))))
                                        results))]
@@ -516,7 +527,7 @@
       (when-let [first-fail (first failed)]
         (let [data (:error-data first-fail)]
           (throw (ex-info (diagnostics/render data) data (:error first-fail)))))
-      the-var)))
+      the-var))))
 
 ;; File-sourced bodies
 
