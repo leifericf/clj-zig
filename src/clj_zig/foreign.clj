@@ -39,8 +39,7 @@
                               MemoryLayout MemorySegment SymbolLookup ValueLayout)
            (java.lang.invoke MethodHandle MethodHandles MethodType)
            (java.nio.charset StandardCharsets)
-           (java.util.concurrent LinkedBlockingQueue TimeUnit)
-           (java.util.concurrent.atomic AtomicBoolean)))
+           (java.util.concurrent RejectedExecutionException)))
 
 ;; linker and layout shorthands
 
@@ -224,69 +223,53 @@
   nil)
 
 (defn- make-envelope
-  "Build the invocation envelope: which stub fired, the copied args, and
-  a nanoTime stamp for ordering and latency diagnosis."
+  "Build the invocation envelope: which stub fired, the args, and a
+  nanoTime stamp for ordering and latency diagnosis."
   [stub-id args]
   {:stub stub-id :args (vec args) :stamp (System/nanoTime)})
 
-(def ^:private async-modes     #{:executor :agent :custom})
-(def ^:private async-overflows #{:drop-oldest :drop-current :block-timeout})
+(def ^:private async-modes #{:executor :agent})
 
 (defn validate-dispatch-map
   "Validate `m` as an async dispatch map, apply defaults, and return the
   normalized map. Throws ex-info tagged `:foreign/error
-  :invalid-dispatch-map` when the map is malformed.
+  :invalid-dispatch-map` when malformed.
 
-  Required keys by mode:
-    :executor  :target (a java.util.concurrent.Executor)
-    :agent     :target (a Clojure agent)
-    :custom    :fn     (an IFn that receives the invocation envelope)
+  Required keys:
+    :mode   :executor or :agent
+    :target a java.util.concurrent.Executor (:executor)
+            or a Clojure agent (:agent)
 
-  Optional keys (defaulted):
-    :overflow       :drop-oldest (also :drop-current, :block-timeout)
-    :bound          1024 (the queue bound for back-pressure)
-    :copy-segments? true (copy segment args at the stub boundary)
-    :error-handler  default-error-handler (fn [throwable invocation])"
+  Optional:
+    :error-handler (fn [throwable invocation]); default logs to *err*
+
+  The dispatch target's own queue bound, thread count, and rejection
+  policy are the back-pressure mechanism. Configure them on the target."
   [m]
   (let [mode (:mode m)]
     (when-not (async-modes mode)
       (throw (ex-info (str "Invalid dispatch map :mode: " (pr-str mode))
                       {:foreign/error :invalid-dispatch-map :mode mode})))
-    (when (and (#{:executor :agent} mode) (nil? (:target m)))
+    (when (nil? (:target m))
       (throw (ex-info (str "Dispatch map :mode " mode " requires :target")
                       {:foreign/error :invalid-dispatch-map :mode mode})))
-    (when (and (= :custom mode) (not (ifn? (:fn m))))
-      (throw (ex-info "Dispatch map :mode :custom requires a :fn"
-                      {:foreign/error :invalid-dispatch-map :mode mode})))
-    (let [overflow (or (:overflow m) :drop-oldest)]
-      (when-not (async-overflows overflow)
-        (throw (ex-info (str "Invalid :overflow: " (pr-str overflow))
-                        {:foreign/error :invalid-dispatch-map :overflow overflow})))
-      (let [bound (if (contains? m :bound) (:bound m) 1024)]
-        (when-not (and (int? bound) (pos-int? bound))
-          (throw (ex-info (str "Invalid :bound: " (pr-str bound))
-                          {:foreign/error :invalid-dispatch-map :bound bound})))
-        {:mode           mode
-         :target         (:target m)
-         :fn             (:fn m)
-         :error-handler  (or (:error-handler m) default-error-handler)
-         :overflow       overflow
-         :bound          bound
-         :copy-segments? (boolean (:copy-segments? m true))}))))
+    {:mode          mode
+     :target        (:target m)
+     :error-handler (or (:error-handler m) default-error-handler)}))
 
 (defn onto-executor
   "Build a dispatch map routing async invocations onto `exec`, a
-  `java.util.concurrent.Executor`. The optional `opts` map overrides the
-  defaults (see `validate-dispatch-map` for the full key list). The
-  returned map is validated and normalized."
+  `java.util.concurrent.Executor`. The optional `opts` map may carry
+  :error-handler (fn [throwable invocation]); default logs to *err*.
+  The executor's own queue bound, thread count, and rejection policy
+  are the back-pressure mechanism."
   ([exec] (onto-executor exec {}))
   ([exec opts]
    (validate-dispatch-map (assoc opts :mode :executor :target exec))))
 
 (defn onto-agent
   "Build a dispatch map routing async invocations onto `agent`, a Clojure
-  agent. The optional `opts` map overrides the defaults (see
-  `validate-dispatch-map`)."
+  agent. The optional `opts` map may carry :error-handler."
   ([agnt] (onto-agent agnt {}))
   ([agnt opts]
    (validate-dispatch-map (assoc opts :mode :agent :target agnt))))
@@ -305,81 +288,50 @@
          (MemorySegment/copy seg ValueLayout/JAVA_BYTE (long 0) out (int 0) (int size)))
        out))))
 
-;; async upcall stubs (route, not run)
+;; async upcall stubs
 
 (defonce ^:private stub-registry (atom {}))
 
+(defn- dispatch-invocation
+  "Submit the invocation envelope to the dispatch target. For :executor,
+  submits a Runnable and catches RejectedExecutionException. For :agent,
+  sends a per-invocation action that preserves the agent value. The
+  native thread never runs f."
+  [env f dispatch-map]
+  (let [eh     (:error-handler dispatch-map)
+        target (:target dispatch-map)]
+    (case (:mode dispatch-map)
+      :executor
+      (let [run-fn (fn []
+                     (try (apply f (:args env))
+                          (catch Throwable t (eh t env))))]
+        (try (.execute ^java.util.concurrent.Executor target ^Runnable run-fn)
+             (catch RejectedExecutionException e
+               (eh e env))))
+      :agent
+      (send target (fn [curr]
+                     (try (apply f (:args env))
+                          (catch Throwable t (eh t env)))
+                     curr)))))
+
 (defn- build-async-router
-  "Build the routing fn, the bounded queue, the drain state, and the
-  quiesced volatile for an async stub.
-
-  For :executor and :agent modes the routing fn enqueues the invocation
-  on a bounded LinkedBlockingQueue (capacity :bound) with the overflow
-  policy, then ensures a drain task is running on the dispatch target.
-  The drain task processes queued invocations under try/catch routing
-  errors to the handler. The native thread never runs the user's fn.
-
-  For :custom mode the routing fn calls (:fn dispatch-map) with the
-  envelope directly on the native thread. The caller owns their own
-  routing and queue discipline."
+  "Build the routing fn and the quiesced volatile for an async stub.
+  The routing fn runs on the native thread: it reads the args, builds
+  the invocation envelope, submits to the dispatch target, and returns
+  nil (void). Dispatch errors route to the error handler so they never
+  escape into the native run loop."
   [f stub-id dispatch-map]
-  (let [quiesced?      (volatile! false)
-        eh             (:error-handler dispatch-map)
-        mode           (:mode dispatch-map)
-        overflow       (:overflow dispatch-map)
-        ^long bound    (:bound dispatch-map)
-        target         (:target dispatch-map)
-        custom-fn      (:fn dispatch-map)
-        queue          (LinkedBlockingQueue. bound)
-        drain-running? (AtomicBoolean. false)]
-    (letfn [(run-env [env]
-              (try (apply f (:args env))
-                   (catch Throwable t (eh t env))))
-            (overflow-ex [reason]
-              (ex-info (str "async overflow: " reason)
-                       {:foreign/error :async-overflow :overflow overflow}))
-            (enqueue [env]
-              (case overflow
-                :drop-oldest  (when-not (.offer queue env)
-                                (.poll queue)
-                                (.offer queue env))
-                :drop-current (when-not (.offer queue env)
-                                (eh (overflow-ex "dropped current") env))
-                :block-timeout
-                (when-not (.offer queue env 100 TimeUnit/MILLISECONDS)
-                  (eh (overflow-ex "timed out") env))))
-            (submit-drain []
-              (try
-                (case mode
-                  :executor (.execute ^java.util.concurrent.Executor target
-                                      ^Runnable (fn [] (drain)))
-                  :agent    (send target (fn [_] (drain) nil)))
-                (catch Throwable t
-                  (.set drain-running? false)
-                  (eh t (or (.peek queue) (make-envelope stub-id []))))))
-            (drain []
-              (try
-                (loop []
-                  (when-let [env (.poll queue)]
-                    (run-env env)
-                    (recur)))
-                (finally (.set drain-running? false)))
-              (when (and (not (.isEmpty queue))
-                         (.compareAndSet drain-running? false true))
-                (submit-drain)))]
-      {:router
-       (fn async-route [& args]
-         (when-not @quiesced?
-           (let [env (make-envelope stub-id args)]
-             (if (= :custom mode)
-               (try (custom-fn env)
-                    (catch Throwable t (eh t env)))
-               (do
-                 (enqueue env)
-                 (when (.compareAndSet drain-running? false true)
-                   (submit-drain))))))
-         nil)
-       :quiesced? quiesced?})))
+  (let [quiesced? (volatile! false)
+        eh        (:error-handler dispatch-map)]
+    {:router
+     (fn async-route [& args]
+       (when-not @quiesced?
+         (let [env (make-envelope stub-id args)]
+           (try
+             (dispatch-invocation env f dispatch-map)
+             (catch Throwable t (eh t env)))))
+       nil)
+     :quiesced? quiesced?}))
 
 (defn async-upcall-stub
   "Build a native upcall stub that ROUTES rather than RUNS. The native
@@ -399,7 +351,16 @@
     `onto-executor` or `onto-agent`.
 
   THREADING: your fn runs on the dispatch target's thread(s), not the
-  native thread. The native thread does only read-copy-enqueue-return.
+  native thread. The native thread does only read-envelope-submit-return.
+
+  SEGMENT SAFETY: pointer args arrive as MemorySegment. If your fn
+  captures a segment in a closure that outlives the fire, copy its data
+  (use read-utf8-bounded for strings, read-bytes-bounded for raw bytes)
+  before the closure escapes. The routing handle does not copy segments.
+
+  BACK-PRESSURE: configure the executor's queue bound and rejection
+  policy; they are the back-pressure mechanism. A rejected execution
+  routes to the error handler.
 
   Call `release-stub!` to stop dispatch after native code has stopped
   firing."
@@ -431,18 +392,15 @@
     (swap! stub-registry dissoc seg))
   nil)
 
-(defn registered-stub-count
-  "The number of currently registered async stubs. Intended for testing
-  and diagnostics."
+(defn- registered-stub-count
+  "The number of currently registered async stubs."
   ^long []
   (count @stub-registry))
 
 (defn shutdown-async-stubs
-  "Mark all registered async stubs quiesced, drain agent targets up to a
-  per-stub timeout, and clear the registry. Installed as a JVM shutdown
-  hook so pending work quiesces before the JVM exits; also callable
-  directly. Idempotent: a second call is a no-op once the registry is
-  empty.
+  "Mark all registered async stubs quiesced, drain agent targets, and
+  clear the registry. Installed as a JVM shutdown hook so pending work
+  quiesces before the JVM exits; also callable directly. Idempotent.
 
   Executor targets are NOT drained here: the caller owns the executor's
   lifecycle. A blocking native callback that cannot quiesce is the

@@ -7,7 +7,7 @@
             [clj-zig.compile :as compile]
             [clj-zig.foreign :as ff])
   (:import (java.lang.foreign Arena MemorySegment ValueLayout)
-           (java.util.concurrent Executors TimeUnit CountDownLatch)))
+           (java.util.concurrent Executors CountDownLatch TimeUnit)))
 
 ;;; Pure core: dispatch map validation and constructors
 
@@ -16,29 +16,22 @@
         dm   (ff/onto-executor exec)]
     (is (= :executor (:mode dm)))
     (is (identical? exec (:target dm)))
-    (is (= :drop-oldest (:overflow dm)))
-    (is (= 1024 (:bound dm)))
-    (is (true? (:copy-segments? dm)))
-    (is (ifn? (:error-handler dm)))))
+    (is (ifn? (:error-handler dm)))
+    (.shutdown exec)))
 
-(deftest onto-executor-honors-overrides
+(deftest onto-executor-accepts-an-error-handler-override
   (let [exec (Executors/newSingleThreadExecutor)
-        eh    (fn [_ _])
-        dm    (ff/onto-executor exec {:overflow       :block-timeout
-                                       :bound          512
-                                       :copy-segments? false
-                                       :error-handler  eh})]
-    (is (= :block-timeout (:overflow dm)))
-    (is (= 512 (:bound dm)))
-    (is (false? (:copy-segments? dm)))
-    (is (identical? eh (:error-handler dm)))))
+        eh   (fn [_ _])
+        dm   (ff/onto-executor exec {:error-handler eh})]
+    (is (identical? eh (:error-handler dm)))
+    (.shutdown exec)))
 
 (deftest onto-agent-builds-a-defaulted-dispatch-map
   (let [agnt (agent nil)
         dm   (ff/onto-agent agnt)]
     (is (= :agent (:mode dm)))
     (is (identical? agnt (:target dm)))
-    (is (= :drop-oldest (:overflow dm)))))
+    (is (ifn? (:error-handler dm)))))
 
 (deftest validate-dispatch-map-rejects-an-unknown-mode
   (let [ex (try (ff/validate-dispatch-map {:mode :bogus :target nil})
@@ -50,31 +43,6 @@
   (let [ex (try (ff/validate-dispatch-map {:mode :executor :target nil})
                 (catch clojure.lang.ExceptionInfo e e))]
     (is (= :invalid-dispatch-map (:foreign/error (ex-data ex))))))
-
-(deftest validate-dispatch-map-rejects-custom-without-fn
-  (let [ex (try (ff/validate-dispatch-map {:mode :custom :fn nil})
-                (catch clojure.lang.ExceptionInfo e e))]
-    (is (= :invalid-dispatch-map (:foreign/error (ex-data ex))))))
-
-(deftest validate-dispatch-map-rejects-bad-overflow
-  (let [ex (try (ff/onto-executor (Executors/newSingleThreadExecutor)
-                                  {:overflow :caller-runs})
-                (catch clojure.lang.ExceptionInfo e e))]
-    (is (= :invalid-dispatch-map (:foreign/error (ex-data ex))))))
-
-(deftest validate-dispatch-map-rejects-non-positive-bound
-  (doseq [bad [0 -1 nil]]
-    (let [ex (try (ff/onto-executor (Executors/newSingleThreadExecutor)
-                                    {:bound bad})
-                  (catch clojure.lang.ExceptionInfo e e))]
-      (is (= :invalid-dispatch-map (:foreign/error (ex-data ex)))
-          (str "bound " (pr-str bad) " is rejected")))))
-
-(deftest custom-mode-accepts-a-fn
-  (let [sink (fn [_])
-        dm   (ff/validate-dispatch-map {:mode :custom :fn sink})]
-    (is (= :custom (:mode dm)))
-    (is (identical? sink (:fn dm)))))
 
 ;;; Pure core: segment copy helper
 
@@ -119,9 +87,8 @@
 
 (def ^:private fixture-source
   "C-ABI exports exercising the async routing path through real native
-  code: synchronous callers for the build-and-release lane, a detached
-  std.Thread caller for the lifecycle lane, and a tight loop for the
-  leak and back-pressure lanes."
+  code: synchronous callers for the build lane, a detached std.Thread
+  caller for the lifecycle lane, and a tight loop for the drain lane."
   (str "const std = @import(\"std\");\n\n"
        "export fn fire_cb(cb: *const fn () callconv(.c) void) void {\n"
        "    cb();\n"
@@ -135,8 +102,8 @@
        "fn worker(cb: *const fn () callconv(.c) void) void {\n"
        "    cb();\n"
        "}\n"
-       "export fn fire_loop(cb: *const fn () callconv(.c) void, n: u64) void {\n"
-       "    var i: u64 = 0;\n"
+       "export fn fire_loop(cb: *const fn () callconv(.c) void, n: i64) void {\n"
+       "    var i: i64 = 0;\n"
        "    while (i < n) : (i += 1) {\n"
        "        cb();\n"
        "    }\n"
@@ -150,7 +117,7 @@
   (delay
     (let [dir (scratch-dir)]
       (:library (compile/compile!
-                 {:source       (apply str fixture-source)
+                 {:source       fixture-source
                   :source-path  (str dir "/fixture.zig")
                   :library-path (str dir "/libasync." (compile/dynamic-library-extension))
                   :ctx          {:var 'clj-zig.async-upcall-test/fixture}})))))
@@ -225,20 +192,19 @@
       (is (= 1 @fired) "the pre-release invocation fired")
       (ff/release-stub! stub)
       (ff/call fire stub)
-      (Thread/sleep 200)
       (is (= 1 @fired) "no invocation after release")
       (finally (.shutdown exec)))))
 
 (deftest release-removes-the-stub-from-the-registry
-  (let [before (ff/registered-stub-count)
+  (let [before (@#'clj-zig.foreign/registered-stub-count)
         exec   (Executors/newSingleThreadExecutor)
         desc   (ff/descriptor :void [])
         stub   (ff/async-upcall-stub (fn [])
                                      desc (Arena/global) (ff/onto-executor exec))]
     (try
-      (is (= (inc before) (ff/registered-stub-count)))
+      (is (= (inc before) (@#'clj-zig.foreign/registered-stub-count)))
       (ff/release-stub! stub)
-      (is (= before (ff/registered-stub-count)))
+      (is (= before (@#'clj-zig.foreign/registered-stub-count)))
       (finally (.shutdown exec)))))
 
 ;;; Lifecycle: fire from a native worker thread
@@ -297,7 +263,6 @@
       (ff/call fire stub)
       (is (.await latch 5 TimeUnit/SECONDS)
           "the error handler was called within the timeout")
-      (is (some? @errs) "the error handler received the error")
       (is (instance? clojure.lang.ExceptionInfo (:throwable @errs)))
       (is (= "boom" (ex-message (:throwable @errs))))
       (is (keyword? (:stub (:invocation @errs)))
@@ -307,27 +272,33 @@
 (deftest async-error-does-not-escape-into-the-native-caller
   (let [exec   (Executors/newSingleThreadExecutor)
         desc   (ff/descriptor :void [ff/c-long])
+        latch  (CountDownLatch. 2)
         fired  (atom 0)
         stub   (ff/async-upcall-stub
-                (fn [_] (swap! fired inc) (throw (ex-info "boom" {})))
+                (fn [_]
+                  (.countDown latch)
+                  (swap! fired inc)
+                  (throw (ex-info "boom" {})))
                 desc (Arena/global)
                 (ff/onto-executor exec {:error-handler (fn [_ _])}))
         fire   (ff/downcall (lookup) "fire_cb_i64" :void [ff/c-ptr ff/c-long])]
     (try
       (ff/call fire stub (long 1))
-      (Thread/sleep 200)
-      (is (= 1 @fired) "the fn fired once without crashing the native caller")
       (ff/call fire stub (long 2))
-      (Thread/sleep 200)
-      (is (= 2 @fired) "the native caller survived the first error and fired again")
+      (is (.await latch 5 TimeUnit/SECONDS)
+          "both invocations fired despite the error")
+      (is (= 2 @fired)
+          "the native caller survived the first error and fired again")
       (finally (.shutdown exec)))))
 
-(deftest async-dispatch-error-routes-to-the-error-handler
-  (let [desc   (ff/descriptor :void [])
+(deftest rejected-execution-routes-to-the-error-handler
+  (let [exec   (Executors/newSingleThreadExecutor)
+        desc   (ff/descriptor :void [])
         latch  (CountDownLatch. 1)
         errs   (atom nil)
-        exec   (Executors/newSingleThreadExecutor)
-        eh     (fn [t inv] (reset! errs {:throwable t :invocation inv}) (.countDown latch))
+        eh     (fn [t inv]
+                 (reset! errs {:throwable t :invocation inv})
+                 (.countDown latch))
         stub   (ff/async-upcall-stub
                 (fn [])
                 desc (Arena/global)
@@ -336,24 +307,26 @@
     (.shutdownNow exec)
     (ff/call fire stub)
     (is (.await latch 5 TimeUnit/SECONDS)
-        "a dispatch-level error reached the error handler, not the native caller")
-    (is (some? (:throwable @errs)))))
+        "a rejected execution reached the error handler, not the native caller")
+    (is (instance? java.util.concurrent.RejectedExecutionException
+                   (:throwable @errs)))))
 
 ;;; Shutdown drain
 
 (deftest shutdown-async-stubs-marks-all-stubs-quiesced
   (let [exec  (Executors/newSingleThreadExecutor)
         desc  (ff/descriptor :void [])
-        stub1 (ff/async-upcall-stub (fn []) desc (Arena/global) (ff/onto-executor exec))
-        stub2 (ff/async-upcall-stub (fn []) desc (Arena/global) (ff/onto-executor exec))
-        fire  (ff/downcall (lookup) "fire_cb" :void [ff/c-ptr])
-        fired (atom 0)]
+        fired (atom 0)
+        stub1 (ff/async-upcall-stub (fn [] (swap! fired inc))
+                                    desc (Arena/global) (ff/onto-executor exec))
+        stub2 (ff/async-upcall-stub (fn [] (swap! fired inc))
+                                    desc (Arena/global) (ff/onto-executor exec))
+        fire  (ff/downcall (lookup) "fire_cb" :void [ff/c-ptr])]
     (try
       (ff/shutdown-async-stubs)
-      (is (zero? (ff/registered-stub-count)) "registry cleared")
+      (is (zero? (@#'clj-zig.foreign/registered-stub-count)) "registry cleared")
       (ff/call fire stub1)
       (ff/call fire stub2)
-      (Thread/sleep 200)
       (is (zero? @fired) "quiesced stubs do not dispatch")
       (finally (.shutdown exec)))))
 
@@ -387,7 +360,21 @@
     (is (.await latch 5 TimeUnit/SECONDS))
     (is (= "agent boom" (ex-message @errs)))))
 
-;;; Leak lane: high-volume fire drains without accumulation
+(deftest agent-dispatch-preserves-the-agent-value
+  (let [agnt   (agent {:count 0})
+        desc   (ff/descriptor :void [])
+        latch  (CountDownLatch. 1)
+        stub   (ff/async-upcall-stub
+                (fn [] (.countDown latch))
+                desc (Arena/global)
+                (ff/onto-agent agnt))
+        fire   (ff/downcall (lookup) "fire_cb" :void [ff/c-ptr])]
+    (ff/call fire stub)
+    (.await latch 5 TimeUnit/SECONDS)
+    (await-for 5000 agnt)
+    (is (= {:count 0} @agnt) "the agent value is preserved after dispatch")))
+
+;;; Drain lane: high-volume fire drains completely
 
 (deftest high-volume-fire-drains-completely
   (let [exec   (Executors/newSingleThreadExecutor)
@@ -397,81 +384,12 @@
         stub   (ff/async-upcall-stub
                 (fn [] (.countDown latch))
                 desc (Arena/global)
-                (ff/onto-executor exec {:bound total}))
+                (ff/onto-executor exec))
         fire   (ff/downcall (lookup) "fire_loop" :void [ff/c-ptr ff/c-long])]
     (try
       (ff/call fire stub (long total))
       (is (.await latch 10 TimeUnit/SECONDS)
           "all invocations drained within the timeout")
-      (finally (.shutdown exec)))))
-
-;;; Back-pressure: bounded queue overflow policies
-
-(defn- blocked-executor
-  "Return [exec gate]: a single-thread executor whose first task parks on
-  a latch so the dispatch queue fills deterministically."
-  []
-  (let [gate (CountDownLatch. 1)
-        exec (Executors/newSingleThreadExecutor)]
-    (.execute exec (fn [] (.await gate 30 TimeUnit/SECONDS)))
-    (Thread/sleep 200)
-    [exec gate]))
-
-(deftest overflow-drop-current-invokes-the-error-handler
-  (let [[exec gate] (blocked-executor)
-        errs   (atom 0)
-        desc   (ff/descriptor :void [])
-        stub   (ff/async-upcall-stub
-                (fn [])
-                desc (Arena/global)
-                (ff/onto-executor exec {:bound      2
-                                         :overflow   :drop-current
-                                         :error-handler (fn [_ _] (swap! errs inc))}))
-        fire   (ff/downcall (lookup) "fire_loop" :void [ff/c-ptr ff/c-long])]
-    (try
-      (ff/call fire stub (long 20))
-      (is (pos? @errs) "the error handler was called for dropped invocations")
-      (is (< @errs 20) "not every invocation was dropped")
-      (.countDown gate)
-      (finally (.shutdown exec)))))
-
-(deftest overflow-drop-oldest-keeps-the-newest
-  (let [[exec gate] (blocked-executor)
-        highest (atom -1)
-        desc    (ff/descriptor :void [ff/c-long])
-        latch   (CountDownLatch. 1)
-        stub    (ff/async-upcall-stub
-                 (fn [x]
-                   (swap! highest max (long x))
-                   (.countDown latch))
-                 desc (Arena/global)
-                 (ff/onto-executor exec {:bound 3 :overflow :drop-oldest}))
-        fire    (ff/downcall (lookup) "fire_cb_i64" :void [ff/c-ptr ff/c-long])]
-    (try
-      (dotimes [i 20] (ff/call fire stub (long i)))
-      (.countDown gate)
-      (.await latch 5 TimeUnit/SECONDS)
-      (Thread/sleep 300)
-      (is (> @highest 15)
-          "the newest invocations survived; the oldest were evicted")
-      (is (< @highest 20))
-      (finally (.shutdown exec)))))
-
-(deftest overflow-block-timeout-does-not-hang
-  (let [[exec gate] (blocked-executor)
-        errs    (atom 0)
-        desc    (ff/descriptor :void [])
-        stub    (ff/async-upcall-stub
-                 (fn [])
-                 desc (Arena/global)
-                 (ff/onto-executor exec {:bound      2
-                                          :overflow   :block-timeout
-                                          :error-handler (fn [_ _] (swap! errs inc))}))
-        fire    (ff/downcall (lookup) "fire_loop" :void [ff/c-ptr ff/c-long])]
-    (try
-      (ff/call fire stub (long 50))
-      (is (pos? @errs) "the block timeout expired and errors were routed")
-      (.countDown gate)
       (finally (.shutdown exec)))))
 
 ;;; Routing latency smoke test

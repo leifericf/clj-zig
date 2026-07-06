@@ -48,11 +48,11 @@ Two invariants are enforced at stub build time:
 The dispatch target is caller-supplied. `clj-zig.foreign` publishes
 `async-upcall-stub`, which builds a routing stub bound to a dispatch map.
 The dispatch map names the target (`java.util.concurrent.Executor` or a
-Clojure agent), the overflow policy, the queue bound, and an optional
-error handler. A bounded queue per stub provides back-pressure with three
-overflow policies: drop-oldest, drop-current, and block-timeout. There is
-no caller-runs policy: the caller is the native thread, and running on it
-is what the governing principle forbids.
+Clojure agent) and an optional error handler. The executor's own queue
+bound, thread count, and rejection policy are the back-pressure mechanism:
+a rejected execution routes to the error handler. There is no clj-zig
+queue layer; each invocation is submitted directly to the target, so a
+multi-threaded executor processes invocations concurrently.
 
 A stub registry and a JVM shutdown hook ensure pending work quiesces
 before the JVM exits. `release-stub!` marks a stub quiesced after the
@@ -88,6 +88,12 @@ Use core.async channels as the dispatch primitive. Rejected for the
 initial implementation: it would add a dependency for a feature that
 executor and agent dispatch cover. A channel adapter can land later as an
 additive namespace without breaking the core.
+
+Insert a clj-zig-owned bounded queue between the routing handle and the
+executor. Rejected: it duplicates the executor's own queue, serializes
+invocations on multi-threaded executors, and puts clj-zig in the business
+of second-guessing the caller's back-pressure configuration. The
+executor's queue and rejection policy are the back-pressure.
 
 Run the fn on the native thread with a try/catch. Rejected: the
 governing principle exists because native threads that fire callbacks

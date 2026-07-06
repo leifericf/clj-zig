@@ -118,7 +118,7 @@ When a native library fires a callback from a thread the JVM does not own (a wor
   )
 ```
 
-The dispatch map carries the overflow policy (`:drop-oldest`, `:drop-current`, `:block-timeout`), the queue bound, and an optional error handler. Use `onto-agent` to route onto a Clojure agent instead. Call `release-stub!` after native code has stopped firing.
+The dispatch map carries an optional error handler. The executor's own queue bound and rejection policy are the back-pressure mechanism. Use `onto-agent` to route onto a Clojure agent instead. Call `release-stub!` after native code has stopped firing.
 
 ## A namespace of native functions
 
