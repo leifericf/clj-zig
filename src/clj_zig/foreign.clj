@@ -302,9 +302,13 @@
   "Read up to `max-bytes` from `seg` into a fresh byte array. The cap is
   the guard: never more than `max-bytes` cross the boundary. Returns nil
   for a NULL segment, and a shorter array when the segment's own size is
-  below the cap. The caller-side counterpart to `read-utf8-bounded` for
-  raw byte buffers."
+  below the cap. `max-bytes` must be non-negative; a negative cap throws
+  ex-info tagged :foreign/error :invalid-cap. The caller-side counterpart
+  to `read-utf8-bounded` for raw byte buffers."
   (^bytes [^MemorySegment seg ^long max-bytes]
+   (when (neg? max-bytes)
+     (throw (ex-info "read-bytes-bounded requires a non-negative max-bytes"
+                     {:foreign/error :invalid-cap :max-bytes max-bytes})))
    (when (and seg (not (.equals MemorySegment/NULL seg)))
      (let [size (min (.byteSize seg) max-bytes)
            out  (byte-array size)]

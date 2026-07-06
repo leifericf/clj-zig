@@ -90,6 +90,17 @@
       (testing "returns nil for NULL"
         (is (nil? (ff/read-bytes-bounded MemorySegment/NULL 100)))))))
 
+(deftest read-bytes-bounded-rejects-a-negative-cap
+  (with-open [arena (Arena/ofShared)]
+    (let [seg (.allocate arena ValueLayout/JAVA_BYTE (long 4))]
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo #"non-negative max-bytes"
+           (ff/read-bytes-bounded seg -1)))
+      (is (= :invalid-cap
+             (:foreign/error (ex-data (try (ff/read-bytes-bounded seg -1)
+                                           (catch clojure.lang.ExceptionInfo e e)))))
+          "a negative cap is tagged for caller-side degradation"))))
+
 ;;; Pure core: envelope and error handler (private, via @#' var)
 
 (deftest make-envelope-carries-stub-args-and-stamp
