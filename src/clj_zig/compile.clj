@@ -95,6 +95,12 @@
                    (module-args module-roots source-abs link-flags)
                    (concat link-flags [source-abs]))))))
 
+(defn- unixify
+  "Normalize path separators to `/` so stderr and module-root paths
+  compare on a common separator regardless of host."
+  [s]
+  (str/replace s "\\" "/"))
+
 (defn attribute-failure
   "Attribute a compile failure to an external module or to the wrapper by
   matching the compiler's `stderr` against each module's source directory
@@ -104,8 +110,8 @@
   Pure."
   [stderr module-roots]
   (or (some (fn [[name root]]
-              (when-let [dir (some-> root io/file .getParent str not-empty)]
-                (when (str/includes? stderr dir)
+              (when-let [dir (some-> root io/file .getParent str not-empty unixify)]
+                (when (str/includes? (unixify stderr) dir)
                   {:zig/origin :module :zig/module name})))
             module-roots)
       {:zig/origin :wrapper}))
