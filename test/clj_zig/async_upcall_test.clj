@@ -349,3 +349,33 @@
       (Thread/sleep 200)
       (is (zero? @fired) "quiesced stubs do not dispatch")
       (finally (.shutdown exec)))))
+
+;;; Agent dispatch from a native thread
+
+(deftest agent-dispatch-fires-from-a-native-thread
+  (let [agnt   (agent nil)
+        desc   (ff/descriptor :void [ff/c-long])
+        latch  (CountDownLatch. 1)
+        result (atom nil)
+        stub   (ff/async-upcall-stub
+                (fn [x] (reset! result (long x)) (.countDown latch))
+                desc (Arena/global) (ff/onto-agent agnt))
+        fire   (ff/downcall (lookup) "fire_cb_i64" :void [ff/c-ptr ff/c-long])]
+    (ff/call fire stub (long 7))
+    (is (.await latch 5 TimeUnit/SECONDS))
+    (is (= 7 @result))))
+
+(deftest agent-dispatch-routes-errors-to-the-handler
+  (let [agnt   (agent nil)
+        desc   (ff/descriptor :void [])
+        latch  (CountDownLatch. 1)
+        errs   (atom nil)
+        stub   (ff/async-upcall-stub
+                (fn [] (throw (ex-info "agent boom" {})))
+                desc (Arena/global)
+                (ff/onto-agent agnt {:error-handler
+                                     (fn [t _] (reset! errs t) (.countDown latch))}))
+        fire   (ff/downcall (lookup) "fire_cb" :void [ff/c-ptr])]
+    (ff/call fire stub)
+    (is (.await latch 5 TimeUnit/SECONDS))
+    (is (= "agent boom" (ex-message @errs)))))
