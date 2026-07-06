@@ -328,14 +328,19 @@
 (defn- build-async-router
   "Build the routing fn that the FFM stub calls on the native thread and
   the quiesced volatile that gates it. The fn reads the args, builds the
-  envelope, submits to the dispatch target, and returns nil (void)."
+  envelope, submits to the dispatch target, and returns nil (void).
+  Dispatch-level errors (a rejected execution, a closed target) route to
+  the error handler so they never escape into the native run loop."
   [f stub-id dispatch-map]
-  (let [quiesced? (volatile! false)]
+  (let [quiesced? (volatile! false)
+        eh        (:error-handler dispatch-map)]
     {:router
      (fn async-route [& args]
        (when-not @quiesced?
          (let [env (make-envelope stub-id args)]
-           (dispatch-invocation env f dispatch-map)))
+           (try
+             (dispatch-invocation env f dispatch-map)
+             (catch Throwable t (eh t env)))))
        nil)
      :quiesced? quiesced?}))
 
@@ -374,7 +379,7 @@
         arity                (count (.argumentLayouts desc))
         mh                   (upcall-method-handle router arity desc)
         stub                 (.upcallStub linker mh desc arena no-options)]
-    (swap! stub-registry assoc stub {:id stub-id :quiesced? quiesced?})
+    (swap! stub-registry assoc stub {:id stub-id :quiesced? quiesced? :dispatch validated})
     stub))
 
 (defn release-stub!
@@ -394,6 +399,31 @@
   and diagnostics."
   ^long []
   (count @stub-registry))
+
+(defn shutdown-async-stubs
+  "Mark all registered async stubs quiesced, drain agent targets up to a
+  per-stub timeout, and clear the registry. Installed as a JVM shutdown
+  hook so pending work quiesces before the JVM exits; also callable
+  directly. Idempotent: a second call is a no-op once the registry is
+  empty.
+
+  Executor targets are NOT drained here: the caller owns the executor's
+  lifecycle. A blocking native callback that cannot quiesce is the
+  caller's responsibility."
+  []
+  (let [entries (vals @stub-registry)]
+    (doseq [entry entries]
+      (vreset! (:quiesced? entry) true))
+    (doseq [entry entries]
+      (when (= :agent (:mode (:dispatch entry)))
+        (await-for 2000 (:target (:dispatch entry)))))
+    (reset! stub-registry {}))
+  nil)
+
+(defonce ^:private shutdown-hook-installed
+  (.addShutdownHook
+   (Runtime/getRuntime)
+   (Thread. ^Runnable (fn [] (shutdown-async-stubs)))))
 
 ;; reading bounded native strings
 

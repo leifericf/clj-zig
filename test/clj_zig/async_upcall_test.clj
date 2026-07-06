@@ -270,3 +270,82 @@
       (is (.await latch 5 TimeUnit/SECONDS))
       (is @fired? "the global Arena kept the stub valid after the downcall returned")
       (finally (.shutdown exec)))))
+
+;;; Error routing
+
+(deftest async-fn-error-routes-to-the-error-handler
+  (let [exec   (Executors/newSingleThreadExecutor)
+        desc   (ff/descriptor :void [])
+        latch  (CountDownLatch. 1)
+        errs   (atom nil)
+        eh     (fn [t inv]
+                 (reset! errs {:throwable t :invocation inv})
+                 (.countDown latch))
+        stub   (ff/async-upcall-stub
+                (fn [] (throw (ex-info "boom" {:where :inside})))
+                desc (Arena/global)
+                (ff/onto-executor exec {:error-handler eh}))
+        fire   (ff/downcall (lookup) "fire_cb" :void [ff/c-ptr])]
+    (try
+      (ff/call fire stub)
+      (is (.await latch 5 TimeUnit/SECONDS)
+          "the error handler was called within the timeout")
+      (is (some? @errs) "the error handler received the error")
+      (is (instance? clojure.lang.ExceptionInfo (:throwable @errs)))
+      (is (= "boom" (ex-message (:throwable @errs))))
+      (is (keyword? (:stub (:invocation @errs)))
+          "the invocation carries the stub id")
+      (finally (.shutdown exec)))))
+
+(deftest async-error-does-not-escape-into-the-native-caller
+  (let [exec   (Executors/newSingleThreadExecutor)
+        desc   (ff/descriptor :void [ff/c-long])
+        fired  (atom 0)
+        stub   (ff/async-upcall-stub
+                (fn [_] (swap! fired inc) (throw (ex-info "boom" {})))
+                desc (Arena/global)
+                (ff/onto-executor exec {:error-handler (fn [_ _])}))
+        fire   (ff/downcall (lookup) "fire_cb_i64" :void [ff/c-ptr ff/c-long])]
+    (try
+      (ff/call fire stub (long 1))
+      (Thread/sleep 200)
+      (is (= 1 @fired) "the fn fired once without crashing the native caller")
+      (ff/call fire stub (long 2))
+      (Thread/sleep 200)
+      (is (= 2 @fired) "the native caller survived the first error and fired again")
+      (finally (.shutdown exec)))))
+
+(deftest async-dispatch-error-routes-to-the-error-handler
+  (let [desc   (ff/descriptor :void [])
+        latch  (CountDownLatch. 1)
+        errs   (atom nil)
+        exec   (Executors/newSingleThreadExecutor)
+        eh     (fn [t inv] (reset! errs {:throwable t :invocation inv}) (.countDown latch))
+        stub   (ff/async-upcall-stub
+                (fn [])
+                desc (Arena/global)
+                (ff/onto-executor exec {:error-handler eh}))
+        fire   (ff/downcall (lookup) "fire_cb" :void [ff/c-ptr])]
+    (.shutdownNow exec)
+    (ff/call fire stub)
+    (is (.await latch 5 TimeUnit/SECONDS)
+        "a dispatch-level error reached the error handler, not the native caller")
+    (is (some? (:throwable @errs)))))
+
+;;; Shutdown drain
+
+(deftest shutdown-async-stubs-marks-all-stubs-quiesced
+  (let [exec  (Executors/newSingleThreadExecutor)
+        desc  (ff/descriptor :void [])
+        stub1 (ff/async-upcall-stub (fn []) desc (Arena/global) (ff/onto-executor exec))
+        stub2 (ff/async-upcall-stub (fn []) desc (Arena/global) (ff/onto-executor exec))
+        fire  (ff/downcall (lookup) "fire_cb" :void [ff/c-ptr])
+        fired (atom 0)]
+    (try
+      (ff/shutdown-async-stubs)
+      (is (zero? (ff/registered-stub-count)) "registry cleared")
+      (ff/call fire stub1)
+      (ff/call fire stub2)
+      (Thread/sleep 200)
+      (is (zero? @fired) "quiesced stubs do not dispatch")
+      (finally (.shutdown exec)))))
