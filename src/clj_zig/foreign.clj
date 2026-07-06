@@ -269,13 +269,13 @@
                (not (instance? clojure.lang.Agent (:target m))))
       (throw (ex-info ":agent :target must be a Clojure agent"
                       {:foreign/error :invalid-dispatch-map :mode mode})))
-     (let [eh (or (:error-handler m) default-error-handler)]
-       (when-not (ifn? eh)
-         (throw (ex-info ":error-handler must be a fn"
-                         {:foreign/error :invalid-dispatch-map})))
-       {:mode          mode
-        :target        (:target m)
-        :error-handler eh})))
+    (let [eh (or (:error-handler m) default-error-handler)]
+      (when-not (ifn? eh)
+        (throw (ex-info ":error-handler must be a fn"
+                        {:foreign/error :invalid-dispatch-map})))
+      {:mode          mode
+       :target        (:target m)
+       :error-handler eh})))
 
 (defn onto-executor
   "Build a dispatch map routing async invocations onto `exec`, a
