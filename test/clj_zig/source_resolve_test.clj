@@ -25,7 +25,9 @@
     (spit zig "pub fn f() void {}\n")
     (let [{:keys [text path]} (source/resolve-and-read (.getPath defn) "body.zig")]
       (is (= "pub fn f() void {}\n" text))
-      (is (= (.getPath zig) path)))))
+      ;; `path` is in `/` form (portable); compare by canonical file so a
+      ;; Windows `\` from `.getPath` does not make this regression-prone.
+      (is (= (.getCanonicalPath zig) (.getCanonicalPath (io/file path)))))))
 
 (deftest resolve-and-read-throws-a-structured-diagnostic-when-missing
   (let [ex (try (source/resolve-and-read "/nowhere/core.clj" "does-not-exist.zig")

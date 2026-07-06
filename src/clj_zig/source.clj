@@ -27,21 +27,42 @@
   at the REPL. There is no defining directory to resolve against."
   "NO_SOURCE_PATH")
 
+(defn- unixify
+  "Normalize path separators to `/`. Source paths feed Zig `@import`
+  resolution and cross-platform comparison, both of which use `/`; a
+  Windows `\\` from `*file*` or `java.io.File` would otherwise leak in."
+  [s]
+  (str/replace s "\\" "/"))
+
+(defn- source-absolute?
+  "True for a source path that is absolute on any host: a POSIX leading
+  `/`, a Windows drive letter (`C:/`), or a UNC `//`/`\\` prefix. Source
+  paths use POSIX conventions, so this does not defer to the host's
+  `java.io.File` absolute rule (on Windows `/opt/x` is 'relative')."
+  [s]
+  (let [s (unixify s)]
+    (boolean (or (str/starts-with? s "/")
+                 (re-find #"^[A-Za-z]:/" s)))))
+
 (defn candidate-paths
   "The ordered filesystem paths to try for `rel`, given the defining
   Clojure source file (its `*file*`, or nil / \"NO_SOURCE_PATH\" at the
   REPL). An absolute `rel` is used as-is; a relative `rel` resolves first
   against the defining file's directory, then against the current
-  directory. Pure: builds path strings, reads no filesystem."
+  directory. Pure: builds path strings in `/` form (portable across hosts
+  and the form Zig `@import` and classpath resolution use), reads no
+  filesystem."
   [defining-file rel]
-  (let [f (io/file rel)]
-    (if (.isAbsolute f)
-      [(.getPath f)]
-      (->> [(when (and defining-file (not= defining-file no-source))
-              (.getPath (io/file (.getParent (io/file defining-file)) rel)))
-            rel]
-           (remove nil?)
-           vec))))
+  (let [rel (unixify rel)]
+    (if (source-absolute? rel)
+      [rel]
+      (let [dir (when (and defining-file (not= defining-file no-source))
+                  (let [d (unixify defining-file)
+                        i (str/last-index-of d "/")]
+                    (when i (subs d 0 i))))]
+        (->> [(when dir (str dir "/" rel)) rel]
+             (remove nil?)
+             vec)))))
 
 (defn namespace-zig-file
   "The `.zig` file co-located with a namespace's Clojure source: the
