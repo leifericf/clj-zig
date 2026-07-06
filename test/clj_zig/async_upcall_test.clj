@@ -373,26 +373,25 @@
       (finally (.shutdown exec)))))
 
 (deftest throwing-error-handler-falls-back-to-err
-  (let [exec (Executors/newSingleThreadExecutor)
+  ;; A same-thread executor keeps the dispatch (and the fallback's *err*
+  ;; write) on this thread, so the binding can capture it. binding is
+  ;; thread-local; a pooled executor would write to the real *err*.
+  (let [same-thread (reify java.util.concurrent.Executor
+                      (execute [_ r] (.run r)))
         desc (ff/descriptor :void [])
         sw   (java.io.StringWriter.)
         stub (ff/async-upcall-stub
               (fn [] (throw (ex-info "fn boom" {})))
               desc (Arena/global)
-              (ff/onto-executor exec
+              (ff/onto-executor same-thread
                 {:error-handler (fn [_ _] (throw (ex-info "eh boom" {})))}))
         fire (ff/downcall (lookup) "fire_cb" :void [ff/c-ptr])]
-    (try
-      (binding [*err* sw]
-        (ff/call fire stub)
-        (.shutdown exec)
-        (is (.awaitTermination exec 5 TimeUnit/SECONDS)
-            "the executor drained so the fallback ran"))
-      (is (re-find #"fn boom" (.toString sw))
-          "the original error reached *err* via the fallback")
-      (is (re-find #"eh boom" (.toString sw))
-          "the handler failure reached *err* via the fallback")
-      (finally (.shutdownNow exec)))))
+    (binding [*err* sw]
+      (ff/call fire stub))
+    (is (re-find #"fn boom" (.toString sw))
+        "the original error reached *err* via the fallback")
+    (is (re-find #"eh boom" (.toString sw))
+        "the handler failure reached *err* via the fallback")))
 
 (deftest agent-survives-an-error-handler-that-throws
   (let [agnt  (agent {:ok true})
