@@ -28,17 +28,18 @@
   "NO_SOURCE_PATH")
 
 (defn- unixify
-  "Normalize path separators to `/`. Source paths feed Zig `@import`
-  resolution and cross-platform comparison, both of which use `/`; a
-  Windows `\\` from `*file*` or `java.io.File` would otherwise leak in."
+  "Normalize path separators to `/`, used only for absolute-path detection
+  so a POSIX `/opt/x` is recognized as absolute on Windows too. Candidate
+  paths themselves preserve the defining file's native separator (see
+  `candidate-paths`)."
   [s]
   (str/replace s "\\" "/"))
 
 (defn- source-absolute?
   "True for a source path that is absolute on any host: a POSIX leading
-  `/`, a Windows drive letter (`C:/`), or a UNC `//`/`\\` prefix. Source
-  paths use POSIX conventions, so this does not defer to the host's
-  `java.io.File` absolute rule (on Windows `/opt/x` is 'relative')."
+  `/` or a Windows drive letter (`C:/`/`C:\\`). Does not defer to the
+  host's `java.io.File` absolute rule, which calls POSIX `/opt/x`
+  relative on Windows."
   [s]
   (let [s (unixify s)]
     (boolean (or (str/starts-with? s "/")
@@ -49,20 +50,28 @@
   Clojure source file (its `*file*`, or nil / \"NO_SOURCE_PATH\" at the
   REPL). An absolute `rel` is used as-is; a relative `rel` resolves first
   against the defining file's directory, then against the current
-  directory. Pure: builds path strings in `/` form (portable across hosts
-  and the form Zig `@import` and classpath resolution use), reads no
-  filesystem."
+  directory. Pure: builds path strings, reads no filesystem.
+
+  Absolute detection is cross-platform (POSIX `/opt/x` counts on Windows,
+  where `java.io.File` would call it relative). The join preserves the
+  defining file's own separator -- a Windows `*file*` with `\\` yields a
+  native `\\` path (so `:source-file` matches `(.getPath ...)`), while a
+  POSIX defining file yields `/`. Both `java.io.File` and Zig `@import`
+  accept either separator."
   [defining-file rel]
-  (let [rel (unixify rel)]
-    (if (source-absolute? rel)
-      [rel]
-      (let [dir (when (and defining-file (not= defining-file no-source))
-                  (let [d (unixify defining-file)
-                        i (str/last-index-of d "/")]
-                    (when i (subs d 0 i))))]
-        (->> [(when dir (str dir "/" rel)) rel]
-             (remove nil?)
-             vec)))))
+  (if (source-absolute? rel)
+    [rel]
+    (if (and defining-file (not= defining-file no-source))
+      (let [slash  (str/last-index-of defining-file "/")
+            bslash (str/last-index-of defining-file "\\")
+            k      (cond (and slash bslash) (max slash bslash)
+                         slash               slash
+                         bslash              bslash)]
+        (if k
+          (let [sep (subs defining-file k (inc k))]
+            [(str (subs defining-file 0 k) sep rel) rel])
+          [rel]))
+      [rel])))
 
 (defn namespace-zig-file
   "The `.zig` file co-located with a namespace's Clojure source: the
