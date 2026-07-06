@@ -95,7 +95,30 @@ A program also reaches libraries it did not compile and that have no Zig body to
   (foreign/call add (int 20) (int 22)))      ;; => 42
 ```
 
-`downcall` caches its handle per distinct signature, so a per-frame caller invokes the cached handle directly and does no linker work; `upcall-stub` adapts a Clojure fn to a C function pointer for callback-driven APIs; `read-utf8-bounded` reads a NUL-terminated string out of untrusted foreign memory under a hard cap. See [ADR 37](docs/adr/37-foreign-function-toolkit.md) and [ADR 38](docs/adr/38-synchronous-upcall-stubs.md).
+`downcall` caches its handle per distinct signature, so a per-frame caller invokes the cached handle directly and does no linker work; `upcall-stub` adapts a Clojure fn to a C function pointer for callback-driven APIs; `async-upcall-stub` routes fire-and-forget callbacks from native threads onto a caller-supplied executor or agent; `read-utf8-bounded` reads a NUL-terminated string out of untrusted foreign memory under a hard cap. See [ADR 37](docs/adr/37-foreign-function-toolkit.md), [ADR 38](docs/adr/38-synchronous-upcall-stubs.md), and [ADR 62](docs/adr/62-asynchronous-upcalls.md).
+
+### Async callbacks from native threads
+
+When a native library fires a callback from a thread the JVM does not own (a worker thread, a run loop, an audio callback), `async-upcall-stub` routes the invocation onto a caller-supplied dispatch target. The native thread reads the args, enqueues, and returns void; the fn runs on the dispatch target's thread(s), never on the native thread.
+
+```clojure
+(require '[clj-zig.foreign :as foreign])
+(:import '[java.util.concurrent Executors])
+
+(let [exec (Executors/newSingleThreadExecutor)
+      desc (foreign/descriptor :void [foreign/c-long])
+      ;; Build a routing stub: native fires it, the fn runs on the executor
+      stub (foreign/async-upcall-stub
+            (fn [event-code]
+              (println "event:" event-code))
+            desc (Arena/global)
+            (foreign/onto-executor exec))]
+  ;; Hand stub to native code as a callback pointer.
+  ;; When native fires it, the fn runs on the executor thread.
+  )
+```
+
+The dispatch map carries the overflow policy (`:drop-oldest`, `:drop-current`, `:block-timeout`), the queue bound, and an optional error handler. Use `onto-agent` to route onto a Clojure agent instead. Call `release-stub!` after native code has stopped firing.
 
 ## A namespace of native functions
 
@@ -189,6 +212,7 @@ And two show a namespace backed by a co-located `.zig`:
 - [`cinterop.clj`](examples/cinterop.clj): imports a C header with `@cImport` and links a C library, its body in a sibling `.zig` file.
 - [`geometry.clj`](examples/geometry.clj): bodyless functions sourced from the co-located `geometry.zig`, with `zig-deps` linking libm for the whole namespace.
 - [`multifile.clj`](examples/multifile.clj): a body split across two `.zig` files, the first `@import`ing the second.
+- [`async_callbacks.clj`](examples/async_callbacks.clj): fire-and-forget callbacks from a native worker thread, routed onto an executor.
 
 ## Reading order
 
@@ -270,9 +294,6 @@ tests compile and load native code, so they need `zig` on the path and JDK 22+.
 
 ## Non-goals for the proof of concept
 
-- No asynchronous Zig-to-Clojure callbacks. Synchronous upcalls through
-  `clj-zig.foreign/upcall-stub` are supported (ADR 38); the open-ended
-  bidirectional case remains out of scope.
 - No embedded JVM from Zig.
 - No arbitrary Clojure object marshalling.
 - No hiding of Zig's type system.

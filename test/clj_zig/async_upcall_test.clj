@@ -473,3 +473,24 @@
       (is (pos? @errs) "the block timeout expired and errors were routed")
       (.countDown gate)
       (finally (.shutdown exec)))))
+
+;;; Routing latency smoke test
+
+(deftest async-routing-latency-is-bounded
+  (testing "the end-to-end routing path completes within a stated bound"
+    (let [exec   (Executors/newSingleThreadExecutor)
+          desc   (ff/descriptor :void [])
+          latch  (CountDownLatch. 1)
+          stamp  (volatile! 0)
+          stub   (ff/async-upcall-stub
+                  (fn [] (vreset! stamp (System/nanoTime)) (.countDown latch))
+                  desc (Arena/global) (ff/onto-executor exec))
+          fire   (ff/downcall (lookup) "fire_cb" :void [ff/c-ptr])]
+      (try
+        (let [start (System/nanoTime)]
+          (ff/call fire stub)
+          (.await latch 5 TimeUnit/SECONDS)
+          (let [latency-ms (/ (double (- @stamp start)) 1000000.0)]
+            (is (< latency-ms 100)
+                (str "routing latency under 100ms, got " latency-ms "ms"))))
+        (finally (.shutdown exec))))))
