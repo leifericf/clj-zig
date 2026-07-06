@@ -249,7 +249,12 @@
   The dispatch target's own queue bound, thread count, and rejection
   policy are the back-pressure mechanism. Configure them on the target."
   [m]
-  (let [mode (:mode m)]
+  (let [mode (:mode m)
+        known-keys #{:mode :target :error-handler}
+        unknown (not-empty (reduce disj (set (keys m)) known-keys))]
+    (when (seq unknown)
+      (throw (ex-info (str "Unknown dispatch map keys: " (pr-str (vec unknown)))
+                      {:foreign/error :invalid-dispatch-map :unknown-keys unknown})))
     (when-not (async-modes mode)
       (throw (ex-info (str "Invalid dispatch map :mode: " (pr-str mode))
                       {:foreign/error :invalid-dispatch-map :mode mode})))
