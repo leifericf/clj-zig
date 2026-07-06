@@ -336,6 +336,33 @@
             "the executor survived the error handler failure"))
       (finally (.shutdown exec)))))
 
+(deftest agent-survives-an-error-handler-that-throws
+  (let [agnt  (agent {:ok true})
+        desc  (ff/descriptor :void [])
+        latch (CountDownLatch. 1)
+        stub  (ff/async-upcall-stub
+               (fn [] (throw (ex-info "fn boom" {})))
+               desc (Arena/global)
+               (ff/onto-agent agnt
+                 {:error-handler (fn [_ _] (.countDown latch)
+                                   (throw (ex-info "eh boom" {})))}))
+        fire  (ff/downcall (lookup) "fire_cb" :void [ff/c-ptr])]
+    (ff/call fire stub)
+    (is (.await latch 5 TimeUnit/SECONDS))
+    (await-for 5000 agnt)
+    (is (nil? (agent-error agnt))
+        "the agent is not in an error state")
+    (is (= {:ok true} @agnt)
+        "the agent value is preserved after the handler failure")
+    (let [latch2 (CountDownLatch. 1)
+          stub2  (ff/async-upcall-stub
+                  (fn [] (.countDown latch2))
+                  desc (Arena/global)
+                  (ff/onto-agent agnt))]
+      (ff/call fire stub2)
+      (is (.await latch2 5 TimeUnit/SECONDS)
+          "the agent processed a new send after the handler failure"))))
+
 (deftest multi-threaded-executor-runs-invocations-concurrently
   (let [pool  (Executors/newFixedThreadPool 4)
         desc  (ff/descriptor :void [])
