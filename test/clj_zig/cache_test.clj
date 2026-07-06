@@ -1,12 +1,12 @@
 (ns clj-zig.cache-test
   (:require [clojure.java.io :as io]
-            [clojure.java.shell :as sh]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
              [clj-zig.cache :as cache]
              [clj-zig.compile :as compile]
              [clj-zig.toolchain :as toolchain]
             [clj-zig.ffm :as ffm]
+            [clj-zig.foreign :as foreign]
             [clj-zig.gen :as g]
             [clj-zig.source :as source]
             [clj-zig.spec :as spec]))
@@ -300,5 +300,5 @@
       (is (false? (:cached? r1)))
       (is (true? (:cached? r2)))
       (is (= (:library-path r1) (:library-path r2)))
-      (let [{:keys [out]} (sh/sh "nm" "-gU" (:library-path r1))]
-        (is (str/includes? out "clj_zig_app_2e_core_add"))))))
+      (let [lk (foreign/library-lookup (:library-path r1))]
+        (is (foreign/symbol-present? lk "clj_zig_app_2e_core_add"))))))

@@ -2,10 +2,11 @@
   (:require [clojure.java.io :as io]
             [clojure.java.shell :as sh]
             [clojure.string :as str]
-            [clojure.test :refer [deftest is testing]]
-            [clj-zig.compile :as compile]
-            [clj-zig.source :as source]
-            [clj-zig.spec :as spec]))
+          [clojure.test :refer [deftest is testing]]
+          [clj-zig.compile :as compile]
+          [clj-zig.foreign :as foreign]
+          [clj-zig.source :as source]
+          [clj-zig.spec :as spec]))
 
 (defn- scratch-dir []
   (str (java.nio.file.Files/createTempDirectory
@@ -104,8 +105,8 @@
     (is (.exists (io/file (:library result))))
     (is (.exists (io/file (:source-path result))))
     (testing "the exported symbol is present in the library"
-      (let [{:keys [out]} (sh/sh "nm" "-gU" (:library result))]
-        (is (str/includes? out "clj_zig_app_2e_core_add"))))))
+      (let [lk (foreign/library-lookup (:library result))]
+        (is (foreign/symbol-present? lk "clj_zig_app_2e_core_add"))))))
 
 (deftest cross-compiles-for-a-named-target
   (testing "a target triple cross-compiles for another platform; the
