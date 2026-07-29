@@ -306,25 +306,39 @@
       (finally (.shutdown exec)))))
 
 (deftest async-error-does-not-escape-into-the-native-caller
+  ;; The completion signal is a single atomic swap! in the error handler,
+  ;; not two in-body side-effects. dispatch-invocation wraps (apply f ...) in
+  ;; try/catch Throwable -> eh, so the handler fires exactly once per dispatch
+  ;; for ANY throwable the body raises. A Throwable landing mid-body can no
+  ;; longer produce a silent count mismatch (the original flake: an in-body
+  ;; countDown reached 2 while a later in-body inc reached 1, and the no-op
+  ;; handler swallowed the preempting Throwable without a trace).
   (let [exec   (Executors/newSingleThreadExecutor)
         desc   (ff/descriptor :void [ff/c-long])
-        latch  (CountDownLatch. 2)
-        fired  (atom 0)
+        seen   (atom [])
         stub   (ff/async-upcall-stub
-                (fn [_]
-                  (.countDown latch)
-                  (swap! fired inc)
-                  (throw (ex-info "boom" {})))
-                desc (Arena/global)
-                (ff/onto-executor exec {:error-handler (fn [_ _])}))
+                 (fn [_] (throw (ex-info "boom" {})))
+                 desc (Arena/global)
+                 (ff/onto-executor exec {:error-handler (fn [t _] (swap! seen conj t))}))
         fire   (ff/downcall (lookup) "fire_cb_i64" :void [ff/c-ptr ff/c-long])]
     (try
       (ff/call fire stub (long 1))
       (ff/call fire stub (long 2))
-      (is (.await latch 5 TimeUnit/SECONDS)
-          "both invocations fired despite the error")
-      (is (= 2 @fired)
-          "the native caller survived the first error and fired again")
+      ;; Poll to the signal rather than race a fixed await; the deadline is
+      ;; generous for a loaded runner and a real miss throws a diagnostic.
+      (let [deadline (+ (System/nanoTime) (.toNanos TimeUnit/SECONDS 30))]
+        (while (< (count @seen) 2)
+          (when (> (System/nanoTime) deadline)
+            (throw (ex-info "timed out waiting for both async dispatches"
+                            {:seen (mapv ex-message @seen)})))
+          (Thread/sleep 5)))
+      (is (= 2 (count @seen))
+          "both invocations dispatched; the worker survived the first error")
+      (is (every? #(= "boom" (ex-message %)) @seen)
+          (str "every observed error was the expected 'boom' (an unexpected "
+               "Throwable surfaces here with its type instead of a silent "
+               "mismatch): "
+               (pr-str (mapv #(list (type %) (ex-message %)) @seen))))
       (finally (.shutdown exec)))))
 
 (deftest rejected-execution-routes-to-the-error-handler
