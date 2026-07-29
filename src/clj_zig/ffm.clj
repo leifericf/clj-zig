@@ -103,7 +103,7 @@
                                                  [(value-layout (-> type :layout :backing))]
                                                  [ValueLayout/ADDRESS])
     (:ptr :manyptr :array :optional :handle)  [ValueLayout/ADDRESS]
-    [(if (i128-type? type) i128-layout (value-layout type))]))
+    [(if (i128-type? type) ValueLayout/ADDRESS (value-layout type))]))
 
 (defn- param-carrier-count
   "The number of carrier slots `param` writes into the invoke array. Mirrors
@@ -133,38 +133,41 @@
   (let [eu?           (= :error-union (:kind ret))
         owned-rec?    (and (contains? #{:owned :borrowed} (:kind ret))
                            (= :named (get-in ret [:of :kind])))
-        struct-ret?   (and (= :named (:kind ret)) (not (enum-type? ret)))]
+        struct-ret?   (and (= :named (:kind ret)) (not (enum-type? ret)))
+        i128-ret?     (i128-type? ret)]
     {:eu?          eu?
-     :eu-struct?   (and eu?
-                        (= :named (get-in ret [:of :kind]))
-                        (not (enum-type? (:of ret))))
-     :owned-rec?   owned-rec?
-     :owned-slice? (and (contains? #{:owned :borrowed :bytes :string} (:kind ret))
-                        (not owned-rec?))
-     :struct-ret?  struct-ret?
-     :opt-struct?  (and (= :optional (:kind ret))
-                        (= :named (get-in ret [:of :kind]))
-                        (not (enum-type? (:of ret))))
-     :stream?      (= :stream (:kind ret))}))
+      :eu-struct?   (and eu?
+                         (= :named (get-in ret [:of :kind]))
+                         (not (enum-type? (:of ret))))
+      :owned-rec?   owned-rec?
+      :owned-slice? (and (contains? #{:owned :borrowed :bytes :string} (:kind ret))
+                         (not owned-rec?))
+      :struct-ret?  struct-ret?
+      :i128-ret?    i128-ret?
+      :opt-struct?  (and (= :optional (:kind ret))
+                         (= :named (get-in ret [:of :kind]))
+                         (not (enum-type? (:of ret))))
+      :stream?      (= :stream (:kind ret))}))
 
 (defn- descriptor ^FunctionDescriptor [spec]
   (let [ret (:ret spec)
-        {:keys [eu? eu-struct? owned-rec? owned-slice? struct-ret? stream?]}
+        {:keys [eu? eu-struct? owned-rec? owned-slice? struct-ret? i128-ret? stream?]}
         (classify-return ret)
         ;; Trailing out-params per ABI return shape (all export void):
-        ;; error-union adds errbuf+errlen; struct-return and owned-record
-        ;; add one out-pointer; owned-slice/:bytes/:string add ptr+len.
+        ;; error-union adds errbuf+errlen; struct-return, owned-record, and a
+        ;; 128-bit integer return add one out-pointer; owned-slice/:bytes/:string
+        ;; add ptr+len.
         extra        (cond eu-struct?                     [ValueLayout/ADDRESS ValueLayout/ADDRESS ValueLayout/ADDRESS]
                            eu?                            [ValueLayout/ADDRESS ValueLayout/ADDRESS]
                            owned-slice?                   [ValueLayout/ADDRESS ValueLayout/ADDRESS]
-                           (or struct-ret? owned-rec?)    [ValueLayout/ADDRESS]
+                           (or struct-ret? owned-rec? i128-ret?) [ValueLayout/ADDRESS]
                            :else                          [])
         arg-layouts  (into-array MemoryLayout (concat (mapcat param-layouts (:params spec))
                                                       extra))
         ret-value    (if eu? (:of ret) ret)]
     (cond
       stream?    (FunctionDescriptor/of ValueLayout/JAVA_LONG arg-layouts)
-      (or eu-struct? struct-ret? owned-rec? owned-slice? (type/void-type? ret-value))
+      (or eu-struct? struct-ret? owned-rec? owned-slice? i128-ret? (type/void-type? ret-value))
       (FunctionDescriptor/ofVoid arg-layouts)
       :else      (FunctionDescriptor/of (return-layout ret-value) arg-layouts))))
 
@@ -1524,6 +1527,25 @@
     (let [m (struct-reader out)]
       (if record-factory (record-factory m) m))))
 
+(defn- invoke-i128-return
+  "Run a 128-bit-integer return downcall. The result is written through a
+  caller-allocated 16-byte out-segment (the C `__int128` shape), then read
+  back as a BigInteger with the signedness policy of `ret`. The integer
+  crosses by pointer on every host -- a 128-bit value passed by value
+  follows divergent System V / MSVC register conventions -- so the wrapper
+  takes `*const i128` args and writes the return through a `*i128`
+  out-param, identical on every host.
+
+  Carriers is the thread-local base array of size `(:n-base ctx) + 1`; the
+  trailing slot is filled with the out-segment before the invoke."
+  [{:keys [^MethodHandle spreader ret n-base]} ^Arena arena ^objects carriers copy-back!]
+  (let [out (.allocate arena i128-layout)
+        i0  (int n-base)]
+    (aset carriers i0 out)
+    (.invokeExact spreader ^objects carriers)
+    (copy-back!)
+    (i128-segment->bigint ret out)))
+
 (defn- invoke-optional-struct
   "Run an optional-over-struct downcall. The body returns null or a
   c_allocator pointer to the nice struct; the FFM reads the struct through
@@ -1694,10 +1716,11 @@
         free-h      (:free-h shims)
         elem-lay    (:elem-lay shims)
         ;; Carrier-array sizing for the general invoker's thread-local
-        ;; invoke array. The base carriers fill indices `[base-offset,
-        ;; base-offset+n-base)`; the dispatch helper fills any trailing
-        ;; out-seg slots after that. base-offset is 1 only for an i128
-        ;; return, where FFM prepends the arena as SegmentAllocator.
+        ;; invoke array. The base carriers fill indices `[0, n-base)`;
+        ;; the dispatch helper fills any trailing out-seg slots after that.
+        ;; (A 128-bit integer return used to prepend a SegmentAllocator at
+        ;; index 0 for a by-value struct return; it now crosses through a
+        ;; trailing out-pointer like a struct return, so base-offset is 0.)
         scalar-path? (scalar-only? params ret)
         enum-path?   (enum-aware-scalar? params ret)
         {slice-path?   :slice-path?
@@ -1707,13 +1730,13 @@
          slice-total   :slice-total}
         (build-slice-setup params ret scalar-path? enum-path?)
         i128-ret?    (i128-type? ret)
-        base-offset  (if i128-ret? 1 0)
+        base-offset  0
         n-base       (reduce + (map param-carrier-count params))
         n-trailing   (cond stream? 0
                            eu-struct? 3
                            (= :error-union (:kind ret)) 2
                            owned-slice? 2
-                           (or owned-rec? struct-ret?) 1
+                           (or owned-rec? struct-ret? i128-ret?) 1
                            :else 0)
         total        (+ base-offset n-base n-trailing)
         has-mutable-args? (some param-may-copy-back? params)
@@ -1899,7 +1922,7 @@
   (let [{:keys [spreader ret arity invoke-ctx next-h free-h elem-lay var-sym
                 scalar? enum? enum-coercions scalar-coercions carriers-tl
                 slice? slice-chain slice-carriers-tl
-                stream? eu-struct? owned-rec? owned-slice? opt-struct? struct-ret?
+                stream? eu-struct? owned-rec? owned-slice? opt-struct? struct-ret? i128-ret?
                 gen-carriers-tl gen-copybacks-tl gen-base-offset
                 gen-marshal-fns gen-carrier-counts
                 has-mutable-args?]}
@@ -1955,10 +1978,12 @@
                                                        (invoke-owned-slice invoke-ctx _arena carriers copy-back!))
                         opt-struct?                  (fn opt-struct-dispatch [_arena ^objects carriers copy-back!]
                                                        (invoke-optional-struct invoke-ctx _arena carriers copy-back!))
-                        struct-ret?                  (fn struct-ret-dispatch [_arena ^objects carriers copy-back!]
-                                                       (invoke-struct-return invoke-ctx _arena carriers copy-back!))
-                        :else                        (fn scalar-dispatch [_arena ^objects carriers copy-back!]
-                                                       (invoke-scalar invoke-ctx _arena carriers copy-back!)))
+                         struct-ret?                  (fn struct-ret-dispatch [_arena ^objects carriers copy-back!]
+                                                        (invoke-struct-return invoke-ctx _arena carriers copy-back!))
+                         i128-ret?                    (fn i128-ret-dispatch [_arena ^objects carriers copy-back!]
+                                                        (invoke-i128-return invoke-ctx _arena carriers copy-back!))
+                         :else                        (fn scalar-dispatch [_arena ^objects carriers copy-back!]
+                                                        (invoke-scalar invoke-ctx _arena carriers copy-back!)))
               arena-fn (if has-mutable-args?
                         (fn general-arena-fn-mutable [^Arena arena args]
                           (let [^objects carriers (.get ^ThreadLocal gen-carriers-tl)

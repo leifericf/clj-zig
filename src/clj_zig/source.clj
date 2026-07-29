@@ -18,6 +18,7 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [clj-zig.layout :as layout]
+            [clj-zig.type :as type]
             [clj-zig.zig :as zig]))
 
 ;; External `.zig` file resolution
@@ -186,12 +187,24 @@
   [t]
   (boolean (get-in t [:layout :enum])))
 
+(defn- i128-scalar?
+  "True when a boundary type is one of the 128-bit integer scalars. These
+  cross the C ABI by pointer (see `param-decls`, `reconstruction`, and
+  `generate-struct-return`): a 128-bit value passed or returned by value
+  follows host-specific register/hidden-pointer conventions that diverge
+  between System V and MSVC x86_64, so the wrapper takes a `*const i128`
+  and writes the return through a `*i128` out-param. The internal impl fn
+  still handles the value as a plain `i128` under Zig's own convention."
+  [t]
+  (and (= :scalar (:kind t)) (type/i128-type? (:name t))))
+
 (defn- param-decls
   "The param data for one boundary param. A scalar, pointer, or optional
   pointer is one entry; a fixed-size array crosses as a pointer to the
   array; a slice is two entries, a many-item pointer and a `usize`
   length. A `:string` argument lowers to the same wire shape as
-  `[:slice :const :u8]` (a `[*]const u8` pointer and a `usize` length)."
+  `[:slice :const :u8]` (a `[*]const u8` pointer and a `usize` length).
+  A 128-bit integer scalar crosses by `*const` pointer (see `i128-scalar?`)."
   [{:keys [binding type]}]
   (case (:kind type)
     :string          [(zig/param (str binding "_ptr") "[*]const u8")
@@ -213,7 +226,9 @@
                        (if (some :target (get-in type [:layout :fields]))
                          [(zig/param (str binding "_ptr") (str "*const " (wire-struct-name (:name (:layout type)))))]
                          [(zig/param (str binding "_ptr") (str "*const " (zig-type type)))]))
-    [(zig/param (str binding) (zig-type type))]))
+    (if (i128-scalar? type)
+      [(zig/param (str binding "_ptr") (str "*const " (zig-type type)))]
+      [(zig/param (str binding) (zig-type type))])))
 
 (defn- wire-to-nice-copy-stmts
   "Statement nodes converting one wire element into a nice record, used
@@ -311,34 +326,38 @@
   (inline mode) and an inline @import of std (file mode). Returns nil
   when no reconstruction is needed (e.g. an enum argument)."
   ([param] (reconstruction param false))
-  ([{:keys [binding type]} file-mode?]
+   ([{:keys [binding type]} file-mode?]
    (let [alloc (if file-mode?
                  "@import(\"std\").heap.c_allocator"
                  "std.heap.c_allocator")]
-     (case (:kind type)
-       :slice  (if (buffer-carrying-slice-element? (:of type))
-                 (nice-slice-reconstruction binding (:layout (:of type)) alloc)
-                 (simple-slice-reconstruction binding))
-       :string (simple-slice-reconstruction binding)
-       :array  (if (buffer-carrying-slice-element? (:of type))
-                 (nice-array-reconstruction binding (:layout (:of type)) (:length type))
-                 (deref-reconstruction binding))
-       :named  (cond
-                 (enum-type? type) nil
-                 (some :target (get-in type [:layout :fields]))
-                 (nice-named-reconstruction binding (:layout type))
-                 :else (deref-reconstruction binding))
-       nil))))
+     (cond
+       (i128-scalar? type) (deref-reconstruction binding)
+       :else (case (:kind type)
+               :slice  (if (buffer-carrying-slice-element? (:of type))
+                         (nice-slice-reconstruction binding (:layout (:of type)) alloc)
+                         (simple-slice-reconstruction binding))
+               :string (simple-slice-reconstruction binding)
+               :array  (if (buffer-carrying-slice-element? (:of type))
+                         (nice-array-reconstruction binding (:layout (:of type)) (:length type))
+                         (deref-reconstruction binding))
+               :named  (cond
+                         (enum-type? type) nil
+                         (some :target (get-in type [:layout :fields]))
+                         (nice-named-reconstruction binding (:layout type))
+                         :else (deref-reconstruction binding))
+               nil)))))
 
 (defn- param-args
   "The argument names the wrapper passes to an inner function, mirroring
   `param-decls`."
   [{:keys [binding type]}]
-  (case (:kind type)
-    (:slice :string) [(str binding "_ptr") (str binding "_len")]
-    :array           [(str binding "_ptr")]
-    :named           (if (enum-type? type) [(str binding)] [(str binding "_ptr")])
-    [(str binding)]))
+  (cond
+    (i128-scalar? type)                         [(str binding "_ptr")]
+    :else (case (:kind type)
+            (:slice :string) [(str binding "_ptr") (str binding "_len")]
+            :array           [(str binding "_ptr")]
+            :named           (if (enum-type? type) [(str binding)] [(str binding "_ptr")])
+            [(str binding)])))
 
 (defn- args-list
   "The comma-joined argument list a wrapper passes to its inner impl fn,
@@ -920,6 +939,7 @@
     (owned-record-return? ret)                                 :owned-record
     (contains? #{:owned :borrowed :bytes :string} (:kind ret)) :ownership
     (opt-struct-return? ret)                                   :optional-struct
+    (and (= :scalar (:kind ret)) (type/i128-type? (:name ret))) :i128-struct
     (and (= :named (:kind ret)) (enum-type? ret))              :named-enum
     (= :named (:kind ret))                                     :named-struct
     :else                                                      :plain))
@@ -936,6 +956,7 @@
                     :owned-record       (generate-owned-struct-return spec body)
                     :ownership          (generate-ownership spec body)
                     :optional-struct    (generate-optional-struct-return spec body)
+                    :i128-struct        (generate-struct-return spec body)
                     :named-struct       (generate-struct-return spec body)
                     (:named-enum :plain) (generate-plain spec body))
         wire-decls (buffer-wire-decls spec)
@@ -1162,12 +1183,13 @@
   (let [wire-decls (buffer-wire-decls spec)
         ;; A :stream return has no file-mode generator; it falls through to
         ;; the plain wrapper, as the inline-only stream path does.
-        core       (case (return-shape ret)
+         core       (case (return-shape ret)
                      :error-union-struct (file-error-union-struct-return spec entry)
                      :error-union        (file-error-union spec entry)
                      :owned-record       (file-owned-struct-return spec entry)
                      :ownership          (file-ownership spec entry)
                      :optional-struct    (file-optional-struct-return spec entry)
+                     :i128-struct        (file-struct-return spec entry)
                      :named-struct       (file-struct-return spec entry)
                      (:stream :named-enum :plain) (file-plain spec entry))]
     (vec (concat wire-decls core))))
