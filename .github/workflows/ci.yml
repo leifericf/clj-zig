@@ -59,7 +59,12 @@ jobs:
       - name: Set up Clojure CLI
         uses: DeLaGuardo/setup-clojure@13.0
         with:
-          cli: latest
+          # Pinned, not `latest`: setup-clojure derives the clj-msi tag from
+          # the brew-install tag, and the two repos drift when the Clojure
+          # core team cuts a brew-install release before the clj-msi port
+          # catches up. Pinning to a version that exists on both keeps the
+          # Windows lane from failing on upstream release timing.
+          cli: "1.12.5.1654"
 
       - name: Set up Zig
         uses: mlugg/setup-zig@v2
