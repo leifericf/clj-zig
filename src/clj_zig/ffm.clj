@@ -1575,20 +1575,14 @@
 (defn- invoke-scalar
   "Run a plain scalar, enum, or void downcall: invoke, copy mutable args
   back, and read the return with the unsigned policy. The arena backs any
-  slice/pointer arguments. A 128-bit-integer return is a by-value struct,
-  so FFM prepends a SegmentAllocator to the downcall handle; the arena is
-  that allocator, threaded in front of the carriers.
+  slice/pointer arguments.
 
-  Carriers is the thread-local base array. For a non-i128 return the array
-  is exactly the base carriers; for an i128 return it is sized for one
-  leading slot (the arena as SegmentAllocator) plus the base carriers, the
-  loop wrote them at indices 1..n-base, and this fn fills index 0 with the
-  arena before invoking."
-  [{:keys [^MethodHandle spreader ret]} ^Arena arena ^objects carriers copy-back!]
-  (let [result (if (i128-type? ret)
-                 (do (aset carriers 0 arena)
-                     (.invokeExact spreader ^objects carriers))
-                 (.invokeExact spreader ^objects carriers))]
+  Carriers is the thread-local base array, exactly the base carriers. A
+  128-bit-integer return crosses by pointer and routes to
+  `invoke-i128-return`, never this fn; the `arena` arg is threaded only for
+  signature uniformity with the other `invoke-*` helpers and is unused here."
+  [{:keys [^MethodHandle spreader ret]} _arena ^objects carriers copy-back!]
+  (let [result (.invokeExact spreader ^objects carriers)]
     (copy-back!)
     (from-return ret result)))
 
