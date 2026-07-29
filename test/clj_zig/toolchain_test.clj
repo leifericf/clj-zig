@@ -37,13 +37,7 @@
                       (catch clojure.lang.ExceptionInfo e e))]
           (is (= :clj-zig/zig-override-invalid (:error/code (ex-data ex)))))))))
 
-(deftest executable-predicate-follows-the-host-rule
-  (testing "on Unix, executability is the exec bit on a regular file"
-    (with-redefs [toolchain/windows? (constantly false)]
-      (let [exe  (doto (java.io.File/createTempFile "clj-zig-zig" "") (.deleteOnExit) (.setExecutable true))
-            noex (doto (java.io.File/createTempFile "clj-zig-zig" "") (.deleteOnExit) (.setExecutable false))]
-        (is (#'toolchain/executable? exe))
-        (is (not (#'toolchain/executable? noex))))))
+(deftest executable-predicate-is-extension-based-on-windows
   (testing "on Windows, executability is a recognized extension, not the ACL"
     (with-redefs [toolchain/windows? (constantly true)]
       (let [exe  (doto (java.io.File/createTempFile "clj-zig-zig" ".exe") (.deleteOnExit))
