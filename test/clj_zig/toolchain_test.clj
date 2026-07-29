@@ -7,8 +7,12 @@
             [clojure.test :refer [deftest is testing]]
             [clj-zig.toolchain :as toolchain]))
 
+(defn- windows? []
+  (str/includes? (str/lower-case (System/getProperty "os.name")) "win"))
+
 (defn- temp-file [executable?]
-  (let [f (java.io.File/createTempFile "clj-zig-zig" "")]
+  (let [suffix (if (and executable? (windows?)) ".exe" "")
+        f      (java.io.File/createTempFile "clj-zig-zig" suffix)]
     (.deleteOnExit f)
     (.setExecutable f executable?)
     f))
@@ -32,6 +36,22 @@
         (let [ex (try (toolchain/zig-exe)
                       (catch clojure.lang.ExceptionInfo e e))]
           (is (= :clj-zig/zig-override-invalid (:error/code (ex-data ex)))))))))
+
+(deftest executable-predicate-follows-the-host-rule
+  (testing "on Unix, executability is the exec bit on a regular file"
+    (with-redefs [toolchain/windows? (constantly false)]
+      (let [exe  (doto (java.io.File/createTempFile "clj-zig-zig" "") (.deleteOnExit) (.setExecutable true))
+            noex (doto (java.io.File/createTempFile "clj-zig-zig" "") (.deleteOnExit) (.setExecutable false))]
+        (is (#'toolchain/executable? exe))
+        (is (not (#'toolchain/executable? noex))))))
+  (testing "on Windows, executability is a recognized extension, not the ACL"
+    (with-redefs [toolchain/windows? (constantly true)]
+      (let [exe  (doto (java.io.File/createTempFile "clj-zig-zig" ".exe") (.deleteOnExit))
+            bat  (doto (java.io.File/createTempFile "clj-zig-zig" ".bat") (.deleteOnExit))
+            noex (doto (java.io.File/createTempFile "clj-zig-zig" "") (.deleteOnExit))]
+        (is (#'toolchain/executable? exe))
+        (is (#'toolchain/executable? bat))
+        (is (not (#'toolchain/executable? noex)))))))
 
 (deftest a-zig-on-path-is-resolved
   (testing "with no override, the resolver returns a runnable zig"
