@@ -471,7 +471,9 @@
   "Read the NUL-terminated UTF-8 C string at `seg` (a pointer, typically
   into memory the OS or another library owns) as a Java `String`, scanning
   no further than `max-bytes`. Returns nil when `seg` is NULL, and nil when
-  no NUL is found within the cap.
+  no NUL is found within the cap. `max-bytes` must be non-negative; a
+  negative cap throws ex-info tagged :foreign/error :invalid-cap, mirroring
+  `read-bytes-bounded`.
 
   The cap is the load-bearing guard, not a convenience: the bytes are
   untrusted, so the segment is reinterpreted to exactly `max-bytes` (plus
@@ -480,6 +482,9 @@
   of a foreign allocation. `arena` scopes the reinterpreted view; the
   `MemorySegment` never escapes this fn."
   ^String [^MemorySegment seg ^long max-bytes ^Arena arena]
+  (when (neg? max-bytes)
+    (throw (ex-info "read-utf8-bounded requires a non-negative max-bytes"
+                    {:foreign/error :invalid-cap :max-bytes max-bytes})))
   (when (and seg (not (.equals MemorySegment/NULL seg)))
     (let [limit   (inc max-bytes)
           bounded (.reinterpret seg limit arena nil)]

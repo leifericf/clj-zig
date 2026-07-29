@@ -186,6 +186,17 @@
         (.set seg ValueLayout/JAVA_BYTE (long 4) (byte 0))
         (is (= "xxxx" (ff/read-utf8-bounded seg 4 arena)))))))
 
+(deftest read-utf8-bounded-rejects-a-negative-cap
+  (with-open [arena (Arena/ofConfined)]
+    (let [seg (nul-terminated arena "x")]
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo #"non-negative max-bytes"
+           (ff/read-utf8-bounded seg -1 arena)))
+      (is (= :invalid-cap
+             (:foreign/error (ex-data (try (ff/read-utf8-bounded seg -1 arena)
+                                           (catch clojure.lang.ExceptionInfo e e)))))
+           "a negative cap is tagged for caller-side degradation, mirroring read-bytes-bounded"))))
+
 ;; join-then-close-arena
 
 (deftest join-then-close-arena-closes-only-after-the-worker-dies
