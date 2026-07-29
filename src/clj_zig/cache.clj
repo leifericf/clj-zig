@@ -433,12 +433,13 @@
         paths        (artifact-paths (assoc coords :root root))
         bundled      (bundled-library coords)]
     (cond
-      (library-present? paths)
+      ;; A :build-id forces a fresh build (recompile!), so neither a present
+      ;; on-disk library nor a baked classpath library is reused -- the caller
+      ;; asked to rebuild from source. The build-id targets a unique path, so a
+      ;; forced rebuild never reads an artifact an earlier run wrote.
+      (and (library-present? paths) (not (:build-id inputs)))
       (assoc paths :hash artifact-key :cached? true)
 
-      ;; A :build-id forces a fresh build to a unique path (recompile!), so a
-      ;; baked classpath library is deliberately ignored: the caller asked to
-      ;; rebuild from source, not to reuse a shipped artifact.
       (and bundled (not (:build-id inputs)))
       (do
         (extract-bundled! bundled (:library-path paths))
