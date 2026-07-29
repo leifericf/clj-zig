@@ -407,6 +407,29 @@
     (is (re-find #"eh boom" (.toString sw))
         "the handler failure reached *err* via the fallback")))
 
+(deftest failing-error-handler-never-escapes-the-barrier
+  ;; The barrier contract: even when the user fn throws, the user
+  ;; error-handler throws, AND the default-error-handler fallback cannot
+  ;; write (a broken *err*), nothing reaches the native caller. safe-eh is
+  ;; the last-resort barrier and must swallow its own fallback failure
+  ;; rather than escape, poison a worker, or abort the VM.
+  (let [same-thread (reify java.util.concurrent.Executor (execute [_ r] (.run r)))
+        broken (proxy [java.io.Writer] []
+                 (write ([_] (throw (java.io.IOException. "broken *err*")))
+                        ([_buf _off _len] (throw (java.io.IOException. "broken *err*"))))
+                 (flush [])
+                 (close []))
+        desc (ff/descriptor :void [])
+        stub (ff/async-upcall-stub
+               (fn [] (throw (ex-info "fn boom" {})))
+               desc (Arena/global)
+               (ff/onto-executor same-thread
+                 {:error-handler (fn [_ _] (throw (ex-info "eh boom" {})))}))
+        fire (ff/downcall (lookup) "fire_cb" :void [ff/c-ptr])]
+    (binding [*err* broken]
+      (is (nil? (ff/call fire stub))
+          "the failure stayed inside the barrier; the native caller saw no error"))))
+
 (deftest agent-survives-an-error-handler-that-throws
   (let [agnt  (agent {:ok true})
         desc  (ff/descriptor :void [])

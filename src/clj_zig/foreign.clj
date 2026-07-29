@@ -356,8 +356,12 @@
         safe-eh   (fn [t env]
                     (try (raw-eh t env)
                          (catch Throwable h
-                           (default-error-handler h env)
-                           (default-error-handler t env))))
+                           ;; The fallback must itself be a barrier: a throwing
+                           ;; default-error-handler (OOM, a closed *err*, or a
+                           ;; throwable whose pr-str fails) cannot be allowed to
+                           ;; escape into the native caller or poison a worker.
+                           (try (default-error-handler h env) (catch Throwable _ nil))
+                           (try (default-error-handler t env) (catch Throwable _ nil)))))
         safe-map  (assoc dispatch-map :error-handler safe-eh)]
     {:router
      (fn async-route [& args]
