@@ -72,15 +72,17 @@
   "The content hash for these build inputs. The generated `source` enters
   the hash directly, so a change to the source generator yields a new key
   even when the spec and body are unchanged; the spec, body, dependencies,
-  options, Zig version, and target enter it as well. A body that imports
-  other Zig files adds their contents under `:aux`, so editing an imported
-  file recompiles; a body with no imports hashes exactly as before. External
-  Zig modules enter as `:modules`, a name-to-fingerprint map, so a changed
-  module relinks its dependents while leaving every other key untouched."
-  [{:keys [spec body source deps options zig-version target aux-files modules]}]
+  options, Zig version, CPU target, and target enter it as well. A body
+  that imports other Zig files adds their contents under `:aux`, so editing
+  an imported file recompiles; a body with no imports hashes exactly as
+  before. External Zig modules enter as `:modules`, a name-to-fingerprint
+  map, so a changed module relinks its dependents while leaving every other
+  key untouched. The CPU target enters the key so a library compiled for one
+  feature floor (say native AVX) is never reused for another (baseline)."
+  [{:keys [spec body source deps options zig-version target cpu aux-files modules]}]
   (fingerprint (cond-> {:spec spec :body body :source source
                         :options options :zig-version zig-version
-                        :target target}
+                        :target target :cpu cpu}
                  (present? deps)      (assoc :deps deps)
                  (present? aux-files) (assoc :aux aux-files)
                  (present? modules)   (assoc :modules modules))))

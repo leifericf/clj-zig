@@ -18,6 +18,18 @@
   build-inputs default and this fallback share one source of truth."
   "ReleaseSafe")
 
+(def default-cpu
+  "The CPU target every compile pins with `-mcpu`. Zig's `native` default
+  emits host-specific instructions (AVX and beyond on capable hosts), which
+  produces libraries that are not portable: a library cached on one CI
+  runner and loaded on another SIGILLs when the second CPU lacks the
+  features the first compiled for. `baseline` targets the portable feature
+  floor for the arch (SSE2 on x86_64, NEON-less on aarch64), so a cached
+  library loads on any host of that arch -- the same portability bake's
+  cross-compile targets already assume. The value is part of the cache key,
+  so a future policy change recompiles rather than reusing a stale lib."
+  "baseline")
+
 (def ^:dynamic
   *subprocess-ms-box*
   "Measurement seam for the perf harness: when bound to a volatile, the
@@ -75,9 +87,10 @@
   becomes the main module and each module is declared and defined by name
   (ADR 34). `--global-cache-dir` is always present so Zig memoizes
   intermediate artifacts across compiles (ADR 35). A `:target` triple
-  cross-compiles for another platform. The `:options` map may carry
-  `:single-threaded`, `:pic`, `:stack-check`, and `:panic-fn` flags that
-  lower to `-f` arguments (ADR 48)."
+  cross-compiles for another platform. `-mcpu baseline` pins a portable
+  feature floor so a cached library loads on any host of the target arch.
+  The `:options` map may carry `:single-threaded`, `:pic`, `:stack-check`,
+  and `:panic-fn` flags that lower to `-f` arguments (ADR 48)."
   [zig {:keys [source-abs library-abs options target module-roots global-cache-dir]}]
   (let [link-flags (into ["-lc"] (options->flags options))
         mode       (get options :optimize default-optimize-mode)
@@ -86,7 +99,7 @@
                      (:pic options)             (conj "-fPIC")
                      (:stack-check options)     (conj "-fstack-check")
                      (:panic-fn options)        (conj (str "-fpanic-fn=" (:panic-fn options))))]
-    (vec (concat [zig "build-lib" "-dynamic" "-O" mode]
+    (vec (concat [zig "build-lib" "-dynamic" "-O" mode "-mcpu" default-cpu]
                  zf
                  (when target ["-target" target])
                  ["--global-cache-dir" global-cache-dir
