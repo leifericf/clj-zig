@@ -72,7 +72,7 @@
          (map #(.getPath ^java.io.File %))
          first)))
 
-(defn pinned-dir
+(defn ^java.io.File pinned-dir
   "The directory the pinned hermetic Zig installs into."
   []
   (io/file ".clj-zig" "zig" pinned-version))
@@ -197,7 +197,7 @@
   checksum-verified (SHA-256 against a pinned constant) before extraction;
   that checksum is the real trust boundary, and this path check is defense
   in depth on top of an already-trusted archive."
-  [archive dest-dir]
+  [^java.io.File archive ^java.io.File dest-dir]
   (let [dest-canonical (.getCanonicalPath dest-dir)
         archive-abs    (.getAbsolutePath archive)
         {:keys [exit out err]}
@@ -226,7 +226,7 @@
   within `dest-dir` before it is written, so a crafted archive with a
   `../` entry (zip-slip) cannot write outside the install root; the
   download is checksum-verified first, but this is defense in depth."
-  [archive dest-dir]
+  [^java.io.File archive ^java.io.File dest-dir]
   (let [dest-canonical (.getCanonicalPath dest-dir)]
     (with-open [zin (java.util.zip.ZipInputStream. (io/input-stream archive))]
       (loop []

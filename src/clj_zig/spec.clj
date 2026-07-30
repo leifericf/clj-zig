@@ -37,7 +37,7 @@
   [s]
   (->> s
        (map (fn [c]
-              (if (and (< (int c) 128) (Character/isLetterOrDigit c))
+               (if (and (< (int c) 128) (Character/isLetterOrDigit (int c)))
                 (str c)
                 (format "_%x_" (int c)))))
        (apply str)))

@@ -231,7 +231,7 @@
   `:clj-zig/shell-failure`. Adds `:body` so the failure context reaches
   the diagnostic renderer. The single source for the failure-data shape
   so `establish-binding!` and `try-establish-arity` cannot drift."
-  [e body]
+  [^Throwable e body]
   (-> (if (instance? clojure.lang.ExceptionInfo e)
         (ex-data e)
         {:level      :error

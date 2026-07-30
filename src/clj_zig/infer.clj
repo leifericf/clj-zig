@@ -23,7 +23,7 @@
 (defn- parse-param
   "A `name: type` parameter into `{:binding name :zig-type type}`, splitting
   on the binding's colon."
-  [p]
+  [^String p]
   (let [idx (.indexOf p ":")]
     (when (neg? idx)
       (throw (ex-info (str "Malformed parameter declaration " (pr-str p)
@@ -82,7 +82,7 @@
 
 (defn- top-level-index
   "The index of the first `ch` in `s` at bracket depth zero, or nil."
-  [s ch]
+  [^String s ^Character ch]
   (loop [i 0, depth 0]
     (when (< i (count s))
       (let [c (.charAt ^String s i)]
