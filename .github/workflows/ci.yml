@@ -124,3 +124,48 @@ jobs:
 
       - name: Run tests
         run: clojure -M:test
+
+  perf-gate:
+    name: Perf ratio gate
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 26
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "26"
+
+      - name: Set up Clojure CLI
+        uses: DeLaGuardo/setup-clojure@13.0
+        with:
+          cli: "1.12.5.1654"
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Cache Clojure dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2
+            ~/.gitlibs
+            .cpcache
+          key: ${{ runner.os }}-deps-${{ hashFiles('deps.edn') }}
+          restore-keys: |
+            ${{ runner.os }}-deps-
+
+      - name: Cache compiled Zig libraries
+        uses: actions/cache@v4
+        with:
+          path: .clj-zig
+          key: ${{ runner.os }}-zig0.16-${{ hashFiles('src/**/*.clj') }}
+          restore-keys: |
+            ${{ runner.os }}-zig0.16-
+
+      - name: Gate per-call overhead ratio
+        run: clojure -M:bench --gate

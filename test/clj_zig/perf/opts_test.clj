@@ -113,6 +113,28 @@
     (is (:axis1 m))
     (is (= "scalar-passthrough" (:kind m)))))
 
+(deftest gate-off-by-default
+  ;; The regression gate is OFF by default: a run without it records
+  ;; numbers and exits 0 regardless of ratios.
+  (let [m (opts/parse-args [] {})]
+    (is (not (:gate m)))))
+
+(deftest gate-set-via-flag
+  (is (:gate (opts/parse-args ["--gate"] {}))))
+
+(deftest gate-set-via-env
+  (is (:gate (opts/parse-args [] {"CLJ_ZIG_GATE" "1"}))))
+
+(deftest gate-env-falsy-stays-off
+  (is (not (:gate (opts/parse-args [] {"CLJ_ZIG_GATE" "0"}))))
+  (is (not (:gate (opts/parse-args [] {"CLJ_ZIG_GATE" ""})))))
+
+(deftest gate-with-kind-positional
+  ;; --gate composes with the kind positional to gate one shape.
+  (let [m (opts/parse-args ["--gate" "owned-return"] {})]
+    (is (:gate m))
+    (is (= "owned-return" (:kind m)))))
+
 (deftest jfr-off-by-default
   ;; The JFR recording is OFF by default: a run with no option writes no
   ;; .jfr file. Pinned so a regression that flips the default surfaces as

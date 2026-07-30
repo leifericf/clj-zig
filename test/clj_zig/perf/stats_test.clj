@@ -125,6 +125,63 @@
        (stats/shape-entry {:kind :scalar-passthrough :name "echo-i64"}
                           {:defnz clean-defnz}))))
 
+(deftest overhead-ratio-is-defnz-over-floor
+  (let [entry (stats/shape-entry
+               {:kind :scalar-passthrough :name "echo-i64"}
+               {:defnz clean-defnz :floor clean-floor})]
+    (is (= 12.0 (:overhead-ratio entry))
+        "the ratio is the defnz median divided by the floor median")))
+
+(deftest ratio-budget-present-for-every-canonical-shape
+  ;; Every shape the bench measures has a ceiling, so a regression in any
+  ;; one path is caught. A new shape without a budget is a gap, not a
+  ;; silent pass.
+  (doseq [kind [:scalar-passthrough :struct-by-value :enum :slice-arg
+                :string :owned-return :handle]]
+    (is (number? (stats/ratio-budget kind))
+        (str "every canonical shape has a ratio budget: " kind))))
+
+(deftest gate-passes-a-shape-within-budget
+  ;; A normal owned-return: defnz a small fraction of the slow floor.
+  ;; Well under the 3.0 budget, so no breach.
+  (let [entry (stats/shape-entry
+               {:kind :owned-return :name "owned-double"}
+               {:defnz (criterium-result 505.0 510.0)
+                :floor (criterium-result 5430.0 5440.0)})]
+    (is (not (stats/breaching-shape? entry))
+        "a normal within-budget ratio does not breach")))
+
+(deftest gate-flags-a-reflection-class-regression
+  ;; The owned-slice reflection regression lifted defnz ~80x while the
+  ;; floor was unchanged, pushing the ratio past the budget.
+  (let [entry (stats/shape-entry
+               {:kind :owned-return :name "owned-double"}
+               {:defnz (criterium-result 27000.0 27010.0)
+                :floor (criterium-result 5430.0 5440.0)})]
+    (is (stats/breaching-shape? entry)
+        "a defnz inflated to ~5x of the floor breaches the budget")))
+
+(deftest gate-ignores-errored-shapes
+  ;; An errored shape is a measurement failure, not a perf regression;
+  ;; it is reported separately and never counts as a gate breach.
+  (let [entry (stats/diagnostic-entry
+               {:kind :owned-return :name "o"}
+               (ex-info "compile failed" {}))]
+    (is (not (stats/breaching-shape? entry)))))
+
+(deftest gate-breaches-returns-only-over-budget-entries
+  (let [ok  (stats/shape-entry
+             {:kind :owned-return :name "ok"}
+             {:defnz (criterium-result 505.0 510.0)
+              :floor (criterium-result 5430.0 5440.0)})
+        bad (stats/shape-entry
+             {:kind :owned-return :name "bad"}
+             {:defnz (criterium-result 27000.0 27010.0)
+              :floor (criterium-result 5430.0 5440.0)})
+        breaches (stats/gate-breaches [ok bad])]
+    (is (= 1 (count breaches)))
+    (is (= "bad" (:name (first breaches))))))
+
 (deftest meta-block-built-from-fixture-inputs
   (let [meta (stats/meta-block fixture-meta-inputs)]
     (is (= "26.0.1+9"          (:jdk meta)))

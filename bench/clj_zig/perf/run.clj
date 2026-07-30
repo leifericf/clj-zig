@@ -873,6 +873,12 @@
   cache state did not match its contract. The optional kind positional
   narrows the run to one shape, as in the default mode.
 
+  An optional --gate (or CLJ_ZIG_GATE=1) turns the per-call run into a
+  regression gate: after measuring, each shape's defnz/floor overhead
+  ratio is checked against a per-shape budget and the process exits
+  non-zero when any shape breaches. The within-run ratio is portable
+  across runners of different speed; no cross-run baseline is compared.
+
   An optional --jfr <path> (or CLJ_ZIG_JFR=<path>) starts an in-process
   JFR recording against the bench's own pid after any attach window
   opens, and stops it after the last shape measures."
@@ -897,4 +903,15 @@
         (write-record! out record)
         (println "wrote" (str out) "--" (count entries) "shapes"
                  (when track? "(track-allocations)"))
-        (print-summary entries)))))
+        (print-summary entries)
+        (when (:gate opts)
+          (let [breaches (stats/gate-breaches entries)]
+            (when (seq breaches)
+              (println "PERF GATE FAILED:" (count breaches)
+                       "shape(s) over the defnz/floor ratio budget:")
+              (doseq [b breaches]
+                (println (format "  %s ratio %.1f (budget %.1f)"
+                                 (name (:kind b))
+                                 (double (:overhead-ratio b))
+                                 (double (stats/ratio-budget (:kind b))))))
+              (System/exit 1))))))))

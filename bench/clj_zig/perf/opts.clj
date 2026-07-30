@@ -18,6 +18,8 @@
 (def ^:private track-allocations-env "CLJ_ZIG_TRACK_ALLOCATIONS")
 (def ^:private axis1-flag "--axis1")
 (def ^:private axis1-env "CLJ_ZIG_AXIS1")
+(def ^:private gate-flag "--gate")
+(def ^:private gate-env "CLJ_ZIG_GATE")
 (def ^:private jfr-flag "--jfr")
 (def ^:private jfr-env "CLJ_ZIG_JFR")
 
@@ -89,6 +91,24 @@
   [env]
   (truthy-env? env axis1-env))
 
+(defn- gate-from-args?
+  "True when `args` carries the --gate bare switch. The switch turns the
+  per-call run into a regression gate: after measuring, each shape's
+  defnz/floor overhead ratio is checked against its budget and the process
+  exits non-zero when any shape breaches. The ratio is within-run
+  (defnz and floor measured back-to-back in this process), so it is
+  portable across runners of different speed; no cross-run baseline is
+  compared."
+  [args]
+  (flag-present? args gate-flag))
+
+(defn- gate-from-env?
+  "True when the CLJ_ZIG_GATE env var is set to a truthy value (1, true,
+  yes, on, case-insensitive). Any other value (0, empty, unset) keeps the
+  gate off so the default run records numbers without exiting on a breach."
+  [env]
+  (truthy-env? env gate-env))
+
 (defn- parse-jfr-flag
   "Walk `args` and return the value of the --jfr flag (a path string),
   or nil when the flag is absent. A trailing flag with no value parses
@@ -122,6 +142,8 @@
     :track-allocations   truthy when the profiling build is on (see below)
     :axis1               truthy when the Axis-1 authoring-latency harness
                          is selected (see below)
+    :gate                truthy when the per-call run is a regression gate
+                         (see below)
     :jfr                 the path for the JFR recording, nil absent
 
   The attach window reads from the --attach-window <secs> flag or the
@@ -144,6 +166,14 @@
   The optional :kind positional narrows the run to one shape, as in the
   default mode.
 
+  :gate turns the per-call run into a regression gate. After measuring,
+  each shape's defnz/floor overhead ratio is checked against a per-shape
+  budget and the process exits non-zero when any shape breaches. The
+  ratio is within-run, so it is portable across runners of different
+  speed; no cross-run baseline is compared. OFF by default (a run without
+  it records numbers and exits 0); set via the --gate bare switch or
+  CLJ_ZIG_GATE=1.
+
   :jfr names a JFR recording path. When set, the bench shell spawns jcmd
   JFR.start against its own pid (with a tightened 1 ms execution-sample
   period) after any attach window opens, and JFR.stop after the last
@@ -162,4 +192,6 @@
           (track-allocations-from-env? env)) (assoc :track-allocations true)
       (or (axis1-from-args? args)
           (axis1-from-env? env)) (assoc :axis1 true)
+      (or (gate-from-args? args)
+          (gate-from-env? env)) (assoc :gate true)
       (or jfr-flag jfr-env)          (assoc :jfr (or jfr-flag jfr-env)))))

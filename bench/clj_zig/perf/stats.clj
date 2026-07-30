@@ -13,6 +13,7 @@
   Derived quantities:
 
     overhead-ns        = defnz-median - floor-median
+    overhead-ratio     = defnz-median / floor-median
     body-leak-suspect  = floor-median > defnz-median * body-leak-fraction
 
   The body-leak guard is load-bearing for honest reporting: the floor
@@ -87,8 +88,61 @@
              :defnz-median        defnz-med
              :floor-median        floor-med
              :overhead-ns         (- (double defnz-med) (double floor-med))
+             :overhead-ratio      (/ (double defnz-med) (double floor-med))
              :body-leak-suspect   (body-leak? defnz-med floor-med)
              :native-allocations  (:native-allocations results)))))
+
+;; regression gate
+
+(def ^:private ratio-budgets
+  "Per-shape ceiling on the defnz/floor overhead ratio. A catastrophic
+  regression gate, not a tight perf target: each budget sits above the
+  shape's normal within-run ratio and below the ratio a reflection-class
+  regression produces.
+
+  The floor uses invokeWithArguments (the deliberately naive direct-handle
+  path), which is slower than the defnz invokeExact spreader for several
+  shapes, so normal ratios are often below 1. That is fine: a regression
+  inflates the defnz median 30-80x while the floor is unchanged, so the
+  ratio spikes past any budget drawn between normal and regressed. The
+  owned-slice reflection regression, for example, lifted owned-return from
+  a ~0.1 ratio to ~5x.
+
+  The ratio is within-run (defnz and floor measured back-to-back in one
+  process), so it is portable across runners of different speed; no
+  cross-run baseline is compared. The deterministic reflection gate is
+  the primary defense; this is the backstop for non-reflection
+  regressions the reflection gate cannot see."
+  {:scalar-passthrough 4.0
+   :struct-by-value    6.0
+   :enum               4.0
+   :slice-arg          4.0
+   :string             3.0
+   :owned-return       3.0
+   :handle             4.0})
+
+(defn ratio-budget
+  "The max acceptable defnz/floor overhead ratio for `kind`, or nil when
+  the kind has no budget (the shape is not gated)."
+  [kind]
+  (get ratio-budgets kind))
+
+(defn breaching-shape?
+  "True when a shaped `entry` breaches its ratio budget. An :errored entry
+  never breaches (a measurement failure is reported separately, not a perf
+  regression). A shape with no budget never breaches. The ratio must
+  exceed the budget; a ratio at exactly the budget is accepted."
+  [entry]
+  (and (not= :errored (:status entry))
+       (when-let [budget (ratio-budget (:kind entry))]
+         (> (double (:overhead-ratio entry)) (double budget)))))
+
+(defn gate-breaches
+  "The subset of shaped `entries` that breach their ratio budget, in
+  order. Empty when every shape is within budget. The bench shell exits
+  non-zero when this is non-empty."
+  [entries]
+  (filterv breaching-shape? entries))
 
 ;; the meta block
 
