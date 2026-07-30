@@ -244,7 +244,13 @@
   element is not carryable. A struct-element slice must be `:const` so the
   contract is honest about not propagating in-place edits."
   [{:keys [params] :as spec}]
-  (doseq [{:keys [type]} params]
+  (doseq [{:keys [binding type]} params]
+    (when (str/starts-with? (name binding) "__")
+      (fail spec :clj-zig/reserved-binding
+            (str "Parameter " binding " uses a reserved __ prefix. "
+                 "clj-zig generates __-prefixed names internally; "
+                 "rename it without the leading __.")
+            {:binding binding}))
     (when (type/void-type? type)
       (fail spec :clj-zig/void-argument
             (str (:name type) " is not a valid argument type.")

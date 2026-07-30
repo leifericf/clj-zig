@@ -140,6 +140,15 @@
          (error-code #(spec/build-spec '{:ns app.core :name f
                                          :signature [x :void :ret :i64]})))))
 
+(deftest rejects-double-underscore-binding
+  (testing "a __-prefixed binding collides with generated wrapper names"
+    (is (= :clj-zig/reserved-binding
+           (error-code #(spec/build-spec '{:ns app.core :name f
+                                           :signature [__err :i64 :ret :i64]})))))
+  (testing "a single underscore is fine"
+    (is (map? (spec/build-spec '{:ns app.core :name f
+                                 :signature [_x :i64 :ret :i64]})))))
+
 (deftest rejects-noreturn-return
   (testing ":noreturn is not a valid return type, even though it normalizes like :void"
     (is (= :clj-zig/noreturn-return
