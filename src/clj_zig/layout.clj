@@ -237,24 +237,39 @@
   `:nested` flag `normalize-field` recorded drives the nested check."
   [type-name fields types]
   (let [placed (reduce (fn [{:keys [fields offset]} pair]
-                         (let [{:keys [target type] :as f} (normalize-field type-name types pair)]
-                           (when target
-                             (throw (ex-info (str "A packed struct cannot have buffer field "
-                                                  (:name f) "; packed structs support scalar"
-                                                  " and enum fields only.")
-                                             {:level :error
-                                              :error/code :clj-zig/unsupported-packed-field
-                                              :type type-name :field (:name f)})))
-                           (when (:nested f)
-                             (throw (ex-info (str "A packed struct cannot nest a struct in field "
-                                                  (:name f) "; packed structs support scalar"
-                                                  " and enum fields only.")
-                                             {:level :error
-                                              :error/code :clj-zig/unsupported-packed-field
-                                              :type type-name :field (:name f)})))
-                           (let [size (wire-scalar-bytes type)]
-                             {:fields (conj fields (assoc f :offset offset))
-                              :offset (+ offset size)})))
+                          (let [{:keys [target type] :as f} (normalize-field type-name types pair)]
+                            (when target
+                              (throw (ex-info (str "A packed struct cannot have buffer field "
+                                                   (:name f) "; packed structs support scalar"
+                                                   " and enum fields only.")
+                                              {:level :error
+                                               :error/code :clj-zig/unsupported-packed-field
+                                               :type type-name :field (:name f)})))
+                            (when (:nested f)
+                              (throw (ex-info (str "A packed struct cannot nest a struct in field "
+                                                   (:name f) "; packed structs support scalar"
+                                                   " and enum fields only.")
+                                              {:level :error
+                                               :error/code :clj-zig/unsupported-packed-field
+                                               :type type-name :field (:name f)})))
+                            (when (and (= :scalar (:kind type)) (= :bool (:name type)))
+                              ;; Zig bit-packs a packed struct's fields, so a :bool
+                              ;; occupies 1 bit on the Zig side but clj-zig reads and
+                              ;; writes every field at a byte offset (the bool carrier
+                              ;; is one byte). The two layouts diverge for any field
+                              ;; after a bool; reject bool up front so a mixed-width
+                              ;; packed struct fails clearly instead of corrupting.
+                              (throw (ex-info (str "A packed struct cannot have a :bool field "
+                                                   (:name f) "; Zig bit-packs bool to 1 bit but"
+                                                   " clj-zig accesses packed fields at byte"
+                                                   " offsets. Use :u8, which is one byte on"
+                                                   " both sides.")
+                                              {:level :error
+                                               :error/code :clj-zig/unsupported-packed-field
+                                               :type type-name :field (:name f)})))
+                            (let [size (wire-scalar-bytes type)]
+                              {:fields (conj fields (assoc f :offset offset))
+                               :offset (+ offset size)})))
                        {:fields [] :offset 0}
                        (partition 2 fields))]
     {:name   type-name

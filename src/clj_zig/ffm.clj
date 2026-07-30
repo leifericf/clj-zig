@@ -940,6 +940,30 @@
   (MemorySegment/copy seg layout (long 0) arr (int 0) (int n))
   arr)
 
+(def ^:private max-native-read-bytes
+  "A sanity ceiling on a single read whose length is sourced from native
+  memory (a wire struct's len field or an owned-slice out-param). A length
+  above this is corrupt data, not a buffer to allocate or reinterpret; it
+  is rejected with :clj-zig/corrupt-native-length rather than driving a
+  multi-GB allocation or a wrapped-negative reinterpret. 1 GiB is well
+  under the per-array limit and far above any legitimate single field."
+  0x40000000)
+
+(defn- check-native-len
+  "Return `len` as a long when it is non-negative and at most
+  `max-native-read-bytes`, else throw. The length is untrusted (read from
+  native); a negative or absurdly large value is corrupt data, and
+  interpreting it would OOM or overflow the reinterpret size."
+  ^long [len]
+  (let [n (long len)]
+    (when (or (neg? n) (> n max-native-read-bytes))
+      (throw (ex-info "A native buffer or slice reported a corrupt length."
+                      {:level :error
+                       :error/code :clj-zig/corrupt-native-length
+                       :length n
+                       :max-native-read-bytes max-native-read-bytes})))
+    n))
+
 (defn- read-slice-values
   "Copy `len` elements from the native address `addr` into an immutable
   Clojure vector. A scalar element bulk-copies into a typed primitive
@@ -957,7 +981,8 @@
         (and (= :named (:kind elem)) (enum-type? elem))
         (let [backing (:backing (:layout elem))
               bl      (value-layout backing)
-              seg     (.reinterpret (MemorySegment/ofAddress addr) (* n (.byteSize bl)))
+              size    (check-native-len (* n (.byteSize bl)))
+              seg     (.reinterpret (MemorySegment/ofAddress addr) size)
               {:keys [bits]} (type/scalar-info (:name backing))
               arr     (case bits
                         8  (fill-array seg bl n (byte-array n))
@@ -969,13 +994,15 @@
         (= :named (:kind elem))
         (let [inner  (:layout elem)
               stride (long (:size inner))
-              base   (.reinterpret (MemorySegment/ofAddress addr) (* n stride))]
+              size   (check-native-len (* n stride))
+              base   (.reinterpret (MemorySegment/ofAddress addr) size)]
           (mapv #(read-struct (.asSlice base (* (long %) stride) stride) inner)
                 (range n)))
 
         :else
         (let [layout (value-layout elem)
-              seg    (.reinterpret (MemorySegment/ofAddress addr) (* n (.byteSize layout)))
+              size   (check-native-len (* n (.byteSize layout)))
+              seg    (.reinterpret (MemorySegment/ofAddress addr) size)
               {:keys [category bits]} (type/scalar-info (:name elem))]
           (if (= :bool category)
             (mapv #(coerce-scalar elem (read-scalar seg elem (* (long %) (.byteSize layout))))
@@ -997,10 +1024,11 @@
   boxed per-element vector. A zero length yields an empty array without
   dereferencing the address."
   [addr len]
-  (let [out (byte-array len)]
-    (when (pos? len)
-      (let [seg (.reinterpret (MemorySegment/ofAddress addr) (long len))]
-        (MemorySegment/copy seg ValueLayout/JAVA_BYTE (long 0) out (int 0) (int len))))
+  (let [n   (check-native-len len)
+        out (byte-array n)]
+    (when (pos? n)
+      (let [seg (.reinterpret (MemorySegment/ofAddress addr) n)]
+        (MemorySegment/copy seg ValueLayout/JAVA_BYTE (long 0) out (int 0) (int n))))
     out))
 
 (defn- read-utf8-string

@@ -44,3 +44,12 @@
                                   [:buf :string]
                                   {}
                                   {:packed true})))))
+
+(deftest packed-struct-rejects-bool-fields
+  (testing "a :bool field is rejected: Zig bit-packs it to 1 bit but clj-zig reads byte offsets"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"cannot have a :bool field"
+                          (layout/describe 'Bad
+                                           ['flag :bool 'n :u8]
+                                           {}
+                                           {:packed true})))))

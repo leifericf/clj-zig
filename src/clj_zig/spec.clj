@@ -335,6 +335,19 @@
           "A :bytes return must wrap a [:slice :u8]." {}))
   (when (and (= :handle (:kind ret)) (not= :named (:kind (:of ret))))
     (fail spec :clj-zig/unsupported-handle "A :handle must wrap a named type." {}))
+  (when (and (= :named (:kind ret))
+             (some :target (get-in ret [:layout :fields])))
+    ;; A plain named struct return with a buffer field has no free shim
+    ;; (shims are emitted for owned/borrowed/optional/eu-struct/stream only),
+    ;; so a body that c_allocator-allocates the buffer leaks it every call.
+    ;; Require :owned so a free shim frees the body's buffers, or return a
+    ;; scalar-only struct (which has no allocation to free).
+    (fail spec :clj-zig/unsupported-buffer-struct-return
+          (str "A plain named struct return with a buffer field is not"
+               " supported: the wrapper copies the struct out but cannot free"
+               " the body's buffer allocation. Wrap it in :owned, or return a"
+               " scalar-only struct.")
+          {}))
   (when (= :stream (:kind ret))
     (validate-stream-return! spec ret))
   (check-element! spec ret)

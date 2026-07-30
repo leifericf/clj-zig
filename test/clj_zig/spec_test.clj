@@ -1,8 +1,16 @@
 (ns clj-zig.spec-test
   (:require [clojure.test :refer [deftest is testing]]
           [clj-zig.layout :as layout]
-          [clj-zig.core :refer [defnz]]
+          [clj-zig.core :as core :refer [defnz deftypez]]
           [clj-zig.spec :as spec]))
+
+(deftypez Tagged
+  "A struct with a buffer field, used to exercise the plain-return rejection."
+  [tag :string n :i64])
+
+(deftypez Pair
+  "A scalar-only struct, whose plain return stays allowed (no allocation to free)."
+  [x :i64 y :i64])
 
 (defn- error-code [f]
   (try
@@ -137,6 +145,17 @@
     (is (= :clj-zig/noreturn-return
            (error-code #(spec/build-spec '{:ns app.core :name f
                                            :signature [:ret :noreturn]}))))))
+
+(deftest rejects-plain-buffer-struct-return
+  (let [types (core/types-in 'clj-zig.spec-test)]
+    (testing "a plain named struct return with a buffer field leaks without a free shim"
+      (is (= :clj-zig/unsupported-buffer-struct-return
+             (error-code #(spec/build-spec {:ns 'clj-zig.spec-test :name 'f
+                                            :signature [:ret 'Tagged] :types types})))))
+    (testing "a scalar-only struct still returns plain (no allocation to free)"
+      (is (= ::no-throw
+             (error-code #(spec/build-spec {:ns 'clj-zig.spec-test :name 'g
+                                            :signature [:ret 'Pair] :types types})))))))
 
 (deftest accepts-a-slice-of-a-scalar-struct
   (let [types {'Point (layout/describe 'Point '[x :f64 y :f64])}]
