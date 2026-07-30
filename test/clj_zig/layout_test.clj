@@ -132,6 +132,16 @@
     (is (str/includes? (zig/render [(layout/zig-enum (layout/describe-enum 'Compact '[a 0 b 1] {:backing :u8}))])
                        "enum(u8) {"))))
 
+(deftest u64-enum-keeps-unsigned-member-values
+  (let [max-u64  (biginteger "18446744073709551615") ; 2^64 - 1
+        desc     (layout/describe-enum 'Wide ['max max-u64] {:backing :u64})
+        rendered (zig/render [(layout/zig-enum desc)])]
+    (testing "a u64 member above the signed-long range is kept as a BigInteger"
+      (is (= max-u64 (:value (first (:values desc))))))
+    (testing "the Zig declaration emits the unsigned literal, not a truncated negative"
+      (is (str/includes? rendered "max = 18446744073709551615"))
+      (is (not (str/includes? rendered "max = -1"))))))
+
 (deftest rejects-an-invalid-enum-backing
   (testing "a non-integer scalar is not an enum backing"
     (is (= :clj-zig/bad-enum-backing

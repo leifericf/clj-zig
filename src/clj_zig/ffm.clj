@@ -927,14 +927,20 @@
   (atom {}))
 
 (defn- enum-index
-  "The `{:kw->value :value->kw}` lookup maps for an enum layout's members."
+  "The `{:kw->value :value->kw}` lookup maps for an enum layout's members.
+  `:kw->value` carries the declared integer (a `BigInteger` for a `:u64`
+  or `:usize` member above the signed-long range), which the marshaller
+  narrows to the backing carrier. `:value->kw` is keyed by the carrier
+  form `(long value)` -- the two's-complement bit pattern FFM reads back
+  for a `:u64`/`:usize` member -- so a native return finds its member
+  regardless of declared width."
   [descriptor]
   (let [values (:values descriptor)]
     (or (get @enum-index-cache values)
         (let [idx {:kw->value (into {} (map (fn [{:keys [name value]}]
                                               [(keyword (str name)) value])) values)
                    :value->kw (into {} (map (fn [{:keys [name value]}]
-                                              [value (keyword (str name))])) values)}]
+                                              [(long value) (keyword (str name))])) values)}]
           (swap! enum-index-cache assoc values idx)
           idx))))
 
@@ -1500,33 +1506,48 @@
     (copy-back!)
     (from-return ret result)))
 
+(def ^:private stream-cleaner
+  "A daemon-thread Cleaner that frees a stream iterator when its reducible
+  is garbage-collected unreduced. Best-effort (GC-timed), so reducing
+  remains the deterministic way to free; this is the safety net for a
+  caller that obtains the reducible and discards it."
+  (java.lang.ref.Cleaner/create))
+
 (defn- make-stream-reducible
   "Return an `IReduceInit` that drives the iteration from `iter-addr`,
   applying the reduction and calling `free-handle` in a finally so a
-  fault cannot leak the iterator (ADR 50). The native iterator is freed
-  ONLY when the reducible is reduced, so a caller that obtains it and
-  discards it without reducing leaks it; reduce it (e.g. with `into`)
-  or do not hold the reducible."
+  fault cannot leak the iterator (ADR 50). The native iterator is also
+  registered with a Cleaner: a caller that obtains the reducible and
+  discards it without reducing still frees the iterator, best-effort at
+  GC time. `freed?` makes the reduce path and the cleaner mutually
+  exclusive, so reducing normally leaves the cleaner a no-op."
   [iter-addr next-handle free-handle ret elem-layout]
-  (let [elem-type (:of ret)]
-    (reify
-      clojure.lang.IReduceInit
-      (reduce [_ f init-val]
-        (try
-          (with-open [arena (Arena/ofConfined)]
-            (let [out-seg (.allocate arena ^MemoryLayout elem-layout)]
-              (loop [acc init-val]
-                (let [has-val (.invokeWithArguments ^MethodHandle next-handle
-                                                     (object-array [iter-addr out-seg]))]
-                  (if has-val
-                    (let [elem (coerce-scalar elem-type (read-scalar out-seg elem-type 0))
-                          result (f acc elem)]
-                      (if (reduced? result)
-                        @result
-                        (recur result)))
-                    acc)))))
-          (finally
-            (safe-free free-handle [iter-addr])))))))
+  (let [elem-type (:of ret)
+        freed?    (atom false)
+        free-once (fn []
+                    (when (compare-and-set! freed? false true)
+                      (safe-free free-handle [iter-addr])))
+        reducible (reify
+                    clojure.lang.IReduceInit
+                    (reduce [_ f init-val]
+                      (try
+                        (with-open [arena (Arena/ofConfined)]
+                          (let [out-seg (.allocate arena ^MemoryLayout elem-layout)]
+                            (loop [acc init-val]
+                              (let [has-val (.invokeWithArguments ^MethodHandle next-handle
+                                                                   (object-array [iter-addr out-seg]))]
+                                (if has-val
+                                  (let [elem (coerce-scalar elem-type (read-scalar out-seg elem-type 0))
+                                        result (f acc elem)]
+                                    (if (reduced? result)
+                                      @result
+                                      (recur result)))
+                                  acc)))))
+                        (finally
+                          (free-once)))))]
+    (.register stream-cleaner ^Object reducible
+               (reify java.lang.Runnable (run [_] (free-once))))
+    reducible))
 
 (defn- free-shim-handle
   "Bind the `<sym>` downcall (a `__free` or stream `__next`/`__free` shim)

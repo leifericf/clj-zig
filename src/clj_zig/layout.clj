@@ -408,7 +408,7 @@
                      :type type-name :member mname
                      :value value :backing backing-kw
                      :lo lo :hi hi})))
-  {:name mname :value (long value)})
+   {:name mname :value value})
 
 (defn describe-enum
   "The descriptor for a `defenumz` type: an enum whose members cross as
