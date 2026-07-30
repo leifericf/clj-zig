@@ -9,7 +9,16 @@
   on the toolchain shell."
   (:require [clojure.string :as str]))
 
-(declare zig-build-flags)
+(declare zig-build-flags fail)
+
+(defn- fail
+  "Throw a structured diagnostic. Mirrors the fail helpers in spec, type,
+  and signature."
+  [code message extra]
+  (throw (ex-info message (merge {:level :error
+                                  :error/code code
+                                  :message message}
+                                 extra))))
 
 (def ^:private c-key-map
   "The `:c/*` descriptor keys mapped to their compile-option key names."
@@ -44,11 +53,11 @@
   [descriptor]
   (when-let [mode (:zig/optimize descriptor)]
     (when-not (optimize-modes mode)
-      (throw (ex-info (str ":zig/optimize must be one of "
-                           (->> optimize-modes sort (map name) (str/join ", "))
-                           "; got " (pr-str mode) ".")
-                      {:level :error :error/code :clj-zig/bad-optimize-mode
-                       :mode mode})))
+      (fail :clj-zig/bad-optimize-mode
+            (str ":zig/optimize must be one of "
+                 (->> optimize-modes sort (map name) (str/join ", "))
+                 "; got " (pr-str mode) ".")
+            {:mode mode}))
     {:optimize (name mode)}))
 
 (defn- track-allocations-option
@@ -59,11 +68,9 @@
   (let [v (:zig/track-allocations descriptor)]
     (when (some? v)
       (when-not (boolean? v)
-        (throw (ex-info (str ":zig/track-allocations must be a boolean; got "
-                             (pr-str v) ".")
-                        {:level :error
-                         :error/code :clj-zig/bad-track-allocations
-                         :value v})))
+        (fail :clj-zig/bad-track-allocations
+              (str ":zig/track-allocations must be a boolean; got " (pr-str v) ".")
+              {:value v}))
       (when v {:track-allocations true}))))
 
 (defn descriptor-options
@@ -109,13 +116,12 @@
     (when (and (keyword? k)
                (= "zig" (namespace k))
                (not (recognized-zig-keys k)))
-      (throw (ex-info (str "Unknown :" (namespace k) "/" (name k)
-                           " key; recognized :zig/* keys are: "
-                           (->> recognized-zig-keys sort (map name) (str/join ", "))
-                           ".")
-                      {:level :error
-                       :error/code :clj-zig/unknown-zig-option
-                       :key k})))))
+      (fail :clj-zig/unknown-zig-option
+            (str "Unknown :" (namespace k) "/" (name k)
+                 " key; recognized :zig/* keys are: "
+                 (->> recognized-zig-keys sort (map name) (str/join ", "))
+                 ".")
+            {:key k}))))
 
 (def ^:private reserved-module-names
   "Module names Zig supplies itself; a dependency may not shadow them."
@@ -129,28 +135,24 @@
   each malformed shape."
   [module-name descriptor pinned-version]
   (when-not (string? module-name)
-    (throw (ex-info (str "A Zig module name must be a string, got "
-                         (pr-str module-name) ".")
-                    {:level :error :error/code :clj-zig/bad-module-name
-                     :module module-name})))
+    (fail :clj-zig/bad-module-name
+          (str "A Zig module name must be a string, got " (pr-str module-name) ".")
+          {:module module-name}))
   (when (reserved-module-names module-name)
-    (throw (ex-info (str "The Zig module name " (pr-str module-name)
-                         " is reserved by the compiler.")
-                    {:level :error :error/code :clj-zig/reserved-module-name
-                     :module module-name})))
+    (fail :clj-zig/reserved-module-name
+          (str "The Zig module name " (pr-str module-name) " is reserved by the compiler.")
+          {:module module-name}))
   (when-not (map? descriptor)
-    (throw (ex-info (str "The Zig module " (pr-str module-name)
-                         " needs a descriptor map, got " (pr-str descriptor) ".")
-                    {:level :error :error/code :clj-zig/bad-module-ref
-                     :module module-name})))
+    (fail :clj-zig/bad-module-ref
+          (str "The Zig module " (pr-str module-name)
+               " needs a descriptor map, got " (pr-str descriptor) ".")
+          {:module module-name}))
   (when-let [v (:zig/version descriptor)]
     (when (not= v pinned-version)
-      (throw (ex-info (str "The Zig module " (pr-str module-name) " pins Zig "
-                           v " but clj-zig pins " pinned-version ".")
-                      {:level :error :error/code :clj-zig/module-zig-version-mismatch
-                       :module module-name
-                       :requested v
-                       :pinned pinned-version}))))
+      (fail :clj-zig/module-zig-version-mismatch
+            (str "The Zig module " (pr-str module-name) " pins Zig "
+                 v " but clj-zig pins " pinned-version ".")
+            {:module module-name :requested v :pinned pinned-version})))
   (cond
     ;; A pinned reference fingerprints from sha and root; an optional :path is
     ;; a local checkout bake and the dev loop compile from (ADR 36).
@@ -162,10 +164,10 @@
     {:path (str (:path descriptor))}
 
     :else
-    (throw (ex-info (str "The Zig module " (pr-str module-name)
-                         " needs a :path, or a :git/sha with a :root.")
-                    {:level :error :error/code :clj-zig/module-missing-root
-                     :module module-name}))))
+    (fail :clj-zig/module-missing-root
+          (str "The Zig module " (pr-str module-name)
+               " needs a :path, or a :git/sha with a :root.")
+           {:module module-name})))
 
 (defn zig-modules
   "The external Zig modules a descriptor's `:zig/modules` declares,
@@ -178,10 +180,9 @@
   [descriptor pinned-version]
   (when-let [modules (:zig/modules descriptor)]
     (when-not (map? modules)
-      (throw (ex-info (str ":zig/modules must be a map of name to descriptor, got "
-                           (pr-str modules) ".")
-                      {:level :error :error/code :clj-zig/bad-modules
-                       :modules modules})))
+      (fail :clj-zig/bad-modules
+            (str ":zig/modules must be a map of name to descriptor, got " (pr-str modules) ".")
+            {:modules modules}))
     (not-empty
      (reduce-kv (fn [m module-name desc]
                   (assoc m module-name (normalize-module module-name desc pinned-version)))
