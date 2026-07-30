@@ -1314,14 +1314,18 @@
   Carriers is the thread-local base array of size `(:n-base ctx) + 3`; the
   trailing three slots are filled with errbuf, errlen, and out before the
   invoke, then cleared so the next call on this thread starts clean."
-  [{:keys [^MethodHandle spreader ret record-factory free-handle error-buffer-bytes n-base struct-reader struct-out-tl]}
+  [{:keys [^MethodHandle spreader ret record-factory free-handle error-buffer-bytes n-base struct-reader struct-out-tl errbuf-tl errlen-tl]}
    ^Arena arena ^objects carriers copy-back!]
   (let [desc   (-> ret :of :layout)
         out    ^MemorySegment (if struct-out-tl
                                 (.get ^ThreadLocal struct-out-tl)
                                 (.allocate arena (long (:size desc)) (long (:align desc))))
-        errbuf ^MemorySegment (.allocate arena error-buffer-bytes 1)
-        errlen ^MemorySegment (.allocate arena 8 8)
+        errbuf ^MemorySegment (if errbuf-tl
+                                (.get ^ThreadLocal errbuf-tl)
+                                (.allocate arena error-buffer-bytes 1))
+        errlen ^MemorySegment (if errlen-tl
+                                (.get ^ThreadLocal errlen-tl)
+                                (.allocate arena 8 8))
         i0     (int n-base)
         i1     (inc i0)
         i2     (inc i1)]
@@ -1349,10 +1353,14 @@
 
   Carriers is the thread-local base array of size `base-count + 2`; the
   trailing two slots are filled with errbuf and errlen before the invoke."
-  [{:keys [^MethodHandle spreader ret error-buffer-bytes n-base]} ^Arena arena
+  [{:keys [^MethodHandle spreader ret error-buffer-bytes n-base errbuf-tl errlen-tl]} ^Arena arena
    ^objects carriers copy-back!]
-  (let [errbuf ^MemorySegment (.allocate arena error-buffer-bytes 1)
-        errlen ^MemorySegment (.allocate arena 8 8)
+  (let [errbuf ^MemorySegment (if errbuf-tl
+                                (.get ^ThreadLocal errbuf-tl)
+                                (.allocate arena error-buffer-bytes 1))
+        errlen ^MemorySegment (if errlen-tl
+                                (.get ^ThreadLocal errlen-tl)
+                                (.allocate arena 8 8))
         i0     (int n-base)
         i1     (inc i0)]
     (aset carriers i0 errbuf)
@@ -1405,10 +1413,14 @@
 
   Carriers is the thread-local base array of size `(:n-base ctx) + 2`; the
   trailing two slots are filled with pout and lout before the invoke."
-  [{:keys [^MethodHandle spreader ret free-handle n-base]} ^Arena arena
+  [{:keys [^MethodHandle spreader ret free-handle n-base pout-tl lout-tl]} ^Arena arena
    ^objects carriers copy-back!]
-  (let [pout ^MemorySegment (.allocate arena 8 8)
-        lout ^MemorySegment (.allocate arena 8 8)
+  (let [pout ^MemorySegment (if pout-tl
+                              (.get ^ThreadLocal pout-tl)
+                              (.allocate arena 8 8))
+        lout ^MemorySegment (if lout-tl
+                              (.get ^ThreadLocal lout-tl)
+                              (.allocate arena 8 8))
         i0   (int n-base)
         i1   (inc i0)]
     (aset carriers i0 pout)
@@ -1458,8 +1470,10 @@
 
   Carriers is the thread-local base array of size `(:n-base ctx) + 1`; the
   trailing slot is filled with the out-segment before the invoke."
-  [{:keys [^MethodHandle spreader ret n-base]} ^Arena arena ^objects carriers copy-back!]
-  (let [out (.allocate arena i128-layout)
+  [{:keys [^MethodHandle spreader ret n-base i128-out-tl]} ^Arena arena ^objects carriers copy-back!]
+  (let [out ^MemorySegment (if i128-out-tl
+               (.get ^ThreadLocal i128-out-tl)
+              (.allocate arena i128-layout))
         i0  (int n-base)]
     (aset carriers i0 out)
     (.invokeExact spreader ^objects carriers)
@@ -1610,6 +1624,8 @@
      :slice-chain   nil
      :slice-total   nil}))
 
+(declare seg-tl)
+
 (defn- bind-context
   "The per-bind context shared by the scalar hot path and the general
   invoker: the downcall handle, the return-shape classification, the
@@ -1691,17 +1707,28 @@
         struct-reader (when struct-desc
                         (or (compiled-struct-reader struct-desc)
                             (fn fallback-reader [seg] (read-struct seg struct-desc))))
-        ;; A per-thread out-segment for struct-return shapes, allocated
-        ;; from the JVM-lifetime global arena (pool-enabled path only);
-        ;; the disabled path allocates per call so the arena owns it.
+        ;; Per-thread out-segments for the general-path return shapes,
+        ;; allocated from the JVM-lifetime global arena (pool-enabled path
+        ;; only); the disabled path allocates per call from the call's
+        ;; confined arena so it is freed on return. Each segment is reused
+        ;; across calls on the owning thread; safe under ADR 10's
+        ;; one-directional interop (a call cannot re-enter itself on the
+        ;; same thread).
+        eu?              (or eu-struct? (= :error-union (:kind ret)))
         struct-out-size  (when struct-desc (long (:size struct-desc)))
         struct-out-align (when struct-desc (long (:align struct-desc)))
         struct-out-tl    (when (and pool-enabled struct-out-size)
-                           (ThreadLocal/withInitial
-                            (reify java.util.function.Supplier
-                              (get [_]
-                                (.allocate ^Arena global-arena
-                                           struct-out-size struct-out-align)))))]
+                           (seg-tl struct-out-size struct-out-align))
+        errbuf-tl        (when (and pool-enabled eu?)
+                           (seg-tl error-buffer-bytes 1))
+        errlen-tl        (when (and pool-enabled eu?)
+                           (seg-tl 8 8))
+        pout-tl          (when (and pool-enabled owned-slice?)
+                           (seg-tl 8 8))
+        lout-tl          (when (and pool-enabled owned-slice?)
+                           (seg-tl 8 8))
+        i128-out-tl      (when (and pool-enabled i128-ret?)
+                           (seg-tl i128-layout))]
     {:handle handle :spreader spreader :params params :ret ret :arity arity
      :stream? stream? :eu-struct? eu-struct? :owned-rec? owned-rec?
      :owned-slice? owned-slice? :opt-struct? opt-struct? :struct-ret? struct-ret?
@@ -1712,7 +1739,10 @@
                   :free-handle free-handle :error-buffer-bytes error-buffer-bytes
                   :n-base n-base
                   :struct-reader struct-reader
-                  :struct-out-tl struct-out-tl}
+                  :struct-out-tl struct-out-tl
+                  :errbuf-tl errbuf-tl :errlen-tl errlen-tl
+                  :pout-tl pout-tl :lout-tl lout-tl
+                  :i128-out-tl i128-out-tl}
      :next-h next-h :free-h free-h :elem-lay elem-lay
      :var-sym (symbol (str (:ns spec)) (str (:name spec)))
      ;; The hot path for a scalar-only signature: no per-call arena, and a
@@ -1782,6 +1812,20 @@
 ;; confined to the owning thread by the ThreadLocal. The shared-arena
 ;; allocation overhead is paid once at TL init.
 (def ^:private ^Arena global-arena (Arena/ofShared))
+
+(defn- seg-tl
+  "Build a per-thread ThreadLocal holding one reusable segment allocated
+  from the JVM-lifetime global arena. The segment is reused across calls
+  on the owning thread; safe under ADR 10's one-directional interop (a
+  call cannot re-enter itself on the same thread)."
+  (^ThreadLocal [size align]
+   (ThreadLocal/withInitial
+    (reify java.util.function.Supplier
+      (get [_] (.allocate ^Arena global-arena (long size) (long align))))))
+  (^ThreadLocal [^MemoryLayout layout]
+   (ThreadLocal/withInitial
+    (reify java.util.function.Supplier
+      (get [_] (.allocate ^Arena global-arena layout))))))
 
 (def ^:private refresh-interval 1024)
 
