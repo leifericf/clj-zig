@@ -19,11 +19,12 @@ a pointer, the Clojure-side value is always nil-or-a-value.
 
 An argument: nil crosses as NULL; a present value is written into a
 call-arena cell (struct-sized) and its address passed. The callee
-dereferences `?*const T`. No free (the call arena owns the cell). For a
-buffer-carrying struct the arena also owns the buffer copies the
-marshaller threads into the cell; the wire-to-nice reconstruction (added
-for single struct arguments) converts the wire pointer to a nice value
-before the body uses it.
+dereferences `?*const T`. No free (the call arena owns the cell). A
+scalar-only struct crosses this way. A buffer-carrying struct under
+`:optional` as an argument is rejected (see the 2026-07-30 amendment
+below): the wrapper has no wire-to-nice reconstruction for an optional
+buffer field, so it cannot marshal one. Use a plain (non-optional)
+buffer struct argument, or a scalar/`:ptr` optional.
 
 A return: the body returns NULL or a `c_allocator` pointer to the nice
 struct (and its buffer fields). The FFM reads the struct through the
@@ -50,11 +51,23 @@ new shape: it takes the raw address (`usize`), null-checks, frees buffer
 fields on the nice struct directly (not through `{ptr, len}` words as
 the owned-record shim does), then destroys the allocation.
 
-A buffer-carrying struct under `:optional` as an argument relies on the
-wire-to-nice reconstruction to convert the wire pointer to a nice value
-before the body dereferences it. This avoids the layout-coincidence
-risk (a nice struct and a wire struct happen to have the same binary
-layout on 64-bit targets, but Zig can reorder regular struct fields).
+A buffer-carrying struct under `:optional` as an argument was originally
+to rely on a wire-to-nice reconstruction to convert the wire pointer to
+a nice value before the body dereferences it. That reconstruction was
+never implemented (2026-07-30 amendment), so a buffer-carrying optional
+argument is now rejected at spec time with `:clj-zig/unsupported-buffer-optional`.
+A scalar-only struct still crosses under `:optional` in both argument
+and return position.
+
+## Amendment (2026-07-30)
+
+Scope `:optional` arguments to pointers, carrier scalars, and
+scalar-only named structs. A buffer-carrying named struct under
+`:optional` as an argument is rejected (`:clj-zig/unsupported-buffer-optional`)
+because the generator has no wire-to-nice reconstruction for an optional
+buffer field. Returns are unaffected: an `:optional` return of a
+buffer-carrying struct is still lowered through the free shim described
+above. (Audit finding C2.)
 
 ## Alternatives
 

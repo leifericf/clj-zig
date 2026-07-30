@@ -119,7 +119,7 @@ When a native library fires a callback from a thread the JVM does not own (a wor
   )
 ```
 
-The dispatch map carries an optional error handler. The executor's own queue bound and rejection policy are the back-pressure mechanism. Use `onto-agent` to route onto a Clojure agent instead. Call `release-stub!` after native code has stopped firing.
+The dispatch map carries an optional error handler. The executor's own queue bound and rejection policy are the back-pressure mechanism. Use `onto-agent` to route onto a Clojure agent instead. Call `release-stub!` after native code has stopped firing. `release-stub!` stops dispatch, but the fn it was built from stays reachable until JVM exit: the global Arena owns the stub segment, which holds the bound fn, so a long-lived process that registers and releases many distinct callbacks accumulates them.
 
 ## A namespace of native functions
 

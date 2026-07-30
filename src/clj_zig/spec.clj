@@ -253,6 +253,19 @@
                (not (optional-inner-ok? #{:ptr :manyptr} (:of type))))
       (fail spec :clj-zig/unsupported-optional
             "An :optional argument must wrap a :ptr, :manyptr, or a carrier scalar." {}))
+    (when (and (= :optional (:kind type))
+               (= :named (:kind (:of type)))
+               (some :target (get-in (:of type) [:layout :fields])))
+      ;; ADR 45 scopes :optional arguments to pointers and scalars. A buffer-
+      ;; carrying named struct under :optional has no wire-to-nice
+      ;; reconstruction in the generator, so reject it here rather than emit
+      ;; code that cannot marshal it.
+      (fail spec :clj-zig/unsupported-buffer-optional
+            (str "An :optional argument cannot wrap a buffer-carrying struct;"
+                 " the wrapper has no reconstruction for an optional buffer"
+                 " field. Use a plain struct argument, or a scalar/:pointer"
+                 " optional.")
+            {:element (select-keys (:of type) [:kind :name])}))
     (when (= :error-union (:kind type))
       (fail spec :clj-zig/unsupported-error-union
             "An :error-union is supported in return position only." {}))

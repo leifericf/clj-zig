@@ -157,6 +157,14 @@
              (error-code #(spec/build-spec {:ns 'clj-zig.spec-test :name 'g
                                             :signature [:ret 'Pair] :types types})))))))
 
+(deftest rejects-buffer-carrying-optional-argument
+  (let [types (core/types-in 'clj-zig.spec-test)]
+    (testing "an [:optional BufStruct] arg has no wire-to-nice reconstruction (ADR 45)"
+      (is (= :clj-zig/unsupported-buffer-optional
+             (error-code #(spec/build-spec {:ns 'clj-zig.spec-test :name 'h
+                                            :signature ['a [:optional 'Tagged] :ret :i64]
+                                            :types types})))))))
+
 (deftest accepts-a-slice-of-a-scalar-struct
   (let [types {'Point (layout/describe 'Point '[x :f64 y :f64])}]
     (testing "a slice element may be a named scalar-only struct"

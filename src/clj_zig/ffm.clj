@@ -233,7 +233,7 @@
                                           l)))))))))
 
 (declare marshal-struct-into! marshal-buffer-field buffer-field-element marshal-array
-         compiled-struct-writer compiled-struct-reader)
+         compiled-struct-reader)
 
 (defn- marshal-arg-fn
   "Build a per-param marshal closure that captures the param's kind, type,
@@ -434,85 +434,6 @@
                          (fn [] (MemorySegment/copy seg bl (long 0) arr (int 0) (int len)))))}))))
 
 
-(defn- marshal-arg
-  "Coerce one boundary argument to its native carriers. Pointers and slices
-  pass as a native segment address; a single-item pointer demands a
-  one-element array, guarding against a read past the end."
-  [arena param arg]
-  (case (-> param :type :kind)
-    :string  (let [bs (if (string? arg)
-                        (.getBytes ^String arg StandardCharsets/UTF_8)
-                        (do (when-not (bytes? arg)
-                              (throw (ex-info (str "A :string argument must be a String or a byte[]"
-                                                   " of UTF-8; got " (pr-str (type arg)) ".")
-                                              {:level :error
-                                               :error/code :clj-zig/string-argument
-                                               :actual (type arg)})))
-                            arg))
-                   len (alength ^bytes bs)
-                   seg ^MemorySegment (.allocate ^Arena arena (long len) 1)]
-               ;; A string argument is const UTF-8 bytes copied into the call
-               ;; arena; there is no copy-back. A zero-length string allocates
-               ;; a zero-size segment the Zig side reconstructs as [0..0].
-               (when (pos? len)
-                  (MemorySegment/copy bs (long 0) seg ValueLayout/JAVA_BYTE (long 0) (long len)))
-               {:carriers [seg (long len)]})
-    :slice   (let [{:keys [address length copy-back]} (marshal-array arena param arg)]
-               {:carriers [address (long length)] :copy-back copy-back})
-    :manyptr (let [{:keys [address copy-back]} (marshal-array arena param arg)]
-               {:carriers [address] :copy-back copy-back})
-    :ptr     (do (when (not= 1 (Array/getLength arg))
-                   (throw (ex-info "A :ptr argument must be a one-element array."
-                                   {:level :error
-                                    :error/code :clj-zig/pointer-arity
-                                    :expected 1
-                                    :actual (Array/getLength arg)})))
-                 (let [{:keys [address copy-back]} (marshal-array arena param arg)]
-                   {:carriers [address] :copy-back copy-back}))
-     :array   (let [n (-> param :type :length)
-                    actual (if (= :named (:kind (:of (:type param))))
-                             (count arg)
-                             (Array/getLength arg))]
-                (when (not= n actual)
-                  (throw (ex-info (str "An :array argument must have length " n ".")
-                                  {:level :error
-                                   :error/code :clj-zig/array-length
-                                   :expected n
-                                   :actual actual})))
-                {:carriers [(:address (marshal-array arena param arg))]})
-    :optional (let [pointed (-> param :type :of)]
-                 (cond
-                   (nil? arg) {:carriers [MemorySegment/NULL]}
-                    ;; An optional scalar lowers to `?*const T`: nil is NULL,
-                    ;; a present value is copied into a call-arena cell whose
-                    ;; address is passed. Const, so no copy-back.
-                   (= :scalar (:kind pointed))
-                   (let [layout (value-layout pointed)
-                         seg    ^MemorySegment (.allocate ^Arena arena
-                                                          (.byteSize layout)
-                                                          (.byteSize layout))]
-                     (write-scalar seg pointed 0 (to-carrier {:type pointed} arg))
-                     {:carriers [seg]})
-                   :else (marshal-arg arena (update param :type :of) arg)))
-    :named    (let [layout (-> param :type :layout)]
-                (if (:enum layout)
-                  (let [value (enum-member->value layout arg)]
-                    (when (nil? value)
-                      (throw-unknown-enum-member layout arg))
-                    ;; An enum crosses as its backing scalar, so coerce to the
-                    ;; backing's carrier width (byte for u8, int for i32, ...).
-                    {:carriers [(to-carrier {:type (:backing layout)} value)]})
-                  {:carriers [(marshal-struct arena layout arg)]}))
-    :handle   (let [expected (-> param :type :of :name)]
-                (when-not (and (instance? Handle arg) (= expected (.type ^Handle arg)))
-                  (throw-handle-mismatch expected arg))
-                {:carriers [(.segment ^Handle arg)]})
-    (if (i128-type? (:type param))
-      ;; A 128-bit integer crosses as a 16-byte segment allocated in the call
-      ;; arena; the general path (not the scalar hot path) owns that arena.
-      {:carriers [(bigint->i128-segment arena (biginteger arg))]}
-      {:carriers [(to-carrier param arg)]})))
-
 (defn- coerce-scalar
   "Coerce a native scalar value of type `t` to Clojure, applying the
   unsigned-return policy for `:u64`/`:usize`."
@@ -562,24 +483,6 @@
                64 (.set seg ValueLayout/JAVA_DOUBLE off (double cv)))
       :bool  (.set seg ValueLayout/JAVA_BOOLEAN off (boolean cv)))))
 
-(defn- marshal-struct
-  "Write the fields of Clojure map `m` into a fresh native segment for the
-  struct `descriptor`, each at its C-ABI offset. A scalar field is
-  written directly; a buffer field copies the caller's value into the call
-  arena and writes the `{ptr, len}` pair; a nested struct field recurses
-  into a sub-segment at the field's offset. An all-scalar struct uses a
-  compiled writer that captures each field's offset and scalar writer at
-  build time, eliminating the per-field type dispatch the generic path
-  does; structs with buffer or nested fields fall back to that path."
-  [arena descriptor m]
-  (if-let [writer (compiled-struct-writer descriptor)]
-    (writer arena m)
-    (let [seg ^MemorySegment (.allocate ^Arena arena (long (:size descriptor))
-                                        (long (:align descriptor)))]
-      (marshal-struct-into! arena seg descriptor m)
-      seg)))
-
-(def ^:private struct-writer-cache (atom {}))
 (def ^:private struct-reader-cache (atom {}))
 
 (defn- throw-missing-field
@@ -679,20 +582,6 @@
                 (fn [_seg _m] nil)
                 (reverse field-writers))])))
 
-(defn- build-struct-writer
-  "Build a tight writer closure for an all-scalar struct, or nil if any
-  field is a buffer field, a nested struct, or an enum field. The
-  closure allocates a segment from the arena per call and runs the
-  chain from `build-struct-writer-chain` to fill it. Mirrors the older
-  monolithic writer; the chain is exposed separately so the marshal
-  path can pool its segment while reusing the chain."
-  [descriptor]
-  (when-let [[size align chain] (build-struct-writer-chain descriptor)]
-    (fn struct-writer [^Arena arena m]
-      (let [seg ^MemorySegment (.allocate arena size align)]
-        (chain seg m)
-        seg))))
-
 (defn- build-struct-reader
   "Build a tight reader closure for an all-scalar struct, or nil if any
   field is a buffer field, a nested struct, or an enum field. Each field's
@@ -788,16 +677,6 @@
     (let [parts (build-struct-writer-chain descriptor)]
       (swap! struct-writer-chain-cache assoc descriptor parts)
       parts)))
-
-(defn- compiled-struct-writer
-  "The compiled writer for `descriptor`, or nil. Cached by descriptor so
-  the build happens once per struct shape."
-  [descriptor]
-  (if-let [e (find @struct-writer-cache descriptor)]
-    (val e)
-    (let [w (build-struct-writer descriptor)]
-      (swap! struct-writer-cache assoc descriptor w)
-      w)))
 
 (defn- compiled-struct-reader
   "The compiled reader for `descriptor`, or nil. Cached by descriptor so

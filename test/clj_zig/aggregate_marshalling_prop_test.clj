@@ -19,6 +19,17 @@
   (try (thunk) nil
        (catch clojure.lang.ExceptionInfo e (:error/code (ex-data e)))))
 
+(defn- marshal-struct-seg
+  "Marshal a struct map `m` for descriptor `desc` through the PRODUCTION
+  per-bind marshal path (marshal-arg-fn), returning the wire segment it
+  wrote. Exercises the same compiled-writer / marshal-struct-into! path
+  the invoker uses, not a test-only helper."
+  [arena desc m]
+  (let [marshal (#'ffm/marshal-arg-fn {:type {:kind :named :layout desc}})
+        cs      (into-array Object [nil])]
+    (marshal arena m cs 0)
+    (aget cs 0)))
+
 (defn- value=?
   "Numeric equality honoring NaN and the bool and unsigned coercions."
   [t-name a b]
@@ -43,7 +54,7 @@
   (prop/for-all [[fields m] gen-fields+map]
     (let [desc (layout/describe 'T fields)]
       (with-open [arena (Arena/ofConfined)]
-        (let [out (#'ffm/read-struct (#'ffm/marshal-struct arena desc m) desc)]
+        (let [out (#'ffm/read-struct (marshal-struct-seg arena desc m) desc)]
           (every? (fn [{:keys [name type]}]
                     (value=? (:name type) (get m (keyword name)) (get out (keyword name))))
                   (:fields desc)))))))
@@ -54,7 +65,7 @@
           gone (dissoc m (keyword (first fields)))]
       (= :clj-zig/missing-field
          (code-from #(with-open [arena (Arena/ofConfined)]
-                       (#'ffm/marshal-struct arena desc gone)))))))
+                       (marshal-struct-seg arena desc gone)))))))
 
 ;; Slices
 
@@ -81,9 +92,14 @@
       (every? (fn [{:keys [name]}]
                 (let [kw (keyword (str name))]
                   (with-open [arena (Arena/ofConfined)]
-                    (let [carrier (first (:carriers (#'ffm/marshal-arg
-                                                     arena {:type (enum-ret desc)} kw)))]
-                      (= kw (#'ffm/from-return (enum-ret desc) (long carrier)))))))
+                    ;; Drive the production marshal path (marshal-arg-fn),
+                    ;; the per-bind closure the invoker uses, not the dead
+                    ;; marshal-arg helper. It writes one carrier at offset 0.
+                    (let [marshal (#'ffm/marshal-arg-fn {:type (enum-ret desc)})
+                          cs      (into-array Object [nil])]
+                      (marshal arena kw cs 0)
+                      (let [carrier (aget cs 0)]
+                        (= kw (#'ffm/from-return (enum-ret desc) (long carrier))))))))
               (:values desc)))))
 
 (defspec enum-unknown-member-is-rejected 200
@@ -91,7 +107,9 @@
     (let [desc (layout/describe-enum 'E members)]
       (= :clj-zig/unknown-enum-member
          (code-from #(with-open [arena (Arena/ofConfined)]
-                       (#'ffm/marshal-arg arena {:type (enum-ret desc)} :zzz-not-a-member)))))))
+                       (let [marshal (#'ffm/marshal-arg-fn {:type (enum-ret desc)})
+                             cs      (into-array Object [nil])]
+                         (marshal arena :zzz-not-a-member cs 0))))))))
 
 (defspec enum-unknown-int-returns-the-raw-int 200
   (prop/for-all [members g/gen-enum-members]

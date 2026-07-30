@@ -449,7 +449,17 @@
   registry. The dispatch target stops receiving invocations after any
   in-flight ones drain. The segment itself is not freed (the global
   Arena owns it for the process). The caller MUST signal native code to
-  stop firing BEFORE calling this."
+  stop firing BEFORE calling this.
+
+  CLOSURE LIFETIME: quiescing stops dispatch, but the user fn `f` the
+  stub was built from stays reachable for the JVM's lifetime. The global
+  Arena owns the upcall segment, and the segment holds the MethodHandle
+  bound to `f` (via `bindTo`), so `f` and everything it closes over
+  cannot be GC'd between this call and JVM exit. This is inherent to the
+  global-Arena + bindTo design (ADR 62 deliberately forbade per-stub
+  arenas, which would close before a late fire). Bound by how many
+  distinct callbacks a process registers and releases, not by how often
+  one fires."
   [^MemorySegment seg]
   (when-let [entry (get @stub-registry seg)]
     (vreset! (:quiesced? entry) true)

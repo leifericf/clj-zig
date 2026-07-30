@@ -34,11 +34,11 @@
   (let [ct-k      (with-meta 'k {:comptime true})
         ct-factor (with-meta 'factor {:comptime true})
         code      (try
-                    (macroexpand
-                     `(defnz ~'bad-ct
-                        [~'x :i64 ~ct-k :i32 ~'y :i64 :ret :i64]
-                        "return x * k + y;"))
-                    :no-throw
+                    (let [_ (macroexpand
+                             `(defnz ~'bad-ct
+                                [~'x :i64 ~ct-k :i32 ~'y :i64 :ret :i64]
+                                "return x * k + y;"))]
+                      :no-throw)
                     (catch Exception e
                       ;; The throw happens during macroexpansion, so it is
                       ;; wrapped in a CompilerException; walk the cause chain
