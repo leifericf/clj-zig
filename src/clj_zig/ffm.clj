@@ -293,7 +293,7 @@
                                           l)))))))))
 
 (declare marshal-struct-into! marshal-buffer-field buffer-field-element marshal-array
-         compiled-struct-reader validate-struct-arg!)
+         compiled-struct-reader validate-struct-arg! validate-slice-array!)
 
 (defn- reject-nil-collection-arg!
   "Throw a structured diagnostic when a collection-type argument is nil.
@@ -479,7 +479,7 @@
   copies the segment back into the array after the call. A named-struct
   element is a Clojure collection of maps, marshaled one struct per
   stride via `marshal-struct-collection`."
-  [^Arena arena {:keys [type]} arr]
+  [^Arena arena {:keys [type binding]} arr]
   (let [elem (:of type)]
     (cond
       (and (= :named (:kind elem)) (enum-type? elem))
@@ -501,6 +501,7 @@
 
       :else
       (let [bl    (value-layout elem)
+            _     (validate-slice-array! binding bl arr)
             bytes (.byteSize bl)
             len   (Array/getLength arr)
             seg   ^MemorySegment (.allocate ^Arena arena (* len bytes) bytes)
@@ -610,6 +611,32 @@
                          " but got " (pr-str arg) ".")
                     {:level :error :error/code :clj-zig/type-mismatch
                      :param binding :expected type-name :actual (type arg)}))))
+
+(defn- validate-slice-array!
+  "Throw a structured diagnostic when a slice argument is not a Java
+  primitive array of the correct component type for the element layout."
+  [binding ^ValueLayout bl arr]
+  (let [expected-carrier (.carrier bl)]
+    (cond
+      (not (.isArray (class arr)))
+      (throw (ex-info (str "Argument " binding " expects a "
+                           (.getSimpleName expected-carrier)
+                           " array but got " (.getName (class arr)) ".")
+                      {:level :error :error/code :clj-zig/type-mismatch
+                       :param binding
+                       :expected (str (.getSimpleName expected-carrier) "[]")
+                       :actual (class arr)}))
+      (not (= expected-carrier
+              (.getComponentType ^Class (.getClass arr))))
+      (throw (ex-info (str "Argument " binding " expects a "
+                           (.getSimpleName expected-carrier)
+                           " array but got a "
+                           (.getSimpleName (.getComponentType ^Class (.getClass arr)))
+                           " array.")
+                      {:level :error :error/code :clj-zig/type-mismatch
+                       :param binding
+                       :expected (str (.getSimpleName expected-carrier) "[]")
+                       :actual (.getName (.getClass arr))})))))
 
 (defn- build-struct-writer-chain
   "Build `[size align chain]` for an all-scalar struct, or nil if any
