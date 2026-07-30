@@ -72,9 +72,9 @@
          (map #(.getPath ^java.io.File %))
          first)))
 
-(defn ^java.io.File pinned-dir
+(defn pinned-dir
   "The directory the pinned hermetic Zig installs into."
-  []
+  ^java.io.File []
   (io/file ".clj-zig" "zig" pinned-version))
 
 (defn- pinned-exe
