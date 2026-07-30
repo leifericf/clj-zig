@@ -31,7 +31,7 @@
   "The host as a matrix entry: the resolved clj-zig id and a nil triple,
   which compiles natively without a `-target` flag."
   []
-  {:id (cache/target-triple) :triple nil})
+  {:id (cache/target-id) :triple nil})
 
 (defn- third-party-c?
   "True when a function carries C-interop beyond libc and libm: a linked

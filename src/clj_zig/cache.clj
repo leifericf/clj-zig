@@ -78,7 +78,10 @@
   before. External Zig modules enter as `:modules`, a name-to-fingerprint
   map, so a changed module relinks its dependents while leaving every other
   key untouched. The CPU target enters the key so a library compiled for one
-  feature floor (say native AVX) is never reused for another (baseline)."
+  feature floor (say native AVX) is never reused for another (baseline).
+
+  `:target` is the clj-zig target id (`target-id`, e.g. `macos-aarch64`),
+  NOT an LLVM triple; the two must never be mixed."
   [{:keys [spec body source deps options zig-version target cpu aux-files modules]}]
   (fingerprint (cond-> {:spec spec :body body :source source
                         :options options :zig-version zig-version
@@ -252,9 +255,13 @@
   [spec]
   (symbol (str (:ns spec)) (str (:name spec))))
 
-(defn target-triple
-  "The development target as `<os>-<arch>`, part of the cache key and the
-  artifact path."
+(defn target-id
+  "The host's clj-zig target identifier as `<os>-<arch>` (e.g.
+  `macos-aarch64`, `linux-x86_64`). Despite the historical name this is
+  NOT an LLVM target triple; it is the simplified id that keys the
+  content hash and the artifact path. The full LLVM triple
+  (e.g. `aarch64-macos`) is a compile-only concern, supplied separately
+  by `bake`'s `:triple` field and never entering the cache key."
   []
   (let [os   (str/lower-case (System/getProperty "os.name"))
         arch (str/lower-case (System/getProperty "os.arch"))
@@ -294,6 +301,13 @@
   (mapv (fn [^java.io.File f] {:path (.getPath f) :content (slurp f)})
         (closure-files root-path)))
 
+(def ^:private fingerprint-cache-cap
+  "Upper bound on the number of module-root entries the fingerprint memo
+  holds. The cache is naturally bounded by the project's module count; the
+  cap is a safety valve for a long-running process that sees many
+  transient module roots."
+  64)
+
 (defonce ^:private module-fingerprint-cache
   ;; Per module-root path, the last seen `{:signature :fingerprint}`, so an
   ;; unchanged tree reuses its fingerprint without rereading contents.
@@ -321,7 +335,12 @@
           [fp entry]  (memoized-fingerprint (get @module-fingerprint-cache path)
                                                   signature
                                                   #(content-fingerprint (read path)))]
-      (swap! module-fingerprint-cache assoc path entry)
+      (swap! module-fingerprint-cache
+             (fn [cache]
+               (let [cache' (assoc cache path entry)]
+                 (if (> (count cache') fingerprint-cache-cap)
+                   (into {} (drop 1) cache')
+                   cache'))))
       fp)))
 
 (defn modules-fingerprint
@@ -383,13 +402,22 @@
      (when (.exists d) (fs/delete-recursively! d)))))
 
 (defn evict!
-  "Remove the single cached artifact for these `inputs`, so the next build
-  recompiles instead of reusing it. Inputs match `ensure-library!`."
+  "Remove the cached artifact(s) for these `inputs`, so the next build
+  recompiles instead of reusing them. Deletes the content-addressed
+  artifact and any forced-rebuild (`build-id`) siblings under the same
+  name-hash prefix, so `recompile!`'s `name-hash-rcN` directories do not
+  outlive the content they were built from. Inputs match
+  `ensure-library!`."
   [{:keys [spec root] :as inputs}]
   (let [paths (artifact-paths {:root root :target (:target inputs)
                                :ns (:ns spec) :name (:name spec)
-                               :hash (cache-key inputs)})]
-    (fs/delete-recursively! (io/file (:dir paths)))))
+                               :hash (cache-key inputs)})
+        dir   (io/file (:dir paths))]
+    (fs/delete-recursively! dir)
+    (when-let [parent (.getParentFile dir)]
+      (doseq [^java.io.File child (.listFiles parent)
+              :when (str/starts-with? (.getName child) (str (.getName dir) "-"))]
+        (fs/delete-recursively! child)))))
 
 (defn- bundled-library
   "The classpath URL of a baked library for these coordinates, or nil when
@@ -501,4 +529,4 @@
   (bundled-resource-path {:target "linux-x86_64" :ns 'app.core
                           :name 'add :hash "83a1c0f9e1b2dead"})
 
-  (target-triple))   ;; => the host os-arch pair, e.g. macos-aarch64
+  (target-id))   ;; => the host os-arch pair, e.g. macos-aarch64

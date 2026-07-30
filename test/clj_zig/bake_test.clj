@@ -36,7 +36,7 @@
         (#'bake/bake-function! out info bake/default-targets)))
     (let [msg (.toString err)]
       (is (str/includes? msg "host-only"))
-      (is (not (str/includes? msg (pr-str (cache/target-triple))))
+      (is (not (str/includes? msg (pr-str (cache/target-id))))
           "the host id is baked, not listed as skipped"))))
 
 (deftest bakes-a-namespace-for-the-host
@@ -58,8 +58,8 @@
     (testing "the resource path matches what the loader will look up"
       (let [add-info (:clj-zig/info (meta (resolve 'clj-zig.bake-fixture/add)))
             inputs   (#'bake/function-inputs add-info)
-            coords   {:target (cache/target-triple) :ns 'clj-zig.bake-fixture
-                      :name 'add :hash (cache/cache-key (assoc inputs :target (cache/target-triple)))}]
+            coords   {:target (cache/target-id) :ns 'clj-zig.bake-fixture
+                      :name 'add :hash (cache/cache-key (assoc inputs :target (cache/target-id)))}]
         (is (some #(= (cache/bundled-resource-path coords) (:resource %)) results))))))
 
 (deftest bakes-a-module-dependent-function
@@ -75,8 +75,8 @@
         (is (.exists (io/file library)))
         (is (= 42 ((ffm/bind (:spec info) library))))))
     (testing "the baked hash equals the in-place hash, so it is reproducible"
-      (let [coords {:target (cache/target-triple) :ns 'clj-zig.bake-module-fixture
-                    :name 'ask :hash (cache/cache-key (assoc inputs :target (cache/target-triple)))}]
+      (let [coords {:target (cache/target-id) :ns 'clj-zig.bake-module-fixture
+                    :name 'ask :hash (cache/cache-key (assoc inputs :target (cache/target-id)))}]
         (is (= (cache/bundled-resource-path coords) (:resource (first results))))))))
 
 (deftest bakes-a-pinned-module-and-a-consumer-resolves-without-the-checkout
@@ -101,8 +101,8 @@
                                           :root    "src/root.zig"}
                                          boom)}
             consumer-inputs  (assoc inputs :modules consumer-modules
-                                    :target (cache/target-triple))
-            coords           {:target (cache/target-triple)
+                                    :target (cache/target-id))
+            coords           {:target (cache/target-id)
                               :ns 'clj-zig.bake-pinned-fixture :name 'ask-pinned
                               :hash (cache/cache-key consumer-inputs)}]
         (is (= (cache/bundled-resource-path coords) (:resource (first results))))))))

@@ -215,6 +215,24 @@
     (cache/clean! root)
     (is (not (.exists (io/file root))))))
 
+(deftest evict-removes-forced-rebuild-siblings
+  (let [root     (scratch-root)
+        stub     (fn [{:keys [library-path]}]
+                   (io/make-parents (io/file library-path))
+                   (spit library-path "stub"))
+        built    (cache/ensure-library! (inputs root "return x + y;") stub)
+        base-dir (io/file (:dir built))
+        parent   (.getParentFile base-dir)
+        base     (.getName base-dir)
+        rc-dir   (io/file parent (str base "-rc1"))]
+    (.mkdirs rc-dir)
+    (spit (io/file rc-dir "stub") "stub")
+    (is (.exists base-dir))
+    (is (.exists rc-dir))
+    (cache/evict! (inputs root "return x + y;"))
+    (is (not (.exists base-dir)) "the content-addressed artifact is removed")
+    (is (not (.exists rc-dir)) "the forced-rebuild sibling is removed")))
+
 (deftest bundled-resource-path-mirrors-the-cache-layout
   (testing "a baked library is keyed by target, namespace, name, and hash
   under the resource root"
@@ -229,7 +247,7 @@
   (testing "a baked library on the classpath is extracted and loaded, and
   the compiler is never invoked"
     (let [in        (assoc (inputs nil "return x + y;")
-                           :target (cache/target-triple)
+                           :target (cache/target-id)
                            :zig-version (toolchain/zig-version))
           key       (cache/cache-key in)
           coords    {:target (:target in) :ns 'app.core :name 'add :hash key}
@@ -265,7 +283,7 @@
   (testing "a baked resource under a different hash is a clean miss; the
   loader compiles rather than loading the wrong library"
     (let [in       (assoc (inputs nil "return x + y;")
-                          :target (cache/target-triple)
+                          :target (cache/target-id)
                           :zig-version (toolchain/zig-version))
           coords   {:target (:target in) :ns 'app.core :name 'add :hash "000000000000"}
           res-root (scratch-root)
@@ -293,7 +311,7 @@
   (testing "content addressing over a genuine zig build"
     (let [root (scratch-root)
           in   (assoc (inputs root "return x + y;")
-                      :target (cache/target-triple)
+                      :target (cache/target-id)
                       :zig-version (toolchain/zig-version))
           r1   (cache/ensure-library! in compile/compile!)
           r2   (cache/ensure-library! in compile/compile!)]

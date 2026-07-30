@@ -135,7 +135,7 @@
                :deps        (zig/render preamble)
                :options     options
                :zig-version toolchain/pinned-version
-               :target      (cache/target-triple)
+               :target      (cache/target-id)
                :cpu         compile/default-cpu}
         aux-files (assoc :aux-files aux-files)
         build-id  (assoc :build-id build-id)

@@ -55,7 +55,7 @@
 (deftest the-release-matrix-paths-agree-with-the-cache
   (testing "every default bake target, and the host, names its baked
   resource the same file the cache stores, with the right suffix"
-    (doseq [{:keys [id]} (conj bake/default-targets {:id (cache/target-triple)})]
+    (doseq [{:keys [id]} (conj bake/default-targets {:id (cache/target-id)})]
       (let [c   (coords id 'app.core 'add "83a1c0f9e1b2")
             lib (:library-path (cache/artifact-paths (assoc c :root ".clj-zig/cache")))
             res (cache/bundled-resource-path c)]
