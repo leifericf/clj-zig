@@ -294,12 +294,25 @@
 
 ;; Comptime specialization (ADR 50/R4)
 
+(defn- float-literal
+  "Render a Clojure double as a Zig source literal. NaN and Infinity have no
+  Zig literal syntax, so they cross through std.math.nan/inf parameterized
+  by the target type."
+  [value type-kw]
+  (let [t (name type-kw)]
+    (cond
+      (Double/isNaN value)      (str "@import(\"std\").math.nan(" t ")")
+      (Double/isInfinite value) (if (pos? value)
+                                  (str "@import(\"std\").math.inf(" t ")")
+                                  (str "-@import(\"std\").math.inf(" t ")"))
+      :else                     (str value))))
+
 (defn- zig-literal
   "Render a Clojure value as a Zig source literal for the given scalar type."
   [value type-kw]
   (case (:category (type/scalar-info type-kw))
     :bool  (if value "true" "false")
-    :float (str value)
+    :float (float-literal value type-kw)
     :int   (str value)))
 
 (defn- comptime-const

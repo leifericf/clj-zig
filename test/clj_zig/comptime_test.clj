@@ -6,6 +6,10 @@
   [x :i64 ^:comptime factor :i32 :ret :i64]
   "return x * factor;")
 
+(defnz ct-scale
+  [x :f64 ^:comptime k :f64 :ret :f64]
+  "return x * k;")
+
 (deftest comptime-specializes-per-value
   (testing "different comptime values compile different libraries"
     (is (= 20 (ct-multiplier 10 2)))
@@ -54,3 +58,16 @@
                   `(defnz ~'good-ct
                      [~'x :i64 ~ct-factor :i32 :ret :i64]
                      "return x * factor;")))))))
+
+(deftest comptime-float-special-values
+  (testing "NaN as a comptime float compiles and propagates"
+    (let [r (ct-scale 1.0 Double/NaN)]
+      (is (Double/isNaN r))))
+  (testing "positive infinity compiles and propagates"
+    (let [r (ct-scale 1.0 Double/POSITIVE_INFINITY)]
+      (is (Double/isInfinite r))
+      (is (pos? r))))
+  (testing "negative infinity compiles and propagates"
+    (let [r (ct-scale 1.0 Double/NEGATIVE_INFINITY)]
+      (is (Double/isInfinite r))
+      (is (neg? r)))))
