@@ -4,13 +4,11 @@
 ![Zig 0.16](https://img.shields.io/badge/Zig-0.16-f7a41d?logo=zig&logoColor=white)
 ![Java 22+](https://img.shields.io/badge/Java-22%2B-007396?logo=openjdk&logoColor=white)
 
-**clj-zig is an experiment, a proof of concept.** It begins with a question: what would it look and feel like to bring systems-level programming into Clojure, and can that be done while keeping the data-oriented, REPL-driven workflow Clojure developers work in? Can a Clojure developer reach for Zig where native code is the right tool, in a form that stays idiomatic Clojure, without restricting what the native side can do?
-
-This project explores how far those questions can be carried.
+**clj-zig is an experiment, a proof of concept.** What would it look and feel like to bring systems-level programming into Clojure, and can that be done while keeping the data-oriented, REPL-driven workflow Clojure developers expect? Can a Clojure developer reach for Zig where native code is the right tool, in a form that stays idiomatic Clojure, without restricting what the native side can do?
 
 Stay in the REPL, define a function in a familiar shape, and drop into Zig only where native performance, explicit layout, comptime, or low-level control earns its keep.
 
-The name is descriptive rather than clever: `clj` for Clojure, `zig` for the Zig that backs each function.
+The name is descriptive, not clever: `clj` for Clojure, `zig` for the Zig that backs each function.
 
 ## Core idea
 
@@ -58,11 +56,11 @@ Named boundary types cross by value. A `defrecordz` returns a Clojure record:
 ;; => #user.Point{:x 2.0, :y 3.0}
 ```
 
-A `defenumz` member bridges to a keyword. clj-zig copies an `[:owned [:slice T]]` return into a vector and frees the native memory; a `[:handle T]` is an opaque native resource the caller frees. Errors cross as data and allocations stay explicit. The [Boundary Contract](docs/03-boundary-contract.md) lists the full type vocabulary.
+A `defenumz` member bridges to a keyword. An `[:owned [:slice T]]` return is copied into a vector and freed; a `[:handle T]` is an opaque native resource the caller frees. Errors cross as data; allocations stay explicit. The [Boundary Contract](docs/03-boundary-contract.md) lists the full type vocabulary.
 
 ## Bigger bodies and C interop
 
-A body can also live in a real `.zig` file instead of a string. The file is ordinary Zig with full editor and `zig fmt` support; the generated wrapper calls its `pub fn`. The descriptor can link C libraries too, so a body may `@cImport` a C header directly:
+A body can also live in a `.zig` file instead of a string. The file is ordinary Zig with editor and `zig fmt` support; the generated wrapper calls its `pub fn`. The descriptor can link C libraries too, so a body may `@cImport` a C header directly:
 
 ```clojure
 (defnz hypotenuse
@@ -82,7 +80,7 @@ The file path resolves next to the source file, then on the classpath. See [ADR 
 
 ## Binding a prebuilt library
 
-A program also reaches libraries it did not compile and that have no Zig body to wrap: the platform's windowing or input library, a system framework, libc, the graphics loader. `clj-zig.foreign` is a small foreign-function toolkit for binding one directly: open it, describe a signature as data, bind a cached downcall, optionally hand native code a Clojure callback.
+A program also reaches libraries it did not compile and cannot wrap in Zig: the platform's windowing or input library, a system framework, libc, the graphics loader. `clj-zig.foreign` binds one directly: open it, describe a signature as data, bind a cached downcall, optionally hand native code a Clojure callback.
 
 ```clojure
 (require '[clj-zig.foreign :as foreign])
@@ -95,11 +93,11 @@ A program also reaches libraries it did not compile and that have no Zig body to
   (foreign/call add (int 20) (int 22)))      ;; => 42
 ```
 
-`downcall` caches its handle per distinct signature, so a per-frame caller invokes the cached handle directly and does no linker work; `upcall-stub` adapts a Clojure fn to a C function pointer for callback-driven APIs; `async-upcall-stub` routes fire-and-forget callbacks from native threads onto a caller-supplied executor or agent; `read-utf8-bounded` reads a NUL-terminated string out of untrusted foreign memory under a hard cap. See [ADR 37](docs/adr/37-foreign-function-toolkit.md), [ADR 38](docs/adr/38-synchronous-upcall-stubs.md), and [ADR 62](docs/adr/62-asynchronous-upcalls.md).
+`downcall` caches its handle per distinct signature, so a hot caller invokes the cached handle and does no linker work. `upcall-stub` adapts a Clojure fn to a C function pointer for callback-driven APIs. `async-upcall-stub` routes fire-and-forget callbacks from native threads onto a caller-supplied executor or agent. `read-utf8-bounded` reads a NUL-terminated string from untrusted foreign memory under a hard cap. See [ADR 37](docs/adr/37-foreign-function-toolkit.md), [ADR 38](docs/adr/38-synchronous-upcall-stubs.md), and [ADR 62](docs/adr/62-asynchronous-upcalls.md).
 
 ### Async callbacks from native threads
 
-When a native library fires a callback from a thread the JVM does not own (a worker thread, a run loop, an audio callback), `async-upcall-stub` routes the invocation onto a caller-supplied dispatch target. The native thread reads the args, enqueues, and returns void; the fn runs on the dispatch target's thread(s), never on the native thread.
+When a native library fires a callback from a thread the JVM does not own (a worker thread, a run loop, an audio callback), `async-upcall-stub` routes the invocation onto a caller-supplied dispatch target. The native thread reads the args, enqueues, and returns void. The fn runs on the dispatch target's thread(s), never on the native thread.
 
 ```clojure
 (require '[clj-zig.foreign :as foreign])
@@ -119,7 +117,7 @@ When a native library fires a callback from a thread the JVM does not own (a wor
   )
 ```
 
-The dispatch map carries an optional error handler. The executor's own queue bound and rejection policy are the back-pressure mechanism. Use `onto-agent` to route onto a Clojure agent instead. Call `release-stub!` after native code has stopped firing. `release-stub!` stops dispatch, but the fn it was built from stays reachable until JVM exit: the global Arena owns the stub segment, which holds the bound fn, so a long-lived process that registers and releases many distinct callbacks accumulates them.
+The dispatch map carries an optional error handler. The executor's own queue bound and rejection policy are the back-pressure mechanism. Use `onto-agent` to route onto a Clojure agent instead. Call `release-stub!` after native code has stopped firing. `release-stub!` stops dispatch, but the fn stays reachable until JVM exit: the global Arena owns the stub segment, so a long-lived process that registers and releases many callbacks accumulates the fns.
 
 ## A namespace of native functions
 
@@ -144,7 +142,7 @@ pub fn hypotenuse(a: f64, b: f64) f64 { return c.sqrt(square(a) + square(b)); }
 pub fn circle_area(r: f64) f64 { return 3.141592653589793 * square(r); }
 ```
 
-With no signature, the boundary contract is inferred from the `pub fn` prototype: `pub fn hypotenuse(a: f64, b: f64) f64` gives `[a :f64 b :f64 :ret :f64]`. A Zig type fixes the shape, but a returned `[]T` or `*T` carries no ownership or handle policy in its type. A function returning one needs an explicit signature declaring `[:owned ...]` or `[:handle ...]`; until then it reports `:clj-zig/contract-policy-needed`.
+With no signature, the boundary contract is inferred from the `pub fn` prototype: `pub fn hypotenuse(a: f64, b: f64) f64` gives `[a :f64 b :f64 :ret :f64]`. A Zig type fixes the shape, but a returned `[]T` or `*T` carries no ownership or handle policy. A function returning one needs an explicit signature declaring `[:owned ...]` or `[:handle ...]`; until then it reports `:clj-zig/contract-policy-needed`.
 
 Each function still compiles to its own content-addressed library, so redefining one recompiles only that one and a failed compile keeps the last good binding. A kebab-case name maps to its snake_case `pub fn` (`circle-area` to `circle_area`); the optional `//! clj-zig: <ns>` header asserts the file belongs to the namespace. A body file may `@import` sibling and subdirectory `.zig` files, which are reproduced and compiled alongside it. See [ADR 28](docs/adr/28-namespace-as-zig-namespace.md) and [ADR 29](docs/adr/29-multi-file-zig-imports.md).
 
@@ -238,9 +236,7 @@ And a few more pair Clojure with co-located `.zig` files or native callbacks:
   already baked needs no Zig.
 - **Clojure CLI** (`deps.edn`, not Leiningen).
 
-Development runs on JDK 26. If your shell's default JDK is older (for example
-through sdkman), point the Clojure CLI at JDK 26 for one invocation using
-`JAVA_CMD`:
+Development runs on JDK 26. If your default JDK is older, point the Clojure CLI at JDK 26 with `JAVA_CMD`:
 
 ```bash
 JAVA_CMD="$(/usr/libexec/java_home -v 26)/bin/java" clojure -M:test
