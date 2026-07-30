@@ -65,7 +65,7 @@
   namespace."
   [ns-sym descriptor]
   (swap! ns-deps assoc ns-sym (descriptor/descriptor-options descriptor))
-  (swap! ns-modules assoc ns-sym (descriptor/zig-modules descriptor)))
+  (swap! ns-modules assoc ns-sym (descriptor/zig-modules descriptor toolchain/pinned-version)))
 
 (defn deps-in
   "The namespace-level C-interop options registered for `ns-sym`, or nil."

@@ -9,6 +9,8 @@
             [clj-zig.toolchain :as toolchain]
             [clj-zig.descriptor :as descriptor]))
 
+(def ^:private pv toolchain/pinned-version)
+
 (defn- code-from
   "Run `thunk` and return the `:error/code` of the diagnostic it throws, or
   nil when it does not throw."
@@ -18,51 +20,51 @@
 
 (deftest normalizes-valid-module-references
   (testing "no :zig/modules declares no modules"
-    (is (nil? (descriptor/zig-modules {})))
-    (is (nil? (descriptor/zig-modules {:c/link ["m"]}))))
+    (is (nil? (descriptor/zig-modules {} pv)))
+    (is (nil? (descriptor/zig-modules {:c/link ["m"]} pv))))
   (testing "a dev :path reference normalizes to the module root path"
     (is (= {"phane" {:path "../phane/src/root.zig"}}
-           (descriptor/zig-modules {:zig/modules {"phane" {:path "../phane/src/root.zig"}}}))))
+           (descriptor/zig-modules {:zig/modules {"phane" {:path "../phane/src/root.zig"}}} pv))))
   (testing "a pinned :git/sha reference keeps the sha and root"
     (is (= {"phane" {:git/sha "abc123" :root "src/root.zig"}}
            (descriptor/zig-modules {:zig/modules {"phane" {:git/sha "abc123"
-                                                     :root "src/root.zig"}}}))))
+                                                     :root "src/root.zig"}}} pv))))
   (testing "a pinned reference keeps an optional local :path (ADR 36)"
     (is (= {"phane" {:git/sha "abc123" :root "src/root.zig" :path "/co/root.zig"}}
            (descriptor/zig-modules {:zig/modules {"phane" {:git/sha "abc123"
                                                      :root "src/root.zig"
-                                                     :path "/co/root.zig"}}}))))
+                                                     :path "/co/root.zig"}}} pv))))
   (testing "several modules normalize together"
     (is (= {"a" {:path "a.zig"} "b" {:path "b.zig"}}
            (descriptor/zig-modules {:zig/modules {"a" {:path "a.zig"}
-                                            "b" {:path "b.zig"}}}))))
+                                            "b" {:path "b.zig"}}} pv))))
   (testing "a matching :zig/version is accepted"
     (is (= {"phane" {:path "root.zig"}}
            (descriptor/zig-modules {:zig/modules {"phane" {:path "root.zig"
-                                                     :zig/version toolchain/pinned-version}}})))))
+                                                     :zig/version pv}}} pv)))))
 
 (deftest rejects-malformed-module-declarations
   (testing ":zig/modules that is not a map"
     (is (= :clj-zig/bad-modules
-           (code-from #(descriptor/zig-modules {:zig/modules ["phane"]})))))
+           (code-from #(descriptor/zig-modules {:zig/modules ["phane"]} pv)))))
   (testing "a non-string module name"
     (is (= :clj-zig/bad-module-name
-           (code-from #(descriptor/zig-modules {:zig/modules {:phane {:path "r.zig"}}})))))
+           (code-from #(descriptor/zig-modules {:zig/modules {:phane {:path "r.zig"}}} pv)))))
   (testing "a name the compiler reserves"
     (is (= :clj-zig/reserved-module-name
-           (code-from #(descriptor/zig-modules {:zig/modules {"std" {:path "r.zig"}}})))))
+           (code-from #(descriptor/zig-modules {:zig/modules {"std" {:path "r.zig"}}} pv)))))
   (testing "a descriptor that is not a map"
     (is (= :clj-zig/bad-module-ref
-           (code-from #(descriptor/zig-modules {:zig/modules {"phane" "r.zig"}})))))
+           (code-from #(descriptor/zig-modules {:zig/modules {"phane" "r.zig"}} pv)))))
   (testing "a descriptor with no root"
     (is (= :clj-zig/module-missing-root
-           (code-from #(descriptor/zig-modules {:zig/modules {"phane" {}}}))))
+           (code-from #(descriptor/zig-modules {:zig/modules {"phane" {}}} pv))))
     (is (= :clj-zig/module-missing-root
-           (code-from #(descriptor/zig-modules {:zig/modules {"phane" {:git/sha "abc"}}})))))
+           (code-from #(descriptor/zig-modules {:zig/modules {"phane" {:git/sha "abc"}}} pv)))))
   (testing "a :zig/version other than the pinned compiler"
     (is (= :clj-zig/module-zig-version-mismatch
            (code-from #(descriptor/zig-modules {:zig/modules {"phane" {:path "r.zig"
-                                                                 :zig/version "0.13.0"}}}))))))
+                                                                 :zig/version "0.13.0"}}} pv))))))
 
 (deftest register-deps-stores-modules-per-namespace
   (testing "modules-in returns the normalized modules a namespace declared"

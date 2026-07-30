@@ -4,9 +4,10 @@
   compile options (C-interop flags, optimize mode, build flags) and the
   external Zig modules into the option maps the build shell and the
   content hash consume. Pure: a descriptor map goes in, a validated
-  option or module map comes out, or a diagnostic is thrown."
-  (:require [clojure.string :as str]
-            [clj-zig.toolchain :as toolchain]))
+  option or module map comes out, or a diagnostic is thrown. The pinned
+  Zig version flows in as an argument so this namespace does not depend
+  on the toolchain shell."
+  (:require [clojure.string :as str]))
 
 (declare zig-build-flags)
 
@@ -126,7 +127,7 @@
   `:git/sha` with a `:root`. An optional `:zig/version` must match the
   pinned compiler. Throws a diagnostic with a specific `:error/code` for
   each malformed shape."
-  [module-name descriptor]
+  [module-name descriptor pinned-version]
   (when-not (string? module-name)
     (throw (ex-info (str "A Zig module name must be a string, got "
                          (pr-str module-name) ".")
@@ -143,13 +144,13 @@
                     {:level :error :error/code :clj-zig/bad-module-ref
                      :module module-name})))
   (when-let [v (:zig/version descriptor)]
-    (when (not= v toolchain/pinned-version)
+    (when (not= v pinned-version)
       (throw (ex-info (str "The Zig module " (pr-str module-name) " pins Zig "
-                           v " but clj-zig pins " toolchain/pinned-version ".")
+                           v " but clj-zig pins " pinned-version ".")
                       {:level :error :error/code :clj-zig/module-zig-version-mismatch
                        :module module-name
                        :requested v
-                       :pinned toolchain/pinned-version}))))
+                       :pinned pinned-version}))))
   (cond
     ;; A pinned reference fingerprints from sha and root; an optional :path is
     ;; a local checkout bake and the dev loop compile from (ADR 36).
@@ -170,8 +171,11 @@
   "The external Zig modules a descriptor's `:zig/modules` declares,
   normalized and keyed by import name, or nil when it declares none. Each
   becomes a `-M name=<root>` module the bodies in the namespace may
-  `@import` (ADR 34). Shared by a namespace-level `zig-deps`."
-  [descriptor]
+  `@import` (ADR 34). Shared by a namespace-level `zig-deps`. The pinned
+  Zig version is passed in (`pinned-version`) so a module's optional
+  `:zig/version` can be checked without this pure namespace depending on
+  the toolchain shell."
+  [descriptor pinned-version]
   (when-let [modules (:zig/modules descriptor)]
     (when-not (map? modules)
       (throw (ex-info (str ":zig/modules must be a map of name to descriptor, got "
@@ -180,5 +184,5 @@
                        :modules modules})))
     (not-empty
      (reduce-kv (fn [m module-name desc]
-                  (assoc m module-name (normalize-module module-name desc)))
+                  (assoc m module-name (normalize-module module-name desc pinned-version)))
                 {} modules))))

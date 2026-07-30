@@ -10,7 +10,8 @@
             [clj-zig.descriptor :as descriptor]
             [clj-zig.gen :as g]
             [clj-zig.layout :as layout]
-            [clj-zig.spec :as spec]))
+            [clj-zig.spec :as spec]
+            [clj-zig.toolchain :as toolchain]))
 
 (defn- code-from
   "Run `thunk` and return the `:error/code` of the diagnostic it throws, or
@@ -190,7 +191,7 @@
 (deftest module-rejection-matrix
   (doseq [{:keys [code descriptor]} module-rejections]
     (testing (pr-str descriptor)
-      (is (= code (code-from #(descriptor/zig-modules descriptor)))))))
+      (is (= code (code-from #(descriptor/zig-modules descriptor toolchain/pinned-version)))))))
 
 ;; Generative breadth: junk in argument position is rejected
 
