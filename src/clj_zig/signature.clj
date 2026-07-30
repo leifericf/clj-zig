@@ -105,9 +105,13 @@
       (if (>= (inc i) (count region))
         (fail signature :clj-zig/uneven-signature
               "Each argument needs a binding and a type." {})
-        (recur (+ i 2)
-               (conj args (normalize-arg signature
-                                         [(nth region i) (nth region (inc i))])))))))
+        (let [type-form (nth region (inc i))]
+          (when (= rest-marker type-form)
+            (fail signature :clj-zig/misplaced-rest
+                  "& must introduce the final rest argument, not appear in a type slot." {}))
+          (recur (+ i 2)
+                 (conj args (normalize-arg signature
+                                           [(nth region i) type-form]))))))))
 
 (defn- normalize-arg
   "Normalize one `[binding type]` pair. A map binding is Clojure-side

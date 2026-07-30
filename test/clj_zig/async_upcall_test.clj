@@ -232,15 +232,15 @@
       (finally (.shutdown exec)))))
 
 (deftest release-removes-the-stub-from-the-registry
-  (let [before (@#'clj-zig.foreign/registered-stub-count)
+  (let [before (ff/registered-stub-count)
         exec   (Executors/newSingleThreadExecutor)
         desc   (ff/descriptor :void [])
         stub   (ff/async-upcall-stub (fn [])
                                      desc (Arena/global) (ff/onto-executor exec))]
     (try
-      (is (= (inc before) (@#'clj-zig.foreign/registered-stub-count)))
+      (is (= (inc before) (ff/registered-stub-count)))
       (ff/release-stub! stub)
-      (is (= before (@#'clj-zig.foreign/registered-stub-count)))
+      (is (= before (ff/registered-stub-count)))
       (finally (.shutdown exec)))))
 
 ;;; Lifecycle: fire from a native worker thread
@@ -486,7 +486,7 @@
         fire  (ff/downcall (lookup) "fire_cb" :void [ff/c-ptr])]
     (try
       (ff/shutdown-async-stubs)
-      (is (zero? (@#'clj-zig.foreign/registered-stub-count)) "registry cleared")
+      (is (zero? (ff/registered-stub-count)) "registry cleared")
       (ff/call fire stub1)
       (ff/call fire stub2)
       (is (zero? @fired) "quiesced stubs do not dispatch")

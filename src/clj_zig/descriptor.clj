@@ -27,7 +27,7 @@
    (into {}
          (keep (fn [[src dst]]
                  (when-let [v (descriptor src)]
-                   [dst (vec v)])))
+                   [dst (if (string? v) [v] (vec v))])))
          c-key-map)))
 
 (def optimize-modes

@@ -92,3 +92,11 @@
 (deftest zig-deps-accepts-panic-fn
   (testing ":zig/panic-fn in zig-deps registers without error"
     (is (some? (macroexpand `(zig-deps {:zig/panic-fn "my_panic"}))))))
+
+(deftest c-interop-string-value-wraps-instead-of-char-seqing
+  (testing "a bare :c/link string becomes a one-element vector, not a char seq"
+    (is (= {:link ["m"]}
+           (descriptor/c-interop-options {:c/link "m"}))))
+  (testing "a vector value is still vec'd round-trip"
+    (is (= {:link ["m" "z"]}
+           (descriptor/c-interop-options {:c/link ["m" "z"]})))))

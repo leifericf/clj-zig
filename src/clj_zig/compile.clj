@@ -101,7 +101,7 @@
                      (:panic-fn options)        (conj (str "-fpanic-fn=" (:panic-fn options))))]
     (vec (concat [zig "build-lib" "-dynamic" "-O" mode "-mcpu" default-cpu]
                  zf
-                 (when target ["-target" target])
+                 (when (seq target) ["-target" target])
                  ["--global-cache-dir" global-cache-dir
                   (str "-femit-bin=" library-abs)]
                  (if (seq module-roots)
@@ -124,7 +124,7 @@
   [stderr module-roots]
   (or (some (fn [[name root]]
               (when-let [dir (some-> root io/file .getParent str not-empty unixify)]
-                (when (str/includes? (unixify stderr) dir)
+                (when (str/includes? (unixify stderr) (str dir "/"))
                   {:zig/origin :module :zig/module name})))
             module-roots)
       {:zig/origin :wrapper}))
@@ -156,13 +156,16 @@
         (spit f text)))
     (spit src-file source)
     ;; zig fmt owns formatting. A syntax error here leaves the file
-    ;; untouched and resurfaces as the authoritative build error
-    ;; below, so this exit code is deliberately ignored.
-    (sh/sh zig "fmt" src-abs :dir (.getParent src-file))
-    ;; Link libc: owned and handle returns free through std.heap.c_allocator,
-    ;; the one deallocation safe across the boundary. macOS links libc
-    ;; implicitly; Linux needs it requested, and a body may reach anywhere.
-    (let [build-args (conj (build-arguments zig {:source-abs src-abs
+    ;; untouched and resurfaces as the authoritative build error below, so
+    ;; the exit code is otherwise ignored; a non-syntax fmt failure
+    ;; (corrupt binary, permissions, OOM) is surfaced on the build
+    ;; diagnostic so it does not vanish entirely.
+    (let [{fmt-exit :exit :keys [err]} (sh/sh zig "fmt" src-abs :dir (.getParent src-file))
+          fmt-stderr (when (and (not (zero? fmt-exit)) (not-empty err)) err)
+          ;; Link libc: owned and handle returns free through std.heap.c_allocator,
+          ;; the one deallocation safe across the boundary. macOS links libc
+          ;; implicitly; Linux needs it requested, and a body may reach anywhere.
+          build-args (conj (build-arguments zig {:source-abs src-abs
                                                  :library-abs lib-abs
                                                  :options options
                                                  :target target
@@ -187,6 +190,8 @@
                                   :zig/source-path src-abs
                                   :zig/stderr err
                                   :zig/exit-code exit}
+                                 (when fmt-stderr
+                                   {:zig/fmt-stderr fmt-stderr})
                                  (when (seq module-roots)
                                    (attribute-failure err module-roots))
                                  ctx))))))))

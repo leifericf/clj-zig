@@ -412,11 +412,21 @@
     (try
       (with-open [in (io/input-stream resource)]
         (io/copy in tmp))
-      (java.nio.file.Files/move
-       (.toPath tmp) (.toPath out)
-       (into-array java.nio.file.StandardCopyOption
-                   [java.nio.file.StandardCopyOption/REPLACE_EXISTING
-                    java.nio.file.StandardCopyOption/ATOMIC_MOVE]))
+      (let [path-tmp (.toPath tmp)
+            path-out (.toPath out)
+            copy-opts (fn [opts] (into-array java.nio.file.StandardCopyOption opts))]
+        (try
+          (java.nio.file.Files/move
+           path-tmp path-out
+           (copy-opts [java.nio.file.StandardCopyOption/REPLACE_EXISTING
+                       java.nio.file.StandardCopyOption/ATOMIC_MOVE]))
+          (catch java.nio.file.AtomicMoveNotSupportedException _
+            ;; Some filesystems (network mounts, FAT/exFAT, older SMB) reject
+            ;; ATOMIC_MOVE; fall back to a non-atomic replace so a consumer
+            ;; extracting onto such a volume still lands the artifact.
+            (java.nio.file.Files/move
+             path-tmp path-out
+             (copy-opts [java.nio.file.StandardCopyOption/REPLACE_EXISTING])))))
       (finally
         (when (.exists tmp) (.delete tmp))))))
 
@@ -482,8 +492,8 @@
 
   ;; The classpath layout a baked library ships under: the loader looks a
   ;; resource up by this path before compiling.
-  ;; => "clj-zig/native/linux-x86_64/app.core/add-83a1c0f9e1b2/libadd-83a1c0f9e1b2.so"
+  ;; => "clj-zig/native/linux-x86_64/app.core/add-83a1c0f9e1b2dead/libadd-83a1c0f9e1b2dead.so"
   (bundled-resource-path {:target "linux-x86_64" :ns 'app.core
-                          :name 'add :hash "83a1c0f9e1b2"})
+                          :name 'add :hash "83a1c0f9e1b2dead"})
 
-  (target-triple))   ;; => "macos-aarch64"
+  (target-triple))   ;; => the host os-arch pair, e.g. macos-aarch64

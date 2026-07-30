@@ -45,7 +45,7 @@
 
 (defn render
   "Format a diagnostic map as the multi-line string shown to a developer."
-  [{:keys [message var signature] :as diagnostic}]
+  [{:keys [message var signature] :zig/keys [source-path stderr]}]
   (let [header (or message
                    (when var (str "Could not compile defnz " var "."))
                    "clj-zig diagnostic.")]
@@ -53,7 +53,7 @@
      "\n"
      (cond-> [header]
        signature                    (into ["" "Signature:" (format-signature signature)])
-       (:zig/source-path diagnostic) (into ["" "Generated Zig:"
-                                            (str "  " (:zig/source-path diagnostic))])
-       (seq (:zig/stderr diagnostic)) (into ["" "Zig error:"
-                                             (indent (:zig/stderr diagnostic))])))))
+       source-path                  (into ["" "Generated Zig:"
+                                            (str "  " source-path)])
+       (seq stderr)                 (into ["" "Zig error:"
+                                            (indent stderr)])))))

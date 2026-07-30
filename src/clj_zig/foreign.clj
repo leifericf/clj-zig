@@ -107,7 +107,7 @@
   paths, and `.dylib`/`.dll`/`.so` default belong to the caller. Pair the
   result with `library-lookup`."
   [{:keys [env candidates default]}]
-  (or (some (fn [v] (System/getenv v)) env)
+  (or (some (fn [v] (some-> v System/getenv)) env)
       (first (filter (fn [p] (.exists (io/file ^String p))) candidates))
       default))
 
@@ -151,8 +151,10 @@
     (or (get @handle-cache k)
         (let [h (.downcallHandle linker (find-symbol lookup nm)
                                  (descriptor ret arg-layouts) no-options)]
-          (swap! handle-cache assoc k h)
-          h))))
+          ;; swap-or-keep so two threads racing on the same key settle on one
+          ;; cached handle rather than each returning its own (both are valid;
+          ;; this keeps the cache single-valued under contention).
+          (get (swap! handle-cache #(if (get % k) % (assoc % k h))) k)))))
 
 (defn call
   "Invoke a downcall handle `h` with `args`. `MethodHandle.invoke` is
@@ -277,6 +279,17 @@
        :target        (:target m)
        :error-handler eh})))
 
+(defn- assert-no-dispatch-override
+  "onto-executor and onto-agent supply :mode and :target from their first
+  argument; reject the same keys in `opts` so a caller cannot silently
+  override the routing target the helper was chosen to install."
+  [opts supplied]
+  (doseq [k [:mode :target]]
+    (when (contains? opts k)
+      (throw (ex-info (str supplied " supplies :" (name k)
+                           "; pass it as the first argument, not in opts")
+                      {:foreign/error :invalid-dispatch-map :key k})))))
+
 (defn onto-executor
   "Build a dispatch map routing async invocations onto `exec`, a
   `java.util.concurrent.Executor`. The optional `opts` map may carry
@@ -285,6 +298,7 @@
   are the back-pressure mechanism."
   ([exec] (onto-executor exec {}))
   ([exec opts]
+   (assert-no-dispatch-override opts "onto-executor")
    (validate-dispatch-map (assoc opts :mode :executor :target exec))))
 
 (defn onto-agent
@@ -296,6 +310,7 @@
   :error-handler."
   ([agnt] (onto-agent agnt {}))
   ([agnt opts]
+   (assert-no-dispatch-override opts "onto-agent")
    (validate-dispatch-map (assoc opts :mode :agent :target agnt))))
 
 (defn read-bytes-bounded
@@ -308,6 +323,11 @@
   (^bytes [^MemorySegment seg ^long max-bytes]
    (when (neg? max-bytes)
      (throw (ex-info "read-bytes-bounded requires a non-negative max-bytes"
+                     {:foreign/error :invalid-cap :max-bytes max-bytes})))
+   (when (> max-bytes Integer/MAX_VALUE)
+     ;; The result is a byte array and the copy takes an int length; a cap
+     ;; above Integer/MAX_VALUE would truncate on the cast or OOM the array.
+     (throw (ex-info "read-bytes-bounded max-bytes must not exceed Integer/MAX_VALUE"
                      {:foreign/error :invalid-cap :max-bytes max-bytes})))
    (when (and seg (not (.equals MemorySegment/NULL seg)))
      (let [size (min (.byteSize seg) max-bytes)
@@ -436,8 +456,10 @@
     (swap! stub-registry dissoc seg))
   nil)
 
-(defn- registered-stub-count
-  "The number of currently registered async stubs."
+(defn registered-stub-count
+  "The number of currently registered async upcall stubs. An observable for
+  monitoring (a leak detector, a metrics scrape) so a long-lived process can
+  watch for stubs that are registered but never released."
   ^long []
   (count @stub-registry))
 
@@ -455,19 +477,27 @@
   lifecycle. A blocking native callback that cannot quiesce is the
   caller's responsibility."
   []
-  (let [snapshot @stub-registry]
+  (let [snapshot @stub-registry
+        agent-targets (into [] (distinct)
+                            (for [entry (vals snapshot)
+                                  :when (= :agent (:mode (:dispatch entry)))]
+                              (:target (:dispatch entry))))]
     (doseq [[seg entry] snapshot]
       (vreset! (:quiesced? entry) true)
       (swap! stub-registry dissoc seg))
-    (doseq [entry (vals snapshot)]
-      (when (= :agent (:mode (:dispatch entry)))
-        (await-for 2000 (:target (:dispatch entry)))))
+    ;; One await-for over the distinct agent targets, not one per stub: many
+    ;; stubs may share one agent, and a per-stub wait multiplies the grace
+    ;; window past what a single bounded wait needs.
+    (when (seq agent-targets)
+      (apply await-for 2000 agent-targets))
     nil))
 
 (defonce ^:private shutdown-hook-installed
-  (.addShutdownHook
-   (Runtime/getRuntime)
-   (Thread. ^Runnable (fn [] (shutdown-async-stubs)))))
+  (do (.addShutdownHook
+       (Runtime/getRuntime)
+       (Thread. ^Runnable (fn [] (shutdown-async-stubs))
+                "clj-zig-foreign-async-shutdown"))
+      true))
 
 ;; reading bounded native strings
 
@@ -488,6 +518,11 @@
   ^String [^MemorySegment seg ^long max-bytes ^Arena arena]
   (when (neg? max-bytes)
     (throw (ex-info "read-utf8-bounded requires a non-negative max-bytes"
+                    {:foreign/error :invalid-cap :max-bytes max-bytes})))
+  (when (> max-bytes Integer/MAX_VALUE)
+    ;; (inc max-bytes) would overflow at Long/MAX_VALUE and the copy takes an
+    ;; int length; reject an oversized cap up front so the cap stays the guard.
+    (throw (ex-info "read-utf8-bounded max-bytes must not exceed Integer/MAX_VALUE"
                     {:foreign/error :invalid-cap :max-bytes max-bytes})))
   (when (and seg (not (.equals MemorySegment/NULL seg)))
     (let [limit   (inc max-bytes)

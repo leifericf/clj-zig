@@ -15,6 +15,7 @@
             [clojure.java.io :as io]
             [clojure.java.shell :as sh]
             [clojure.string :as str]
+            [clj-zig.compile :as compile]
             [clj-zig.toolchain :as toolchain]
             [clj-zig.fs :as fs])
   (:import [java.nio.file Files]
@@ -31,7 +32,9 @@
         src (io/file tmp "test.zig")]
     (try
       (spit src source)
-      (let [{:keys [exit out err]} (sh/sh zig "test" (.getAbsolutePath src)
+      (let [{:keys [exit out err]} (sh/sh zig "test"
+                                         "--global-cache-dir" (compile/global-cache-dir)
+                                         (.getAbsolutePath src)
                                          :dir tmp)]
         (if (zero? exit)
           {:pass true}

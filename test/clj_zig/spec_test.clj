@@ -132,6 +132,12 @@
          (error-code #(spec/build-spec '{:ns app.core :name f
                                          :signature [x :void :ret :i64]})))))
 
+(deftest rejects-noreturn-return
+  (testing ":noreturn is not a valid return type, even though it normalizes like :void"
+    (is (= :clj-zig/noreturn-return
+           (error-code #(spec/build-spec '{:ns app.core :name f
+                                           :signature [:ret :noreturn]}))))))
+
 (deftest accepts-a-slice-of-a-scalar-struct
   (let [types {'Point (layout/describe 'Point '[x :f64 y :f64])}]
     (testing "a slice element may be a named scalar-only struct"

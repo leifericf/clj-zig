@@ -125,9 +125,10 @@
 
 (defn entry-name
   "The user fn name the file-mode wrapper calls: `:zig/fn` when given, else
-  the Clojure fn name with hyphens as underscores, the way Clojure names
-  munge for the JVM (`dot-product` becomes `dot_product`). A name still not a
-  legal Zig identifier, such as `red?` or `saxpy!`, needs `:zig/fn`."
+  the Clojure fn name with hyphens replaced by underscores (`dot-product`
+  becomes `dot_product`). This is a simplified local rule covering the
+  common kebab-case case, not full Clojure `munge`; a name that is still not
+  a legal Zig identifier, such as `red?` or `saxpy!`, needs `:zig/fn`."
   [spec descriptor]
   (or (:zig/fn descriptor)
       (let [n (str/replace (name (:name spec)) "-" "_")]
@@ -326,7 +327,7 @@
   (inline mode) and an inline @import of std (file mode). Returns nil
   when no reconstruction is needed (e.g. an enum argument)."
   ([param] (reconstruction param false))
-   ([{:keys [binding type]} file-mode?]
+  ([{:keys [binding type]} file-mode?]
    (let [alloc (if file-mode?
                  "@import(\"std\").heap.c_allocator"
                  "std.heap.c_allocator")]

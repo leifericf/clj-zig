@@ -84,6 +84,9 @@
   (testing "a lone & with no binding and type"
     (is (= :clj-zig/misplaced-rest
            (error-code #(sig/normalize '[x :i64 & :ret :i64])))))
+  (testing "an & in a type slot is rejected at parse time, not as a named type"
+    (is (= :clj-zig/misplaced-rest
+           (error-code #(sig/normalize '[x & :i64 :ret :i64])))))
   (testing "a second & is caught by the trailing-position rule"
     (is (= :clj-zig/misplaced-rest
            (error-code #(sig/normalize '[& a :i64 & b :i64 :ret :i64]))))))

@@ -188,10 +188,15 @@
                        :clj-zig/expected expected :clj-zig/actual actual})))))
 
 (defn- extract-tar!
-  "Unpack an xz tarball into `dest-dir` using the system `tar`. Each entry
-  is validated to stay within `dest-dir` before extraction (mirror of
-  `extract-zip!`), so a crafted `../` entry cannot write outside the install
-  root. The download is checksum-verified first; this is defense in depth."
+  "Unpack an xz tarball into `dest-dir` using the system `tar`. Each entry's
+  path is validated to stay within `dest-dir` before extraction (mirror of
+  `extract-zip!`), so a crafted literal `../` entry cannot write outside the
+  install root. This catches `../` path traversal but not a symlink-mediated
+  escape: `tar -tf` lists a symlink target as text, so an entry that becomes
+  an escaping symlink once materialized is not caught here. The download is
+  checksum-verified (SHA-256 against a pinned constant) before extraction;
+  that checksum is the real trust boundary, and this path check is defense
+  in depth on top of an already-trusted archive."
   [archive dest-dir]
   (let [dest-canonical (.getCanonicalPath dest-dir)
         archive-abs    (.getAbsolutePath archive)
@@ -300,9 +305,16 @@
   "The `zig` compiler version string reported by the resolved executable.
   The content hash uses `pinned-version` (every machine pins the same
   compiler); this reads the live compiler's version for diagnostics and
-  tests."
+  tests. Throws a `:clj-zig/zig-version-failed` diagnostic when the
+  executable cannot report a version rather than silently returning an
+  empty string."
   []
-  (str/trim (:out (sh/sh (zig-exe) "version"))))
+  (let [{:keys [exit out err]} (sh/sh (zig-exe) "version")]
+    (when-not (zero? exit)
+      (throw (ex-info (str "Could not read zig version: " (str/trim err))
+                      {:level :error :error/code :clj-zig/zig-version-failed
+                       :zig/exit-code exit :zig/stderr err})))
+    (str/trim out)))
 
 (comment
   (zig-exe)

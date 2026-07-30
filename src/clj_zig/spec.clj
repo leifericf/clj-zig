@@ -309,6 +309,9 @@
   (no ownership policy); and any value-position scalar without an FFM
   carrier."
   [{:keys [ret] :as spec}]
+  (when (and (= :scalar (:kind ret)) (= :noreturn (:name ret)))
+    (fail spec :clj-zig/noreturn-return
+          ":noreturn is not a valid return type." {}))
   (when (and (= :optional (:kind ret))
              (not (optional-inner-ok? #{:ptr} (:of ret))))
     (fail spec :clj-zig/unsupported-optional

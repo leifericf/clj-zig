@@ -55,8 +55,8 @@
   (str (render-expr base) "." field))
 (defmethod render-expr :deref [{:keys [base]}]
   (str (render-expr base) ".*"))
-(defmethod render-expr :call [{:keys [fn args]}]
-  (str fn "(" (str/join ", " (map render-expr args)) ")"))
+(defmethod render-expr :call [{fn-name :fn :keys [args]}]
+  (str fn-name "(" (str/join ", " (map render-expr args)) ")"))
 (defmethod render-expr :lit [{:keys [value]}] (str value))
 (defmethod render-expr :as [{:keys [type value]}]
   (str "@as(" type ", " (render-expr value) ")"))

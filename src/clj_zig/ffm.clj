@@ -35,8 +35,10 @@
   (and (= :scalar (:kind t)) (type/i128-type? (:name t))))
 
 (defn- bigint->i128-segment
-  "Write `b` as a little-endian two's-complement i128 (two longs) into a
-  fresh 16-byte segment allocated from `arena`."
+  "Write `b` as the C `__int128` two's-complement pattern (two host-order
+  longs) into a fresh 16-byte segment allocated from `arena`. Every target
+  clj-zig supports is little-endian, so host order matches the LE `__int128`
+  ABI; the longs are written in host order, not byte-swapped."
   [^Arena arena ^BigInteger b]
   (let [pattern (.mod (.add b two-to-128) two-to-128)  ; the 128-bit pattern, 0..2^128-1
         lo (.longValue (.mod pattern two-to-64))
@@ -47,9 +49,10 @@
     seg))
 
 (defn- i128-segment->bigint
-  "Read a little-endian i128 (two longs) from `seg` as a BigInteger,
-  applying the unsigned-or-signed policy of `t` (`:u128` keeps the full
-  unsigned pattern; `:i128` subtracts 2^128 when the sign bit is set)."
+  "Read the C `__int128` pattern (two host-order longs) from `seg` as a
+  BigInteger, applying the unsigned-or-signed policy of `t` (`:u128` keeps
+  the full unsigned pattern; `:i128` subtracts 2^128 when the sign bit is
+  set). See `bigint->i128-segment` for the endianness assumption."
   [t ^MemorySegment seg]
   (let [lo (.get seg ValueLayout/JAVA_LONG 0)
         hi (.get seg ValueLayout/JAVA_LONG 8)
@@ -1352,10 +1355,14 @@
   body's `__free` cannot mask the primary result or exception. Teardown must
   not throw; the primary error (if any) stays visible. A nil `free-handle`
   (no shim, or a borrowed return) is a no-op, mirroring the arena-close
-  discipline in `foreign/join-then-close-arena`."
+  discipline in `foreign/join-then-close-arena`. An `InterruptedException`
+  re-interrupts the current thread so an interrupt-driven shutdown is not
+  lost by the swallow."
   [free-handle args]
   (when free-handle
     (try (.invokeWithArguments ^MethodHandle free-handle (object-array args))
+         (catch InterruptedException _
+           (.interrupt (Thread/currentThread)))
          (catch Throwable _ nil))))
 
 (def ^:private noop-copy-back!
