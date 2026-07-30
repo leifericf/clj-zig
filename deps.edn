@@ -4,10 +4,19 @@
  :aliases
  ;; Finalized FFM (Java 22+): the flag opens native access explicitly;
  ;; --enable-preview is not needed. Development runs on JDK 26.
- {:repl
-  {:jvm-opts ["--enable-native-access=ALL-UNNAMED"]}
+   {:repl
+    {:jvm-opts ["--enable-native-access=ALL-UNNAMED"]}
 
-  ;; The :test lane includes bench/ on its classpath so the pure-core
+   ;; Reflection gate. Fails the build when loading src under
+   ;; *warn-on-reflection* emits any warning. The compiler is the
+   ;; authority: clj-kondo's :warn-on-reflection linter both flags
+   ;; correctly hinted interop and misses real reflection the compiler
+   ;; catches. Loads src on its classpath; no Zig, no native access.
+   :lint-reflection
+   {:extra-paths ["script"]
+    :main-opts ["-m" "clj-zig.check-reflection"]}
+
+   ;; The :test lane includes bench/ on its classpath so the pure-core
   ;; perf unit tests (test/clj_zig/perf/*_test.clj requiring
   ;; clj-zig.perf.shape and clj-zig.perf.stats) run in the green gate.
   ;; bench/ is the pure core only at this point; the bench shell

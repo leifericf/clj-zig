@@ -26,6 +26,38 @@ jobs:
           version: "2026.05.25"
       - run: clj-kondo --lint src test --fail-level error
 
+  reflection:
+    name: Reflection gate
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 26
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "26"
+
+      - name: Set up Clojure CLI
+        uses: DeLaGuardo/setup-clojure@13.0
+        with:
+          cli: "1.12.5.1654"
+
+      - name: Cache Clojure dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2
+            ~/.gitlibs
+            .cpcache
+          key: ${{ runner.os }}-deps-${{ hashFiles('deps.edn') }}
+          restore-keys: |
+            ${{ runner.os }}-deps-
+
+      - name: Fail on reflective interop
+        run: clojure -M:lint-reflection
+
   test:
     name: Test (Java ${{ matrix.java }} on ${{ matrix.os }})
     needs: lint
