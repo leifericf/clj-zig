@@ -270,9 +270,15 @@
         (extract-tar! archive staging))
       (when (.exists target) (fs/delete-recursively! target))
       (when-not (.renameTo (io/file staging stem) target)
-        (throw (ex-info (str "Could not move the extracted Zig into " (.getPath target) ".")
-                        {:level :error :error/code :clj-zig/zig-install-failed
-                         :clj-zig/target (.getPath target)})))
+        ;; renameTo can fail when a concurrent bootstrap (parallel CI, a
+        ;; monorepo) installed target between our delete and our move, or
+        ;; when the host refuses to touch a loaded binary. If target now
+        ;; holds a runnable zig, a concurrent install won; accept it rather
+        ;; than failing.
+        (when-not (pinned-exe)
+          (throw (ex-info (str "Could not move the extracted Zig into " (.getPath target) ".")
+                          {:level :error :error/code :clj-zig/zig-install-failed
+                           :clj-zig/target (.getPath target)}))))
       (finally
         (fs/delete-recursively! staging)))))
 

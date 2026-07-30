@@ -34,10 +34,15 @@
   {:id (cache/target-triple) :triple nil})
 
 (defn- third-party-c?
-  "True when a function links a C library beyond libc and libm. Such a
-  function cannot cross-compile freely, so it is baked for the host only."
+  "True when a function carries C-interop beyond libc and libm: a linked
+  library other than `c` or `m`, or any include or library search path.
+  Such a function pins to host-specific SDK locations and cannot
+  cross-compile freely, so it is baked for the host only."
   [options]
-  (boolean (some (complement #{"c" "m"}) (:link options))))
+  (boolean (or (some (complement #{"c" "m"}) (:link options))
+               (seq (:include-path options))
+               (seq (:system-include-path options))
+               (seq (:link-path options)))))
 
 (defn- function-inputs
   "The build inputs for an established `defnz`, from the inspection data its

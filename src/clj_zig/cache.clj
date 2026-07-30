@@ -442,47 +442,52 @@
   (let [artifact-key (cache-key inputs)
         coords       {:target (:target inputs) :ns (:ns spec) :name (:name spec)
                       :hash artifact-key :build-id (:build-id inputs)}
-        paths        (artifact-paths (assoc coords :root root))
-        bundled      (bundled-library coords)]
+        paths        (artifact-paths (assoc coords :root root))]
     (cond
-      ;; A :build-id forces a fresh build (recompile!), so neither a present
-      ;; on-disk library nor a baked classpath library is reused -- the caller
-      ;; asked to rebuild from source. The build-id targets a unique path, so a
-      ;; forced rebuild never reads an artifact an earlier run wrote.
+      ;; A :build-id forces a fresh build (recompile!), so a present on-disk
+      ;; library is not reused -- the caller asked to rebuild from source.
+      ;; The build-id targets a unique path, so a forced rebuild never reads
+      ;; an artifact an earlier run wrote.
       (and (library-present? paths) (not (:build-id inputs)))
       (assoc paths :hash artifact-key :cached? true)
 
-      (and bundled (not (:build-id inputs)))
-      (do
-        (extract-bundled! bundled (:library-path paths))
-        (write-manifest! paths inputs artifact-key)
-        (assoc paths :hash artifact-key :cached? false :bundled? true))
-
       :else
-      (let [roots   (:module-roots inputs)
-            missing (remove (set (keys roots)) (keys (:modules inputs)))]
-        ;; A fresh compile needs every declared module's source. A pinned
-        ;; module with no local checkout (ADR 36) resolves a baked library
-        ;; above; reaching here means none shipped for this target.
-        (when (seq missing)
-          (throw (ex-info (str "Cannot compile: Zig module(s) "
-                               (str/join ", " (map pr-str missing))
-                               " are pinned with no local checkout, and no baked"
-                               " library ships for " (:target inputs) ".")
-                          {:level :error :error/code :clj-zig/module-not-checked-out
-                           :modules (vec missing) :target (:target inputs)})))
-        (compile!-fn {:source       source
-                      :source-path  (:source-path paths)
-                      :library-path (:library-path paths)
-                      :options      (:options inputs)
-                      :module-roots roots
-                      :aux-files    (mapv (fn [{:keys [rel text]}]
-                                            {:path (str (:dir paths) "/" rel) :text text})
-                                          aux-files)
-                      :ctx          {:var (var-symbol spec)
-                                     :signature (:signature spec)}})
-        (write-manifest! paths inputs artifact-key)
-        (assoc paths :hash artifact-key :cached? false)))))
+      ;; The classpath baked-library scan is deferred to here so a hot
+      ;; cache hit (the common dev-loop case) pays nothing. A :build-id
+      ;; skips the baked lookup too, forcing a from-source compile.
+      (let [bundled (when-not (:build-id inputs) (bundled-library coords))]
+        (cond
+          bundled
+          (do
+            (extract-bundled! bundled (:library-path paths))
+            (write-manifest! paths inputs artifact-key)
+            (assoc paths :hash artifact-key :cached? false :bundled? true))
+
+          :else
+          (let [roots   (:module-roots inputs)
+                missing (remove (set (keys roots)) (keys (:modules inputs)))]
+            ;; A fresh compile needs every declared module's source. A pinned
+            ;; module with no local checkout (ADR 36) resolves a baked library
+            ;; above; reaching here means none shipped for this target.
+            (when (seq missing)
+              (throw (ex-info (str "Cannot compile: Zig module(s) "
+                                   (str/join ", " (map pr-str missing))
+                                   " are pinned with no local checkout, and no baked"
+                                   " library ships for " (:target inputs) ".")
+                              {:level :error :error/code :clj-zig/module-not-checked-out
+                               :modules (vec missing) :target (:target inputs)})))
+            (compile!-fn {:source       source
+                          :source-path  (:source-path paths)
+                          :library-path (:library-path paths)
+                          :options      (:options inputs)
+                          :module-roots roots
+                          :aux-files    (mapv (fn [{:keys [rel text]}]
+                                                {:path (str (:dir paths) "/" rel) :text text})
+                                              aux-files)
+                          :ctx          {:var (var-symbol spec)
+                                         :signature (:signature spec)}})
+            (write-manifest! paths inputs artifact-key)
+            (assoc paths :hash artifact-key :cached? false)))))))
 
 (comment
   (require '[clj-zig.spec :as spec])

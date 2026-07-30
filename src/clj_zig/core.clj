@@ -332,47 +332,52 @@
 
   `spec` contains only the non-comptime params (the FFM boundary).
   `comptime-params` is a vector of `{:binding :type}` for the comptime
-  params. `body` is the Zig body template."
-  [the-var spec body comptime-params var-meta wrap]
-  (let [n-comptime (count comptime-params)
-        n-regular  (count (:params spec))
-        total-arity (+ n-comptime n-regular)
-        var-sym    (symbol (str (:ns spec)) (str (:name spec)))
-        cache      (atom {})]
-    (alter-var-root
-     the-var
-     (constantly
-      (fn [& args]
-        (when (not= (count args) total-arity)
-          (throw (ex-info (str "Wrong number of arguments to " var-sym
-                               ": expected " total-arity ", got " (count args))
-                          {:level :error
-                           :error/code :clj-zig/arity
-                           :var var-sym
-                           :expected total-arity
-                           :actual (count args)})))
-        (let [all-args   (vec args)
-              reg-args   (subvec all-args 0 n-regular)
-              ct-values  (subvec all-args n-regular)
-              ct-key     (vec ct-values)
-              invoke-fn  (if-let [cached (get @cache ct-key)]
-                           cached
-                           (let [prefix  (comptime-prefix comptime-params ct-values)
-                                 full-body (if (str/blank? prefix)
-                                             body
-                                             (str prefix "\n" body))
-                                 result  (establish! spec full-body)
-                                 inv     (wrap (:invoke result))]
-                             (swap! cache assoc ct-key inv)
-                             inv))]
-          (apply invoke-fn reg-args)))))
+  params. `body` is the Zig body template. `gen` carries build options
+  passed through to each `establish!` -- a `:build-id` here forces a
+  forced rebuild onto a unique path (the same Windows-locked-DLL fix
+  `recompile!` applies to the non-comptime path)."
+  ([the-var spec body comptime-params var-meta wrap]
+   (establish-comptime-binding! the-var spec body comptime-params var-meta wrap {}))
+  ([the-var spec body comptime-params var-meta wrap gen]
+   (let [n-comptime (count comptime-params)
+         n-regular  (count (:params spec))
+         total-arity (+ n-comptime n-regular)
+         var-sym    (symbol (str (:ns spec)) (str (:name spec)))
+         cache      (atom {})]
+     (alter-var-root
+      the-var
+      (constantly
+       (fn [& args]
+         (when (not= (count args) total-arity)
+           (throw (ex-info (str "Wrong number of arguments to " var-sym
+                                ": expected " total-arity ", got " (count args))
+                           {:level :error
+                            :error/code :clj-zig/arity
+                            :var var-sym
+                            :expected total-arity
+                            :actual (count args)})))
+         (let [all-args   (vec args)
+               reg-args   (subvec all-args 0 n-regular)
+               ct-values  (subvec all-args n-regular)
+               ct-key     (vec ct-values)
+               invoke-fn  (if-let [cached (get @cache ct-key)]
+                            cached
+                            (let [prefix  (comptime-prefix comptime-params ct-values)
+                                  full-body (if (str/blank? prefix)
+                                              body
+                                              (str prefix "\n" body))
+                                  result  (establish! spec full-body gen)
+                                  inv     (wrap (:invoke result))]
+                              (swap! cache assoc ct-key inv)
+                              inv))]
+           (apply invoke-fn reg-args)))))
     (swap! rebinders assoc the-var :comptime)
     (swap! comptime-rebinders assoc the-var
            {:spec spec :body body :comptime-params comptime-params
             :var-meta var-meta :wrap wrap})
     (alter-meta! the-var #(merge % var-meta {:clj-zig/info {:spec spec :body body
                                                              :comptime-params comptime-params}}))
-    the-var))
+    the-var)))
 
 (defn recompile!
   "Force a fresh build of `the-var`'s current spec and body, ignoring the
@@ -397,7 +402,7 @@
 
       (= :comptime wrap)
       (let [{:keys [spec body comptime-params var-meta wrap]} (get @comptime-rebinders the-var)]
-        (establish-comptime-binding! the-var spec body comptime-params var-meta wrap))
+        (establish-comptime-binding! the-var spec body comptime-params var-meta wrap {:build-id build-id}))
 
       (some? wrap)
       (let [{:keys [spec body] :as info} (:clj-zig/info (meta the-var))
