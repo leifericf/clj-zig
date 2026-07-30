@@ -502,6 +502,7 @@
       (apply await-for 2000 agent-targets))
     nil))
 
+#_{:clj-kondo/ignore [:unused-private-var]}
 (defonce ^:private shutdown-hook-installed
   (do (.addShutdownHook
        (Runtime/getRuntime)

@@ -85,7 +85,7 @@
                         (int 3) (int 4)))))
     (testing "f64 add"
       (is (= 5.0 (ff/call (ff/downcall lk "add_f64" ff/c-double [ff/c-double ff/c-double])
-                          (double 2.0) (double 3.0)))))))
+                          2.0 3.0))))))
 
 (deftest downcall-caches-the-handle-per-distinct-call
   (let [lk (lookup)
@@ -159,7 +159,7 @@
   ^MemorySegment [^Arena arena ^String s]
   (let [bs  (.getBytes s StandardCharsets/UTF_8)
         seg (.allocate arena (long (inc (alength bs))))]
-    (MemorySegment/copy bs (int 0) seg ValueLayout/JAVA_BYTE (long 0) (int (alength bs)))
+    (MemorySegment/copy bs (int 0) seg ValueLayout/JAVA_BYTE (long 0) (alength bs))
     (.set seg ValueLayout/JAVA_BYTE (long (alength bs)) (byte 0))
     seg))
 

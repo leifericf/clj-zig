@@ -43,12 +43,13 @@
       (is (= "#clj-zig/handle[Counter]" (pr-str c))))
     (counter-free c)))
 
+(defz Other "const Other = struct { x: i64 };")
+(defnz other-new [:ret [:handle Other]]
+  "const o = std.heap.c_allocator.create(Other) catch @panic(\"oom\");
+   o.* = .{ .x = 0 };
+   return o;")
+
 (deftest a-wrong-handle-type-is-rejected
-  (defz Other "const Other = struct { x: i64 };")
-  (defnz other-new [:ret [:handle Other]]
-    "const o = std.heap.c_allocator.create(Other) catch @panic(\"oom\");
-     o.* = .{ .x = 0 };
-     return o;")
   (let [o (other-new)]
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"handle"
           (counter-get o)))))
