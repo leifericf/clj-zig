@@ -813,6 +813,21 @@
               rest-arg      (some #(when (:rest? %) %) (:args raw-norm))
               comptime-args (vec (filter #(-> % :binding meta :comptime) (:args raw-norm)))
               has-comptime? (and (seq comptime-args) (string? body))
+              _ (when (seq comptime-args)
+                  ;; ADR 55: comptime arguments are trailing. The call-time
+                  ;; splice (establish-comptime-binding!) takes regular args
+                  ;; first, comptime values last; a non-comptime arg after a
+                  ;; comptime one would be silently spliced into the wrong
+                  ;; slot, so reject it at expansion rather than miscompile.
+                  (let [comptime? #(-> % :binding meta :comptime)
+                        after-first-ct (drop-while (complement comptime?) (:args raw-norm))]
+                    (when-not (every? comptime? after-first-ct)
+                      (throw (ex-info (str "Comptime arguments must be trailing in "
+                                           fn-name "'s signature; a non-comptime"
+                                           " argument follows a ^:comptime one.")
+                                      {:level :error
+                                       :error/code :clj-zig/misplaced-comptime
+                                       :fn fn-name})))))
               non-ct-sig    (when has-comptime?
                               (let [non-ct (remove #(-> % :binding meta :comptime) (:args raw-norm))]
                                 (-> (vec (mapcat (fn [{:keys [binding type]}]

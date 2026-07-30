@@ -29,3 +29,28 @@
   (is (thrown-with-msg?
        Exception #"cannot be nil"
        (ct-multiplier 10 nil))))
+
+(deftest comptime-must-be-trailing
+  (let [ct-k      (with-meta 'k {:comptime true})
+        ct-factor (with-meta 'factor {:comptime true})
+        code      (try
+                    (macroexpand
+                     `(defnz ~'bad-ct
+                        [~'x :i64 ~ct-k :i32 ~'y :i64 :ret :i64]
+                        "return x * k + y;"))
+                    :no-throw
+                    (catch Exception e
+                      ;; The throw happens during macroexpansion, so it is
+                      ;; wrapped in a CompilerException; walk the cause chain
+                      ;; to recover the diagnostic's ex-data.
+                      (->> (iterate #(.getCause ^Throwable %) e)
+                           (some #(when (instance? clojure.lang.ExceptionInfo %)
+                                    (ex-data %)))
+                           :error/code)))]
+    (testing "a non-comptime arg after a comptime one is rejected at expansion"
+      (is (= :clj-zig/misplaced-comptime code)))
+    (testing "the trailing form the suite uses still expands"
+      (is (some? (macroexpand
+                  `(defnz ~'good-ct
+                     [~'x :i64 ~ct-factor :i32 :ret :i64]
+                     "return x * factor;")))))))
