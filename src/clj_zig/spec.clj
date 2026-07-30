@@ -138,9 +138,7 @@
   a named enum, or a slice-element named struct."
   [elem]
   (and (map? elem)
-       (or (and (= :scalar (:kind elem))
-                (not (type/i128-type? (:name elem)))
-                (type/has-carrier? (:name elem)))
+       (or (type/carrier-scalar? elem)
            (and (= :named (:kind elem))
                 (get-in elem [:layout])
                 (or (get-in elem [:layout :enum])
@@ -191,9 +189,7 @@
   enum, a carrierless scalar, or a 128-bit integer is rejected."
   [ptr-kinds t]
   (or (contains? ptr-kinds (:kind t))
-      (and (= :scalar (:kind t))
-           (type/has-carrier? (:name t))
-           (not (type/i128-type? (:name t))))
+      (type/carrier-scalar? t)
       (and (= :named (:kind t))
            (get-in t [:layout])
            (not (get-in t [:layout :enum])))))
@@ -303,9 +299,7 @@
   "Validate a :stream return's element and iterator shape."
   [spec ret]
   (let [elem (:of ret)]
-    (when-not (and (= :scalar (:kind elem))
-                   (type/has-carrier? (:name elem))
-                   (not (type/i128-type? (:name elem))))
+    (when-not (type/carrier-scalar? elem)
       (fail spec :clj-zig/unsupported-stream
             (str "A :stream return must hold a carrier scalar element (the "
                  "read path is scalar-only, no 128-bit); got "

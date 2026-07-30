@@ -87,6 +87,16 @@
   [name]
   (contains? #{:i128 :u128} name))
 
+(defn carrier-scalar?
+  "True when a normalized type map is a plain carrier scalar: `:scalar`
+  kind, FFM-carrierable, and not a 128-bit integer (which takes the
+  struct-by-pointer path). The single predicate for the check spec,
+  layout, and signature validation all repeat."
+  [t]
+  (and (= :scalar (:kind t))
+       (has-carrier? (:name t))
+       (not (i128-type? (:name t)))))
+
 (defn normalize
   "Normalize a boundary type form to its canonical data shape. Throws a
   diagnostic (`ex-info`) for unknown or malformed types.

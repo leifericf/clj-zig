@@ -84,10 +84,7 @@
       (let [elem (:of slice)]
         ;; A 128-bit integer is a carrier for a top-level arg/return but not
         ;; for a bulk slice element (the marshaller moves primitives only).
-        (when (and (map? elem)
-                   (= :scalar (:kind elem))
-                   (type/has-carrier? (:name elem))
-                   (not (type/i128-type? (:name elem))))
+        (when (and (map? elem) (type/carrier-scalar? elem))
           elem)))))
 
 (defn scalar-only-layout?
@@ -122,9 +119,7 @@
        (seq (:fields layout))
        (every? (fn [f]
                  (let [t (:type f)]
-                   (or (and (= :scalar (:kind t))
-                            (type/has-carrier? (:name t))
-                            (not (type/i128-type? (:name t))))
+                   (or (type/carrier-scalar? t)
                        (and (= :named (:kind t))
                             (get t :layout)
                             (not (get-in t [:layout :enum]))
