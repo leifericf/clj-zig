@@ -48,3 +48,15 @@
       (is (str/includes? src "const xs = xs_ptr[0..xs_len];"))))
   (testing "a mutable slice drops the const qualifier"
     (is (str/includes? (zig/generated-source #'double-all!) "xs_ptr: [*]u8"))))
+
+(deftest rejects-nil-slice-argument
+  (testing "a nil const-slice arg throws a clear diagnostic, not an NPE"
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo
+         #"cannot be nil"
+         (sum nil))))
+  (testing "a nil mutable-slice arg throws too"
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo
+         #"cannot be nil"
+         (double-all! nil)))))

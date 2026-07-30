@@ -235,6 +235,19 @@
 (declare marshal-struct-into! marshal-buffer-field buffer-field-element marshal-array
          compiled-struct-reader)
 
+(defn- reject-nil-collection-arg!
+  "Throw a structured diagnostic when a collection-type argument is nil.
+  Slice, manyptr, ptr, and array params all need a non-nil value; a nil
+  would otherwise NPE deep in the Java reflection layer."
+  [param arg kind]
+  (when (nil? arg)
+    (throw (ex-info (str "A " kind " argument (" (:binding param)
+                         ") cannot be nil; pass an empty array or vector.")
+                    {:level :error
+                     :error/code :clj-zig/nil-collection-argument
+                     :kind kind
+                     :param (:binding param)}))))
+
 (defn- marshal-arg-fn
   "Build a per-param marshal closure that captures the param's kind, type,
   and any inner bindings at bind time. The returned fn takes
@@ -265,6 +278,7 @@
 
       :slice
       (fn slice-marshal [^Arena arena arg ^objects cs ^long off]
+        (reject-nil-collection-arg! param arg "slice")
         (let [{:keys [address length copy-back]} (marshal-array arena param arg)]
           (aset cs off address)
           (aset cs (inc off) length)
@@ -272,12 +286,14 @@
 
       :manyptr
       (fn manyptr-marshal [^Arena arena arg ^objects cs ^long off]
+        (reject-nil-collection-arg! param arg "manyptr")
         (let [{:keys [address copy-back]} (marshal-array arena param arg)]
           (aset cs off address)
           copy-back))
 
       :ptr
       (fn ptr-marshal [^Arena arena arg ^objects cs ^long off]
+        (reject-nil-collection-arg! param arg "ptr")
         (when (not= 1 (Array/getLength arg))
           (throw (ex-info "A :ptr argument must be a one-element array."
                           {:level :error
@@ -292,6 +308,7 @@
       (let [n      (-> type :length)
             named? (= :named (:kind (:of type)))]
         (fn array-marshal [^Arena arena arg ^objects cs ^long off]
+          (reject-nil-collection-arg! param arg "array")
           (let [actual (if named? (count arg) (Array/getLength arg))]
             (when (not= (long n) actual)
               (throw (ex-info (str "An :array argument must have length " (long n) ".")
@@ -1150,12 +1167,13 @@
                             (aset cs off (to-carrier {:type backing} value))))})
 
               (const-slice-of-scalar? p)
-              (let [elem  (:of t)
-                    bl    (value-layout elem)
-                    bytes (.byteSize bl)]
-                {:n 2
-                 :write (fn [^Arena arena ^objects cs ^long off arg]
-                          (let [len (Array/getLength arg)
+               (let [elem  (:of t)
+                     bl    (value-layout elem)
+                     bytes (.byteSize bl)]
+                 {:n 2
+                  :write (fn [^Arena arena ^objects cs ^long off arg]
+                           (reject-nil-collection-arg! p arg "slice")
+                           (let [len (Array/getLength arg)
                                 seg ^MemorySegment (.allocate arena (* len bytes) bytes)]
                             (MemorySegment/copy arg (int 0) seg bl (long 0) (int len))
                             (aset cs off seg)
