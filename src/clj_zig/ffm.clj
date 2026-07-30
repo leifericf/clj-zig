@@ -293,7 +293,7 @@
                                           l)))))))))
 
 (declare marshal-struct-into! marshal-buffer-field buffer-field-element marshal-array
-         compiled-struct-reader)
+         compiled-struct-reader validate-struct-arg!)
 
 (defn- reject-nil-collection-arg!
   "Throw a structured diagnostic when a collection-type argument is nil.
@@ -418,18 +418,24 @@
                                   (reify java.util.function.Supplier
                                     (get [_] (.allocate ^Arena global-arena msize malign)))))]
             (if chain
-              (fn struct-marshal [^Arena arena arg ^objects cs ^long off]
-                (let [seg (if marshal-seg-tl
-                            (.get ^ThreadLocal marshal-seg-tl)
-                            (.allocate ^Arena arena msize malign))]
-                  (chain seg arg)
-                  (aset cs off seg)
-                  nil))
-              (fn struct-marshal-fallback [^Arena arena arg ^objects cs ^long off]
-                (let [seg ^MemorySegment (.allocate ^Arena arena msize malign)]
-                  (marshal-struct-into! arena seg layout arg)
-                  (aset cs off seg)
-                  nil))))))
+              (let [type-name (:name type)
+                    binding   (:binding param)]
+                (fn struct-marshal [^Arena arena arg ^objects cs ^long off]
+                  (validate-struct-arg! type-name binding arg)
+                  (let [seg (if marshal-seg-tl
+                              (.get ^ThreadLocal marshal-seg-tl)
+                              (.allocate ^Arena arena msize malign))]
+                    (chain seg arg)
+                    (aset cs off seg)
+                    nil)))
+              (let [type-name (:name type)
+                    binding   (:binding param)]
+                (fn struct-marshal-fallback [^Arena arena arg ^objects cs ^long off]
+                  (validate-struct-arg! type-name binding arg)
+                  (let [seg ^MemorySegment (.allocate ^Arena arena msize malign)]
+                    (marshal-struct-into! arena seg layout arg)
+                    (aset cs off seg)
+                    nil)))))))
 
       :handle
       (let [expected (-> type :of :name)]
@@ -589,6 +595,21 @@
                   {:level :error
                    :error/code :clj-zig/handle-type-mismatch
                    :expected expected :actual actual})))
+
+(defn- validate-struct-arg!
+  "Throw a structured diagnostic when a struct argument is nil or not a
+  map. Cold validation path on the per-call marshal fn."
+  [type-name binding arg]
+  (cond
+    (nil? arg)
+    (throw (ex-info (str "Argument " binding " (:" type-name ") cannot be nil.")
+                    {:level :error :error/code :clj-zig/nil-argument
+                     :param binding :type type-name}))
+    (not (map? arg))
+    (throw (ex-info (str "Argument " binding " expects a " type-name
+                         " but got " (pr-str arg) ".")
+                    {:level :error :error/code :clj-zig/type-mismatch
+                     :param binding :expected type-name :actual (type arg)}))))
 
 (defn- build-struct-writer-chain
   "Build `[size align chain]` for an all-scalar struct, or nil if any
