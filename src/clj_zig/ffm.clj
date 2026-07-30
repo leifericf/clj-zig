@@ -19,14 +19,14 @@
            (java.nio.charset StandardCharsets)
            (clojure.lang PersistentArrayMap)))
 
-(def ^:private two-to-64 (.shiftLeft BigInteger/ONE 64))
-(def ^:private two-to-64-minus-1 (.subtract two-to-64 BigInteger/ONE))
-(def ^:private two-to-128 (.shiftLeft BigInteger/ONE 128))
+(def ^:private ^BigInteger two-to-64 (.shiftLeft BigInteger/ONE 64))
+(def ^:private ^BigInteger two-to-64-minus-1 (.subtract two-to-64 BigInteger/ONE))
+(def ^:private ^BigInteger two-to-128 (.shiftLeft BigInteger/ONE 128))
 
 ;; The C `__int128` ABI: a 16-byte value passed and returned as two 64-bit
 ;; halves. FFM carries it as a struct of two JAVA_LONGs in a MemorySegment;
 ;; a by-value return makes FFM prepend a SegmentAllocator to the handle.
-(def ^:private i128-layout
+(def ^:private ^MemoryLayout i128-layout
   (MemoryLayout/structLayout (into-array MemoryLayout [ValueLayout/JAVA_LONG ValueLayout/JAVA_LONG])))
 
 (defn- i128-type?
@@ -76,7 +76,7 @@
 ;; it explicitly; it never inspects the pointer.
 (deftype Handle [^Object type ^MemorySegment segment])
 
-(defmethod print-method Handle [h ^java.io.Writer w]
+(defmethod print-method Handle [^Handle h ^java.io.Writer w]
   (.write w (str "#clj-zig/handle[" (.type h) "]")))
 
 (defn- value-layout ^ValueLayout [t]
@@ -411,7 +411,7 @@
                   (throw-unknown-enum-member layout arg))
                 (aset cs off (coerce value))
                 nil)))
-          (let [[msize malign chain] (or (compiled-struct-writer-chain layout)
+            (let [[^long msize ^long malign chain] (or (compiled-struct-writer-chain layout)
                                          [(:size layout) (:align layout) nil])
                 marshal-seg-tl (when (and pool-enabled chain)
                                  (ThreadLocal/withInitial
@@ -627,16 +627,16 @@
                        :expected (str (.getSimpleName expected-carrier) "[]")
                        :actual (class arr)}))
       (not (= expected-carrier
-              (.getComponentType ^Class (.getClass arr))))
+              (.getComponentType (class arr))))
       (throw (ex-info (str "Argument " binding " expects a "
                            (.getSimpleName expected-carrier)
                            " array but got a "
-                           (.getSimpleName (.getComponentType ^Class (.getClass arr)))
+                           (.getSimpleName (.getComponentType (class arr)))
                            " array.")
                       {:level :error :error/code :clj-zig/type-mismatch
                        :param binding
                        :expected (str (.getSimpleName expected-carrier) "[]")
-                       :actual (.getName (.getClass arr))})))))
+                       :actual (.getName (class arr))})))))
 
 (defn- build-struct-writer-chain
   "Build `[size align chain]` for an all-scalar struct, or nil if any
@@ -940,7 +940,7 @@
   freshly allocated primitive `arr`, returning `arr`. The array's component
   type must match the layout's carrier. One native move replaces a
   per-element `.get` loop, mirroring `read-bytes`."
-  [^MemorySegment seg layout ^long n arr]
+  [^MemorySegment seg ^ValueLayout layout ^long n arr]
   (MemorySegment/copy seg layout (long 0) arr (int 0) (int n))
   arr)
 
@@ -1043,7 +1043,7 @@
   yields an empty String without dereferencing the address (the same
   single-slice guard `read-bytes` uses)."
   ^String [addr len]
-  (String. (read-bytes addr len) StandardCharsets/UTF_8))
+  (String. ^bytes (read-bytes addr len) StandardCharsets/UTF_8))
 
 (def ^:private enum-index-cache
   ;; Per enum `:values`, the `{kw->value value->kw}` lookup maps. Keyed by
@@ -1440,7 +1440,7 @@
   Carriers is the thread-local base array of size `(:n-base ctx) + 3`; the
   trailing three slots are filled with errbuf, errlen, and out before the
   invoke; the next call on this thread overwrites them."
-  [{:keys [^MethodHandle spreader ret record-factory free-handle error-buffer-bytes n-base struct-reader struct-out-tl errbuf-tl errlen-tl]}
+  [{:keys [^MethodHandle spreader ret record-factory free-handle ^long error-buffer-bytes n-base struct-reader struct-out-tl errbuf-tl errlen-tl]}
    ^Arena arena ^objects carriers copy-back!]
   (let [desc   (-> ret :of :layout)
         out    ^MemorySegment (if struct-out-tl
@@ -1459,7 +1459,7 @@
     (aset carriers i1 errlen)
     (aset carriers i2 out)
     (.invokeExact spreader ^objects carriers)
-    (let [n (.get errlen ValueLayout/JAVA_LONG 0)]
+    (let [n (.get ^MemorySegment errlen ValueLayout/JAVA_LONG 0)]
       (if (zero? n)
         (try
           (copy-back!)
@@ -1479,7 +1479,7 @@
 
   Carriers is the thread-local base array of size `base-count + 2`; the
   trailing two slots are filled with errbuf and errlen before the invoke."
-  [{:keys [^MethodHandle spreader ret error-buffer-bytes n-base errbuf-tl errlen-tl]} ^Arena arena
+  [{:keys [^MethodHandle spreader ret ^long error-buffer-bytes n-base errbuf-tl errlen-tl]} ^Arena arena
    ^objects carriers copy-back!]
   (let [errbuf ^MemorySegment (if errbuf-tl
                                 (.get ^ThreadLocal errbuf-tl)
@@ -1492,7 +1492,7 @@
     (aset carriers i0 errbuf)
     (aset carriers i1 errlen)
     (let [result (.invokeExact spreader ^objects carriers)
-          n      (do (copy-back!) (.get errlen ValueLayout/JAVA_LONG 0))]
+           n      (do (copy-back!) (.get ^MemorySegment errlen ValueLayout/JAVA_LONG 0))]
       (if (zero? n)
         (let [value-t (:of ret)]
           (cond
@@ -1552,8 +1552,8 @@
     (aset carriers i0 pout)
     (aset carriers i1 lout)
     (.invokeExact spreader ^objects carriers)
-    (let [addr (.get pout ValueLayout/JAVA_LONG 0)
-          len  (.get lout ValueLayout/JAVA_LONG 0)]
+    (let [addr (.get ^MemorySegment pout ValueLayout/JAVA_LONG 0)
+          len  (.get ^MemorySegment lout ValueLayout/JAVA_LONG 0)]
       (try
         (copy-back!)
         (case (:kind ret)
@@ -1646,7 +1646,7 @@
     (copy-back!)
     (from-return ret result)))
 
-(def ^:private stream-cleaner
+(def ^:private ^java.lang.ref.Cleaner stream-cleaner
   "A daemon-thread Cleaner that frees a stream iterator when its reducible
   is garbage-collected unreduced. Best-effort (GC-timed), so reducing
   remains the deterministic way to free; this is the safety net for a
@@ -1694,7 +1694,7 @@
   returning void with `arg-layouts`, the shared shape of every per-bind
   shim. The `__next` handle returns bool and is built inline at its one
   call site."
-  [linker lookup sym arg-layouts]
+  [^java.lang.foreign.Linker linker lookup sym arg-layouts]
   (.downcallHandle linker (foreign/find-symbol lookup sym)
                    (FunctionDescriptor/ofVoid (into-array MemoryLayout arg-layouts))
                    (into-array Linker$Option [])))
@@ -1708,7 +1708,7 @@
   `classify-return`. Owned record and error-union-over-struct returns
   carry a per-field shim over a wire-struct pointer; a `:string` return
   always owns its bytes."
-  [linker lookup export-symbol ret classify]
+  [^java.lang.foreign.Linker linker lookup export-symbol ret classify]
   (let [{:keys [eu-struct? owned-rec? opt-struct? stream?]} classify
         free-sym     (str export-symbol "__free")
         struct-free? (or eu-struct? (and owned-rec? (= :owned (:kind ret))))
@@ -1822,7 +1822,7 @@
                        (-> (.asSpreader ^MethodHandle handle obj-array-class
                                         ^int spreader-arity)
                            (.asType (MethodType/methodType
-                                     Object (into-array Class [obj-array-class])))))
+                                     Object ^"[Ljava.lang.Class;" (into-array Class [obj-array-class])))))
         ;; The struct desc and reader captured at bind time so the invoke
         ;; helpers skip the per-call cache lookup. nil for non-struct
         ;; returns; only struct-reading helpers touch it.
@@ -1979,7 +1979,7 @@
         ;; fresh counter starts at 1 (this call), not 0.
         (.set tl-arena fresh)
         (try (.close ^Arena old) (catch Throwable _ nil))
-        (aset fresh-counter 0 1)
+        (aset ^longs fresh-counter 0 1)
         (.arena fresh))
       (do
         (aset counter 0 (inc n))
