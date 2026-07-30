@@ -18,7 +18,12 @@
 (def default-targets
   "The release target matrix: a clj-zig target id (which keys the content
   hash and the resource path) paired with the Zig target triple to compile
-  for."
+  for.
+
+  GNU covers both Linux arches; musl ships x86_64 only because statically
+  linked aarch64-musl binaries are rare in practice (Alpine on aarch64 is
+  the niche case). Add `{:id \"linux-aarch64-musl\" :triple
+  \"aarch64-linux-musl\"}` if your deployment needs it."
   [{:id "linux-x86_64"       :triple "x86_64-linux-gnu"}
    {:id "linux-aarch64"      :triple "aarch64-linux-gnu"}
    {:id "linux-x86_64-musl"  :triple "x86_64-linux-musl"}
