@@ -17,6 +17,7 @@
   fmt` over the whole file to normalize the body."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
+            [clj-zig.fs :as fs]
             [clj-zig.layout :as layout]
             [clj-zig.type :as type]
             [clj-zig.zig :as zig]))
@@ -27,24 +28,6 @@
   "The value of `*file*` when a form is evaluated with no source file, as
   at the REPL. There is no defining directory to resolve against."
   "NO_SOURCE_PATH")
-
-(defn- unixify
-  "Normalize path separators to `/`, used only for absolute-path detection
-  so a POSIX `/opt/x` is recognized as absolute on Windows too. Candidate
-  paths themselves preserve the defining file's native separator (see
-  `candidate-paths`)."
-  [s]
-  (str/replace s "\\" "/"))
-
-(defn- source-absolute?
-  "True for a source path that is absolute on any host: a POSIX leading
-  `/` or a Windows drive letter (`C:/`/`C:\\`). Does not defer to the
-  host's `java.io.File` absolute rule, which calls POSIX `/opt/x`
-  relative on Windows."
-  [s]
-  (let [s (unixify s)]
-    (boolean (or (str/starts-with? s "/")
-                 (re-find #"^[A-Za-z]:/" s)))))
 
 (defn candidate-paths
   "The ordered filesystem paths to try for `rel`, given the defining
@@ -60,7 +43,7 @@
   POSIX defining file yields `/`. Both `java.io.File` and Zig `@import`
   accept either separator."
   [defining-file rel]
-  (if (source-absolute? rel)
+  (if (fs/absolute-path? rel)
     [rel]
     (if (and defining-file (not= defining-file no-source))
       (let [slash  (str/last-index-of defining-file "/")

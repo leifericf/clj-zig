@@ -14,7 +14,8 @@
 
   `scan` is pure; `closure` reads the filesystem."
   (:require [clojure.java.io :as io]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [clj-zig.fs :as fs]))
 
 (def ^:private import-pattern
   #"@import\(\s*\"([^\"]+)\"\s*\)")
@@ -31,7 +32,7 @@
   (->> (re-seq import-pattern zig-text)
        (map second)
        (filter (fn [t] (and (str/ends-with? t ".zig")
-                            (not (.isAbsolute (io/file t))))))
+                            (not (fs/absolute-path? t)))))
        distinct
        vec))
 

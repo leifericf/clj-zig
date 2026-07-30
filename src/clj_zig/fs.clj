@@ -1,7 +1,18 @@
 (ns clj-zig.fs
   "Filesystem helpers shared by the shell namespaces. Effects on files live
   here so the cache and the compiler bootstrap reuse one implementation."
-  (:require [clojure.java.io :as io]))
+  (:require [clojure.java.io :as io]
+            [clojure.string :as str]))
+
+(defn absolute-path?
+  "True for a path that is absolute on any host: a POSIX leading `/` or a
+  Windows drive letter (`C:/`/`C:\\`). Does not defer to the host's
+  `java.io.File` absolute rule, which calls POSIX `/opt/x` relative on
+  Windows."
+  [s]
+  (let [s (str/replace s "\\" "/")]
+    (boolean (or (str/starts-with? s "/")
+                 (re-find #"^[A-Za-z]:/" s)))))
 
 (defn delete-recursively!
   "Delete `file`, removing a directory's contents before the directory
