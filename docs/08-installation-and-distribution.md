@@ -98,6 +98,23 @@ while the project is a proof of concept. The git coordinate is
 `io.github.leifericf/clj-zig`; the Clojars coordinate is
 `com.leifericf/clj-zig`.
 
+## Pre-release perf check
+
+Before tagging a release, gate the per-call overhead and confirm no shape
+regressed:
+
+    clojure -M:bench --gate
+
+`--gate` checks each shape's within-run defnz/floor overhead ratio against
+a per-shape budget and exits non-zero on a breach. The ratio is measured
+defnz-against-floor in one process, so it is portable across machines of
+different speed; no absolute baseline is kept and no cross-run comparison
+is made. The deterministic reflection gate
+(`clojure -M:lint-reflection`, also a CI job) is the primary defense
+against the reflection regression class; this perf check is the backstop
+for non-reflection regressions. A breach that is runner noise or a budget
+that needs widening is resolved by judgment, not by re-running until green.
+
 ## Requirements summary
 
 - Java 22 or newer, for the finalized FFM API. The only JVM flag is

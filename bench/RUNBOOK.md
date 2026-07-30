@@ -33,6 +33,24 @@ The run writes a numbers record to
 `~/.agentic-sdk/clj-zig/artifacts/perf/perf-<millis>.edn` and prints one
 line per shape. Records are gitignored; the repo never carries numbers.
 
+## Regression gate
+
+Add `--gate` (or `CLJ_ZIG_GATE=1`) to turn the run into a regression
+gate: each shape's within-run defnz/floor overhead ratio is checked
+against a per-shape budget and the process exits non-zero when any shape
+breaches. The ratio is measured defnz-against-floor in one process, so it
+is portable across machines of different speed; no absolute baseline is
+kept and no cross-run comparison is made. CI runs this as the `perf-gate`
+job.
+
+    clojure -M:bench --gate
+
+The budgets are a catastrophic-regression ceiling (they sit above each
+shape's normal ratio and below the ratio a reflection-class regression
+produces), not a tight perf target. The deterministic reflection gate
+(`clojure -M:lint-reflection`) is the primary defense; this is the
+backstop for non-reflection regressions.
+
 ## Open a profiler attach window
 
 The bench accepts an opt-in attach window so an external profiler can
