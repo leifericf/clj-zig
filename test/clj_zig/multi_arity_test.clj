@@ -44,7 +44,15 @@
       (is (thrown? clojure.lang.ExceptionInfo
                    (define "return x + ;" "return x + y + 100;")))
       (is (= 105 ((resolve 'ma-kg) 5)))
-      (is (= 107 ((resolve 'ma-kg) 5 2))))))
+      (is (= 107 ((resolve 'ma-kg) 5 2))))
+    (testing "a failed recompile of all arities keeps info and bindings"
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (define "return x + ;" "return x + y + ;")))
+      (is (= 105 ((resolve 'ma-kg) 5)))
+      (is (= 107 ((resolve 'ma-kg) 5 2)))
+      (let [info (:clj-zig/info (meta (resolve 'ma-kg)))]
+        (is (some? (:spec info))
+            "flat-info survives an all-arity failure")))))
 
 (deftest multi-arity-attaches-arglists-metadata
   (let [m (meta #'multi-add)]
