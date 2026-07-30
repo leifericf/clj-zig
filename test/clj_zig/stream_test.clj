@@ -1,6 +1,8 @@
 (ns clj-zig.stream-test
   (:require [clojure.test :refer [deftest is testing]]
-            [clj-zig.core :refer [defnz deftypez defz]]))
+            [clj-zig.core :as core :refer [defnz deftypez defz]]
+            [clj-zig.spec :as spec]
+            [clj-zig.source :as source]))
 
 (deftypez Counter
   [state :i64]
@@ -32,3 +34,17 @@
     (is (= [0 1] (into [] (comp (take 2)) (counter-stream)))))
   (testing "count works"
     (is (= 100 (count (into [] (counter-stream)))))))
+
+(deftest stream-return-rejects-file-mode
+  ;; A :stream return is inline-only: the wrapper drives the iterator inline.
+  ;; File mode has no stream generator, so requesting one must fail with a
+  ;; clear diagnostic, not a generic "unsupported source type" from the
+  ;; plain-wrapper fallback.
+  (let [types (core/types-in 'clj-zig.stream-test)
+        s     (spec/build-spec {:ns 'clj-zig.stream-test :name 'f
+                                :signature '[:ret [:stream :i64 of Counter]]
+                                :types types})
+        code  (try (source/generate s "return null;" {:mode :file :entry "f"})
+                   :no-throw
+                   (catch clojure.lang.ExceptionInfo e (:error/code (ex-data e))))]
+    (is (= :clj-zig/stream-inline-only code))))

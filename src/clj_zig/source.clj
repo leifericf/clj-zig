@@ -1006,9 +1006,16 @@
   nodes. Each generator is the same one the inline path uses, passed
   `:file` so it drops the inner `__impl` fn and calls the entry fn."
   [{:keys [ret] :as spec} entry]
+  (when (= :stream (:kind ret))
+    ;; A :stream return is inline-only: the wrapper drives the iterator and
+    ;; frees it in a finally, so there is no file-mode body to call. Reject
+    ;; it here with a clear diagnostic rather than falling through to the
+    ;; plain wrapper, whose zig-type has no :stream arm.
+    (throw (ex-info "A :stream return is supported in inline mode only; it cannot pair with :zig/file."
+                    {:level :error
+                     :error/code :clj-zig/stream-inline-only
+                     :clj-zig/type-form ret})))
   (let [wire-decls (buffer-wire-decls spec)
-        ;; A :stream return has no file-mode generator; it falls through to
-        ;; the plain wrapper, as the inline-only stream path does.
         core       (case (return-shape ret)
                      :error-union-struct (generate-error-union-struct-return spec :file entry nil)
                      :error-union        (generate-error-union spec :file entry nil)
@@ -1017,7 +1024,7 @@
                      :optional-struct    (generate-optional-struct-return spec :file entry nil)
                      :i128-struct        (generate-struct-return spec :file entry nil)
                      :named-struct       (generate-struct-return spec :file entry nil)
-                     (:stream :named-enum :plain) (generate-plain spec :file entry nil))]
+                     (:named-enum :plain) (generate-plain spec :file entry nil))]
     (vec (concat wire-decls core))))
 
 (defn inline-nodes
