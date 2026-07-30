@@ -234,8 +234,9 @@ The attr-map and `zig-deps` accept keys under three reserved prefixes
 
 - `:zig/*` keys configure the Zig build. Recognized: `:zig/optimize`,
   `:zig/file`, `:zig/fn`, `:zig/raw`, `:zig/symbol`, `:zig/modules`,
-  `:zig/panic-fn`, `:zig/single-threaded`, `:zig/pic`, `:zig/stack-check`.
-  Unknown `:zig/*` keys are rejected at macro expansion time.
+  `:zig/panic-fn`, `:zig/single-threaded`, `:zig/pic`, `:zig/stack-check`,
+  `:zig/track-allocations`. Unknown `:zig/*` keys are rejected at macro
+  expansion time.
 - `:c/*` keys carry C-interop options (`:c/link`, `:c/include-path`,
   `:c/system-include-path`, `:c/link-path`).
 - `:clj-zig/*` keys configure clj-zig behavior outside the Zig compiler.

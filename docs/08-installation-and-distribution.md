@@ -76,8 +76,8 @@ order (ADR 30):
 
 A developer who already has Zig sees no download. On a machine with no Zig,
 the first compile fetches the pinned release for the host, verifies it
-against the checksum the Zig release index publishes, and caches it. The
-pinned version is the one the generated wrappers assume, so the
+against the pinned checksum recorded in clj-zig at release time, and caches
+it. The pinned version is the one the generated wrappers assume, so the
 `zig-version` in every content hash is identical across machines.
 
 ## Depending on clj-zig

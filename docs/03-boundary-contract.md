@@ -33,6 +33,10 @@ Built-in Zig types use exact Zig names as Clojure keywords.
 because the finalized FFM has no carrier for half, 80-bit, or 128-bit
 floats. `:noreturn` is not a valid argument or return type.
 
+`:string` is a first-class buffer type, not a scalar keyword: it crosses
+the boundary as a UTF-8 byte buffer and may appear in argument or return
+position.
+
 This avoids ambiguity with JVM/Clojure names such as `long`, `double`, `boolean`, or `nil`.
 
 ## Compound types
@@ -52,7 +56,16 @@ Compound boundary types are vectors.
 [:owned T]
 [:borrowed T]
 [:handle T]
+[:bytes T]
+[:stream T of IterType]
 ```
+
+`[:bytes T]` is a return-only wrapper around `[:slice :u8]`: the body
+returns a borrowed byte buffer and clj-zig copies it into a Clojure
+`bytes`. `[:stream T of IterType]` is a return-only streaming iterator
+(ADR 50): `T` is a carrier-scalar element type and `IterType` names a
+`deftypez` carrying `:clj-zig/iter` metadata. Both are rejected outside
+return position.
 
 Examples:
 

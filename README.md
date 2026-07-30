@@ -103,7 +103,8 @@ When a native library fires a callback from a thread the JVM does not own (a wor
 
 ```clojure
 (require '[clj-zig.foreign :as foreign])
-(:import '[java.util.concurrent Executors])
+(import '[java.util.concurrent Executors]
+        '[java.lang.foreign Arena])
 
 (let [exec (Executors/newSingleThreadExecutor)
       desc (foreign/descriptor :void [foreign/c-long])
@@ -190,6 +191,7 @@ Clojure form
   ->  signature data
   ->  normalized boundary contract
   ->  generated Zig wrapper
+  ->  hash, resolve cached or baked library, or compile
   ->  Zig compilation
   ->  native library loading
   ->  ordinary Clojure Var
@@ -207,7 +209,7 @@ from the JVM:
 - [`bit_ops.clj`](examples/bit_ops.clj): sub-byte packing and single-instruction bit intrinsics.
 - [`inline_asm.clj`](examples/inline_asm.clj): inline assembly, with the bodies in sibling `.zig` files.
 
-And two show a namespace backed by a co-located `.zig`:
+And a few more pair Clojure with co-located `.zig` files or native callbacks:
 
 - [`cinterop.clj`](examples/cinterop.clj): imports a C header with `@cImport` and links a C library, its body in a sibling `.zig` file.
 - [`geometry.clj`](examples/geometry.clj): bodyless functions sourced from the co-located `geometry.zig`, with `zig-deps` linking libm for the whole namespace.
