@@ -174,39 +174,99 @@
       (FunctionDescriptor/ofVoid arg-layouts)
       :else      (FunctionDescriptor/of (return-layout ret-value) arg-layouts))))
 
+(defn- reject-nil-scalar!
+  "Throw a structured diagnostic when a scalar argument is nil."
+  [binding type-name]
+  (throw (ex-info (str "Argument " binding " (:" type-name ") cannot be nil.")
+                  {:level :error
+                   :error/code :clj-zig/nil-argument
+                   :param binding
+                   :type type-name})))
+
+(defn- scalar-coerce-error
+  "Re-throw a raw coercion exception as a structured :clj-zig/type-mismatch."
+  [^Exception cause binding type-name v]
+  (throw (ex-info (str "Argument " binding " expects a " type-name
+                       " but got " (pr-str v) ".")
+                  {:level :error
+                   :error/code :clj-zig/type-mismatch
+                   :param binding
+                   :expected type-name
+                   :actual (type v)}
+                  cause)))
+
 (defn- to-carrier
   "Coerce a Clojure value to the param's native carrier. Integers cross
   as their low `bits` two's-complement bits, so an unsigned value passes
-  through the signed carrier without truncation."
+  through the signed carrier without truncation. Nil and wrong-type values
+  produce structured diagnostics, not raw Java exceptions."
   [param v]
-  (let [{:keys [category bits]} (type/scalar-info (-> param :type :name))]
+  (let [{:keys [category bits]} (type/scalar-info (-> param :type :name))
+        binding  (:binding param)
+        type-name (-> param :type :name)]
+    (when (nil? v)
+      (reject-nil-scalar! binding type-name))
     (case category
-      :int   (let [l (.longValue (biginteger v))]
+      :int   (let [l (try (.longValue (biginteger v))
+                          (catch Exception e
+                            (scalar-coerce-error e binding type-name v)))]
                (case bits 8 (unchecked-byte l) 16 (unchecked-short l)
                           32 (unchecked-int l) 64 l))
-      :float (case bits 32 (unchecked-float v) 64 (double v))
+      :float (case bits
+               32 (try (unchecked-float v)
+                       (catch Exception e
+                         (scalar-coerce-error e binding type-name v)))
+               64 (try (double v)
+                       (catch Exception e
+                         (scalar-coerce-error e binding type-name v))))
       :bool  (boolean v))))
 
 (defn- scalar-param-coerce
   "Build a per-call coercion fn for one scalar param, hoisting the
   `type/scalar-info` lookup to bind time so the per-call body is only the
   category-and-bits case dispatch with no map lookup. The scalar hot path
-  calls the returned fn per arg per call."
+  calls the returned fn per arg per call. Nil and wrong-type values
+  produce structured diagnostics."
   [param]
-  (let [{:keys [category bits]} (type/scalar-info (-> param :type :name))]
+  (let [{:keys [category bits]} (type/scalar-info (-> param :type :name))
+        binding   (:binding param)
+        type-name (-> param :type :name)]
     (case category
       :int   (case (long bits)
-               8  (fn int8-coerce [v] (let [l (.longValue (biginteger v))]
-                                        (unchecked-byte l)))
-               16 (fn int16-coerce [v] (let [l (.longValue (biginteger v))]
-                                         (unchecked-short l)))
-               32 (fn int32-coerce [v] (let [l (.longValue (biginteger v))]
-                                         (unchecked-int l)))
-               64 (fn int64-coerce [v] (.longValue (biginteger v))))
+               8  (fn int8-coerce [v]
+                    (when (nil? v) (reject-nil-scalar! binding type-name))
+                    (try (unchecked-byte (.longValue (biginteger v)))
+                         (catch Exception e
+                           (scalar-coerce-error e binding type-name v))))
+               16 (fn int16-coerce [v]
+                    (when (nil? v) (reject-nil-scalar! binding type-name))
+                    (try (unchecked-short (.longValue (biginteger v)))
+                         (catch Exception e
+                           (scalar-coerce-error e binding type-name v))))
+               32 (fn int32-coerce [v]
+                    (when (nil? v) (reject-nil-scalar! binding type-name))
+                    (try (unchecked-int (.longValue (biginteger v)))
+                         (catch Exception e
+                           (scalar-coerce-error e binding type-name v))))
+               64 (fn int64-coerce [v]
+                    (when (nil? v) (reject-nil-scalar! binding type-name))
+                    (try (.longValue (biginteger v))
+                         (catch Exception e
+                           (scalar-coerce-error e binding type-name v)))))
       :float (case (long bits)
-               32 (fn f32-coerce [v] (unchecked-float v))
-               64 (fn f64-coerce [v] (double v)))
-      :bool  (fn bool-coerce [v] (boolean v)))))
+               32 (fn f32-coerce [v]
+                    (when (nil? v) (reject-nil-scalar! binding type-name))
+                    (try (unchecked-float v)
+                         (catch Exception e
+                           (scalar-coerce-error e binding type-name v))))
+                64 (fn f64-coerce [v]
+                     (when (nil? v) (reject-nil-scalar! binding type-name))
+                     (try (double v)
+                          (catch Exception e
+                            (scalar-coerce-error e binding type-name v)))))
+      :bool  (fn bool-coerce [v]
+               (when (nil? v) (reject-nil-scalar! binding type-name))
+               (boolean v)))))
 
 (defn- scalar-return-coerce
   "Build a per-call return coercion fn for a scalar-or-void return. The
