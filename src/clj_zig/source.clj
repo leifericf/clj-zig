@@ -398,63 +398,118 @@
   (vec (concat (mapcat #(reconstruction % false) params)
                [(zig/raw-stmt body)])))
 
+;; The inline/file modes differ in three axes only: how the body is invoked
+;; (an inner `__impl` fn the wrapper calls, vs a call to the user's entry fn),
+;; where argument reconstruction runs (inside `__impl`, vs in the wrapper
+;; prelude), and the `c_allocator` spelling (`std.heap.c_allocator` with std
+;; in scope, vs `@import(\"std\").heap.c_allocator` leaving the user file's
+;; imports untouched). The two helpers below capture those axes so each
+;; return-shape generator is written once, parameterized on `mode`.
+
+(defn- user-call
+  "The Zig expression calling the user's `entry` fn with each binding by
+  its name. Slices, arrays, and structs arrive reconstructed; enums and
+  scalars arrive by value."
+  [entry params]
+  (str entry "(" (str/join ", " (map #(str (:binding %)) params)) ")"))
+
+(defn- wrapper-prelude
+  "Reconstruction statement nodes for a file-mode wrapper: the statements
+  that rebuild slice, array, and struct arguments before calling the user
+  fn. Returns an empty vector when no param needs rebuilding."
+  [params]
+  (vec (mapcat #(reconstruction % true) params)))
+
+(defn- mode-allocator
+  "The `c_allocator` spelling for a generated copy/free statement: inline
+  mode has `std` in scope, file mode imports it inline so a user file's
+  own imports are untouched."
+  [mode]
+  (if (= :file mode) "@import(\"std\").heap.c_allocator" "std.heap.c_allocator"))
+
+(defn- invocation
+  "The mode-dependent pieces of a wrapper's export-fn body and any extra
+  declarations preceding it. Returns `{:prelude :call :decls}`.
+
+  Inline mode (`:inline`): splices `body` into a non-exported `<sym>__impl`
+  returning `impl-ret-t` and calls it; reconstruction runs inside `__impl`,
+  so the prelude is empty and `:decls` carries the `__impl` declaration.
+
+  File mode (`:file`): no inner fn -- the wrapper calls the user `entry`
+  fn, with the reconstruction prelude in the wrapper body and no extra
+  declarations."
+  [mode {:keys [params] sym :symbol} entry body impl-ret-t]
+  (if (= :file mode)
+    {:prelude (wrapper-prelude params)
+     :call    (user-call entry params)
+     :decls   []}
+    {:prelude []
+     :call    (str sym "__impl(" (args-list params) ")")
+     :decls   [(zig/fn-decl (str sym "__impl") (mapcat param-decls params)
+                            impl-ret-t (impl-body params body))]}))
+
 (defn- generate-plain
-  "A direct `export fn`: the body runs in the exported function itself."
-  [{:keys [params ret] sym :symbol} body]
-  [(zig/export-fn-decl
-    sym
-    (mapcat param-decls params)
-    (zig-type ret)
-    (impl-body params body))])
+  "A direct `export fn`: inline mode runs the body in the export fn itself;
+  file mode reconstructs its slice and struct args and returns the user
+  entry fn's result directly (scalar, enum, or void)."
+  ([spec body] (generate-plain spec :inline nil body))
+  ([{:keys [params ret] sym :symbol} mode entry body]
+   [(zig/export-fn-decl
+     sym
+     (mapcat param-decls params)
+     (zig-type ret)
+     (if (= :file mode)
+       (vec (concat (wrapper-prelude params)
+                    [(zig/return-stmt (zig/raw-expr (user-call entry params)))]))
+       (impl-body params body)))]))
 
 (defn- generate-error-union
   "An inner impl fn holding the user body returns `E!T`. The exported
   wrapper calls it, writes the error name to the caller's buffer on
-  failure, and returns the value (or void)."
-  [{:keys [params ret] sym :symbol} body]
-  (let [params-data (mapcat param-decls params)
-        args-str    (args-list params)
-        err-set     (str (:error ret))
-        value-t     (zig-type (:of ret))
-        void?       (= "void" value-t)
-        out-params  [(zig/param "__err" "[*]u8") (zig/param "__errlen" "*usize")]
-        on-error-text (error-catch-clause void?)]
-    [(zig/fn-decl
-      (str sym "__impl")
-      params-data
-      (str err-set "!" value-t)
-      (impl-body params body))
-     (zig/export-fn-decl
-      sym
-      (vec (concat params-data out-params))
-      value-t
-      (if void?
-        [(zig/raw-stmt (str sym "__impl(" args-str ") " on-error-text ";"))
-         (zig/assign-stmt (zig/deref (zig/ref "__errlen")) (zig/lit "0"))]
-        [(zig/raw-stmt (str "const __value = " sym "__impl(" args-str ") " on-error-text ";"))
-         (zig/assign-stmt (zig/deref (zig/ref "__errlen")) (zig/lit "0"))
-         (zig/return-stmt (zig/ref "__value"))]))]))
+  failure, and returns the value (or void). File mode drops the inner fn
+  and calls the user entry fn directly, with reconstruction in the prelude."
+  ([spec body] (generate-error-union spec :inline nil body))
+  ([{:keys [params ret] sym :symbol :as spec} mode entry body]
+   (let [params-data  (mapcat param-decls params)
+         err-set      (str (:error ret))
+         value-t      (zig-type (:of ret))
+         void?        (= "void" value-t)
+         out-params   [(zig/param "__err" "[*]u8") (zig/param "__errlen" "*usize")]
+         on-error     (error-catch-clause void?)
+         {:keys [prelude call decls]} (invocation mode spec entry body (str err-set "!" value-t))
+         body-stmts   (if void?
+                        [(zig/raw-stmt (str call " " on-error ";"))
+                         (zig/assign-stmt (zig/deref (zig/ref "__errlen")) (zig/lit "0"))]
+                        [(zig/raw-stmt (str "const __value = " call " " on-error ";"))
+                         (zig/assign-stmt (zig/deref (zig/ref "__errlen")) (zig/lit "0"))
+                         (zig/return-stmt (zig/ref "__value"))])]
+     (vec (concat
+            decls
+            [(zig/export-fn-decl
+              sym
+              (vec (concat params-data out-params))
+              value-t
+              (vec (concat prelude body-stmts)))])))))
 
 (defn- generate-struct-return
   "An inner impl fn holding the user body returns the struct by value; the
   exported wrapper calls it and writes the result through an out-pointer.
-  The aggregate crosses the C ABI by reference."
-  [{:keys [params ret] sym :symbol} body]
-  (let [params-data (mapcat param-decls params)
-        args-str    (args-list params)
-        ret-t       (zig-type ret)]
-    [(zig/fn-decl
-      (str sym "__impl")
-      params-data
-      ret-t
-      (impl-body params body))
-     (zig/export-fn-decl
-      sym
-      (conj (vec params-data) (zig/param "__ret" (str "*" ret-t)))
-      "void"
-      [(zig/assign-stmt
-        (zig/deref (zig/ref "__ret"))
-        (zig/raw-expr (str sym "__impl(" args-str ")")))])]))
+  The aggregate crosses the C ABI by reference. File mode drops the inner
+  fn and writes the user entry fn's result directly."
+  ([spec body] (generate-struct-return spec :inline nil body))
+  ([{:keys [params ret] sym :symbol :as spec} mode entry body]
+   (let [params-data (mapcat param-decls params)
+         ret-t       (zig-type ret)
+         {:keys [prelude call decls]} (invocation mode spec entry body ret-t)]
+     (vec (concat
+            decls
+            [(zig/export-fn-decl
+              sym
+              (conj (vec params-data) (zig/param "__ret" (str "*" ret-t)))
+              "void"
+              (vec (concat prelude
+                           [(zig/assign-stmt (zig/deref (zig/ref "__ret"))
+                                             (zig/raw-expr call))])))])))))
 
 (defn- ownership-slice
   "The element-slice an ownership return writes out as a pointer and
@@ -480,43 +535,39 @@
 (defn- generate-simple-slice-ownership
   "An inner impl fn holding the user body returns a slice; the exported
   wrapper writes the slice's pointer and length to two out-params. An
-  `:owned` return also emits a free shim: the body allocates with
-  `std.heap.c_allocator` and the shim frees it after the caller copies
-  the elements out. A `:string` return lowers to the same `[]u8` shape
-  and always carries the free shim."
-  [{:keys [params ret] sym :symbol} body]
-  (let [params-data (mapcat param-decls params)
-        args-str    (args-list params)
-        slice       (ownership-slice ret)
-        elem-t      (zig-type (:of slice))
-        ret-t       (str "[]" (when (:const? slice) "const ") elem-t)
-        owned?      (contains? #{:owned :bytes :string} (:kind ret))
-        all-params  (conj (vec params-data)
-                          (zig/param "__ptr" "*usize")
-                          (zig/param "__len" "*usize"))]
-    (vec (concat
-          [(zig/fn-decl
-            (str sym "__impl")
-            params-data
-            ret-t
-            (impl-body params body))
-           (zig/export-fn-decl
-            sym
-            all-params
-            "void"
-            [(zig/const-stmt "__r" (zig/raw-expr (str sym "__impl(" args-str ")")))
-             (zig/assign-stmt (zig/deref (zig/ref "__ptr"))
-                              (zig/call "@intFromPtr" [(zig/field (zig/ref "__r") "ptr")]))
-             (zig/assign-stmt (zig/deref (zig/ref "__len"))
-                              (zig/field (zig/ref "__r") "len"))])]
-          (when owned?
-            [(zig/export-fn-decl
-              (str sym "__free")
-              [(zig/param "__ptr" "usize") (zig/param "__len" "usize")]
-              "void"
-              [(zig/raw-stmt
-                (str "const __p: [*]" elem-t " = @ptrFromInt(__ptr);\n"
-                     "std.heap.c_allocator.free(__p[0..__len]);"))])])))))
+  `:owned`/`:bytes`/`:string` return also emits a free shim that frees the
+  slab after the caller copies the elements out. File mode drops the inner
+  fn and calls the user entry fn directly, freeing through an inline
+  @import so the user file's imports are untouched."
+  ([spec body] (generate-simple-slice-ownership spec :inline nil body))
+  ([{:keys [params ret] sym :symbol :as spec} mode entry body]
+   (let [params-data (mapcat param-decls params)
+         slice       (ownership-slice ret)
+         elem-t      (zig-type (:of slice))
+         ret-t       (str "[]" (when (:const? slice) "const ") elem-t)
+         owned?      (contains? #{:owned :bytes :string} (:kind ret))
+         alloc       (mode-allocator mode)
+         all-params  (conj (vec params-data)
+                           (zig/param "__ptr" "*usize")
+                           (zig/param "__len" "*usize"))
+         {:keys [prelude call decls]} (invocation mode spec entry body ret-t)
+         body-stmts  (vec (concat prelude
+                                  [(zig/const-stmt "__r" (zig/raw-expr call))
+                                   (zig/assign-stmt (zig/deref (zig/ref "__ptr"))
+                                                    (zig/call "@intFromPtr" [(zig/field (zig/ref "__r") "ptr")]))
+                                   (zig/assign-stmt (zig/deref (zig/ref "__len"))
+                                                    (zig/field (zig/ref "__r") "len"))]))]
+     (vec (concat
+            decls
+            [(zig/export-fn-decl sym all-params "void" body-stmts)]
+            (when owned?
+              [(zig/export-fn-decl
+                (str sym "__free")
+                [(zig/param "__ptr" "usize") (zig/param "__len" "usize")]
+                "void"
+                [(zig/raw-stmt
+                  (str "const __p: [*]" elem-t " = @ptrFromInt(__ptr);\n"
+                       alloc ".free(__p[0..__len]);"))])]))))))
 
 (defn- generate-owned-buffer-slice
   "An owned slice whose element is a buffer-carrying struct. The body
@@ -525,56 +576,55 @@
   ptr+len), frees the nice struct array, and writes the wire slab's
   pointer and length to the out-params. A walking free shim iterates the
   wire slab, frees each element's buffer fields, then frees the slab
-  itself."
-  [{:keys [params ret] sym :symbol} body]
-  (let [layout      (get-in ret [:of :of :layout])
-        type-name   (:name layout)
-        wire-t      (str (wire-struct-name type-name))
-        params-data (mapcat param-decls params)
-        args-str    (args-list params)
-        all-params  (conj (vec params-data)
-                          (zig/param "__ptr" "*usize")
-                          (zig/param "__len" "*usize"))
-        copies      (wire-write-stmts layout "__wire[__i]" "__src")
-        frees       (wire-struct-free-stmts layout "__e" "std.heap.c_allocator")]
-    [(zig/fn-decl
-      (str sym "__impl")
-      params-data
-      (str "[]" type-name)
-      (impl-body params body))
-     (zig/export-fn-decl
-      sym
-      all-params
-      "void"
-      (vec (concat
-            [(zig/const-stmt "__nice" (zig/raw-expr (str sym "__impl(" args-str ")")))
-             (zig/raw-stmt
-              (str "const __wire = std.heap.c_allocator.alloc(" wire-t ", __nice.len) catch @panic(\"oom\");"))]
-            [(zig/for-stmt "(__nice, 0..) |__src, __i|" (vec copies))]
-            [(zig/raw-stmt "std.heap.c_allocator.free(__nice);")
-             (zig/assign-stmt (zig/deref (zig/ref "__ptr"))
-                              (zig/call "@intFromPtr" [(zig/field (zig/ref "__wire") "ptr")]))
-             (zig/assign-stmt (zig/deref (zig/ref "__len"))
-                              (zig/field (zig/ref "__wire") "len"))])))
-     (zig/export-fn-decl
-      (str sym "__free")
-      [(zig/param "__ptr" "usize") (zig/param "__len" "usize")]
-      "void"
-      (vec (concat
-            [(zig/raw-stmt (str "const __p: [*]" wire-t " = @ptrFromInt(__ptr);"))
-             (zig/const-stmt "__slice" (zig/raw-expr "__p[0..__len]"))]
-            [(zig/for-stmt "(__slice) |__e|" (vec frees))]
-             [(zig/raw-stmt "std.heap.c_allocator.free(__slice);")])))]))
+  itself. File mode calls the user entry fn directly and imports std
+  inline."
+  ([spec body] (generate-owned-buffer-slice spec :inline nil body))
+  ([{:keys [params ret] sym :symbol :as spec} mode entry body]
+   (let [layout       (get-in ret [:of :of :layout])
+         type-name    (:name layout)
+         wire-t       (str (wire-struct-name type-name))
+         params-data  (mapcat param-decls params)
+         alloc        (mode-allocator mode)
+         all-params   (conj (vec params-data)
+                            (zig/param "__ptr" "*usize")
+                            (zig/param "__len" "*usize"))
+         copies       (wire-write-stmts layout "__wire[__i]" "__src")
+         frees        (wire-struct-free-stmts layout "__e" alloc)
+         {:keys [prelude call decls]} (invocation mode spec entry body (str "[]" type-name))
+         wrapper-body (vec (concat prelude
+                                   [(zig/const-stmt "__nice" (zig/raw-expr call))
+                                    (zig/raw-stmt
+                                     (str "const __wire = " alloc ".alloc(" wire-t ", __nice.len) catch @panic(\"oom\");"))]
+                                   [(zig/for-stmt "(__nice, 0..) |__src, __i|" (vec copies))]
+                                   [(zig/raw-stmt (str alloc ".free(__nice);"))
+                                    (zig/assign-stmt (zig/deref (zig/ref "__ptr"))
+                                                     (zig/call "@intFromPtr" [(zig/field (zig/ref "__wire") "ptr")]))
+                                    (zig/assign-stmt (zig/deref (zig/ref "__len"))
+                                                     (zig/field (zig/ref "__wire") "len"))]))
+         free-body    (vec (concat
+                            [(zig/raw-stmt (str "const __p: [*]" wire-t " = @ptrFromInt(__ptr);"))
+                             (zig/const-stmt "__slice" (zig/raw-expr "__p[0..__len]"))]
+                            [(zig/for-stmt "(__slice) |__e|" (vec frees))]
+                            [(zig/raw-stmt (str alloc ".free(__slice);"))]))]
+     (vec (concat
+            decls
+            [(zig/export-fn-decl sym all-params "void" wrapper-body)
+             (zig/export-fn-decl
+              (str sym "__free")
+              [(zig/param "__ptr" "usize") (zig/param "__len" "usize")]
+              "void"
+              free-body)])))))
 
 (defn- generate-ownership
   "Dispatch an owned, borrowed, bytes, or string slice return: the simple
   one-slab path for a scalar or scalar-only-struct element, or the
   nice-to-wire transform path for a buffer-carrying struct element."
-  [spec body]
-  (let [slice (ownership-slice (:ret spec))]
-    (if (buffer-carrying-slice-element? (:of slice))
-      (generate-owned-buffer-slice spec body)
-      (generate-simple-slice-ownership spec body))))
+  ([spec body] (generate-ownership spec :inline nil body))
+  ([spec mode entry body]
+   (let [slice (ownership-slice (:ret spec))]
+     (if (buffer-carrying-slice-element? (:of slice))
+       (generate-owned-buffer-slice spec mode entry body)
+       (generate-simple-slice-ownership spec mode entry body)))))
 
 (defn- needs-std?
   "True when the generated wrapper for `spec` needs `std` in scope."
@@ -690,75 +740,72 @@
   "An inner impl fn holding the user body returns the nice record by value;
   the exported wrapper writes each field into the wire extern struct through
   an out-pointer. An `:owned` result also emits a per-field `__free` shim
-  that frees every buffer field; a `:borrowed` result emits no shim."
-  [{:keys [params ret] sym :symbol} body]
-  (let [layout     (get-in ret [:of :layout])
-        type-name  (:name layout)
-        wire-t     (str (wire-struct-name type-name))
-        params-data (mapcat param-decls params)
-        args-str   (args-list params)
-        writes     (wire-write-stmts layout)
-        owned?     (= :owned (:kind ret))
-        free-stmts (wire-struct-free-stmts layout)
-        free-body  (free-body-or-noop free-stmts)]
-    (vec (concat
-          [(zig/fn-decl
-            (str sym "__impl")
-            params-data
-            (str type-name)
-            (impl-body params body))
-           (zig/export-fn-decl
-            sym
-            (conj (vec params-data) (zig/param "__ret" (str "*" wire-t)))
-            "void"
-            (vec (concat
-                  [(zig/const-stmt "__r" (zig/raw-expr (str sym "__impl(" args-str ")")))]
-                  writes)))]
-          (when owned?
+  that frees every buffer field; a `:borrowed` result emits no shim. File
+  mode drops the inner fn and writes the user entry fn's result directly."
+  ([spec body] (generate-owned-struct-return spec :inline nil body))
+  ([{:keys [params ret] sym :symbol :as spec} mode entry body]
+   (let [layout      (get-in ret [:of :layout])
+         type-name   (:name layout)
+         wire-t      (str (wire-struct-name type-name))
+         params-data (mapcat param-decls params)
+         writes      (wire-write-stmts layout)
+         owned?      (= :owned (:kind ret))
+         free-stmts  (wire-struct-free-stmts layout "__ret" (mode-allocator mode))
+         free-body   (free-body-or-noop free-stmts)
+         {:keys [prelude call decls]} (invocation mode spec entry body (str type-name))]
+     (vec (concat
+            decls
             [(zig/export-fn-decl
-              (str sym "__free")
-              [(zig/param "__ret" (str "*const " wire-t))]
+              sym
+              (conj (vec params-data) (zig/param "__ret" (str "*" wire-t)))
               "void"
-              free-body)])))))
+              (vec (concat prelude
+                           [(zig/const-stmt "__r" (zig/raw-expr call))]
+                           writes)))]
+            (when owned?
+              [(zig/export-fn-decl
+                (str sym "__free")
+                [(zig/param "__ret" (str "*const " wire-t))]
+                "void"
+                free-body)]))))))
 
 (defn- generate-error-union-struct-return
   "An inner impl fn holding the user body returns `E!NiceRecord`; the export
   wrapper `catch`-es the error, writes the error name to the caller's buffer
   and returns WITHOUT writing the struct on failure, and on success writes
   each field of the nice record into the wire extern struct through `__ret`
-  and sets `__errlen` to 0."
-  [{:keys [params ret] sym :symbol} body]
-  (let [layout      (get-in ret [:of :layout])
-        type-name   (:name layout)
-        wire-t      (str (wire-struct-name type-name))
-        params-data (mapcat param-decls params)
-        args-str    (args-list params)
-        err-set     (str (:error ret))
-        out-params  [(zig/param "__err" "[*]u8")
-                     (zig/param "__errlen" "*usize")
-                     (zig/param "__ret" (str "*" wire-t))]
-        writes      (wire-write-stmts layout)
-        free-stmts  (wire-struct-free-stmts layout)
-        free-body   (free-body-or-noop free-stmts)
-        on-error    (error-catch-clause true)]
-    [(zig/fn-decl
-      (str sym "__impl")
-      params-data
-      (str err-set "!" type-name)
-      (impl-body params body))
-     (zig/export-fn-decl
-      sym
-      (vec (concat params-data out-params))
-      "void"
-      (vec (concat
-            [(zig/raw-stmt (str "const __r = " sym "__impl(" args-str ") " on-error ";"))
-             (zig/assign-stmt (zig/deref (zig/ref "__errlen")) (zig/lit "0"))]
-            writes)))
-     (zig/export-fn-decl
-      (str sym "__free")
-      [(zig/param "__ret" (str "*const " wire-t))]
-      "void"
-      free-body)]))
+  and sets `__errlen` to 0. File mode drops the inner fn and calls the user
+  entry fn directly."
+  ([spec body] (generate-error-union-struct-return spec :inline nil body))
+  ([{:keys [params ret] sym :symbol :as spec} mode entry body]
+   (let [layout      (get-in ret [:of :layout])
+         type-name   (:name layout)
+         wire-t      (str (wire-struct-name type-name))
+         params-data (mapcat param-decls params)
+         err-set     (str (:error ret))
+         out-params  [(zig/param "__err" "[*]u8")
+                      (zig/param "__errlen" "*usize")
+                      (zig/param "__ret" (str "*" wire-t))]
+         writes      (wire-write-stmts layout)
+         free-stmts  (wire-struct-free-stmts layout "__ret" (mode-allocator mode))
+         free-body   (free-body-or-noop free-stmts)
+         on-error    (error-catch-clause true)
+         {:keys [prelude call decls]} (invocation mode spec entry body (str err-set "!" type-name))]
+     (vec (concat
+            decls
+            [(zig/export-fn-decl
+              sym
+              (vec (concat params-data out-params))
+              "void"
+              (vec (concat prelude
+                           [(zig/raw-stmt (str "const __r = " call " " on-error ";"))
+                            (zig/assign-stmt (zig/deref (zig/ref "__errlen")) (zig/lit "0"))]
+                           writes)))
+             (zig/export-fn-decl
+              (str sym "__free")
+              [(zig/param "__ret" (str "*const " wire-t))]
+              "void"
+              free-body)])))))
 
 (defn- error-union-struct-return?
   "True when a return is an `:error-union` over a named non-enum (a struct
@@ -795,11 +842,13 @@
   "The `__free` shim declaration node for an optional-struct return. The
   body returns null or a c_allocator pointer to the nice struct; the shim
   null-checks, frees each buffer field, then destroys the struct
-  allocation."
-  [{:keys [ret] sym :symbol}]
+  allocation. The allocator spelling follows `mode` (inline std in scope,
+  file inline @import)."
+  [{:keys [ret] sym :symbol} mode]
   (let [layout     (get-in ret [:of :layout])
         type-name  (:name layout)
-        free-stmts (nice-struct-free-stmts layout)]
+        alloc      (mode-allocator mode)
+        free-stmts (nice-struct-free-stmts layout "__p" alloc)]
     (zig/export-fn-decl
      (str sym "__free")
      [(zig/param "__ptr" "usize")]
@@ -808,31 +857,14 @@
            [(zig/raw-stmt "if (__ptr == 0) return;")
             (zig/raw-stmt (str "const __p: *" type-name " = @ptrFromInt(__ptr);"))]
            free-stmts
-           [(zig/raw-stmt "std.heap.c_allocator.destroy(__p);")])))))
+           [(zig/raw-stmt (str alloc ".destroy(__p);"))])))))
 
 (defn- generate-optional-struct-return
   "A plain `export fn` returning `?*const Type`, plus a `__free` shim."
-  [spec body]
-  (vec (concat (generate-plain spec body)
-               [(optional-struct-free-shim spec)])))
-
-(defn- file-optional-struct-return
-  "A file-mode `export fn` returning `?*const Type`, plus a `__free` shim
-  using inline @import of std so the user file's imports are untouched."
-  [{:keys [ret] sym :symbol :as spec} entry]
-  (let [layout     (get-in ret [:of :layout])
-        type-name  (:name layout)
-        free-stmts (nice-struct-free-stmts layout "__p" "@import(\"std\").heap.c_allocator")]
-    (vec (concat (file-plain spec entry)
-                 [(zig/export-fn-decl
-                   (str sym "__free")
-                   [(zig/param "__ptr" "usize")]
-                   "void"
-                   (vec (concat
-                         [(zig/raw-stmt "if (__ptr == 0) return;")
-                          (zig/raw-stmt (str "const __p: *" type-name " = @ptrFromInt(__ptr);"))]
-                         free-stmts
-                         [(zig/raw-stmt "@import(\"std\").heap.c_allocator.destroy(__p);")])))]))))
+  ([spec body] (generate-optional-struct-return spec :inline nil body))
+  ([spec mode entry body]
+   (vec (concat (generate-plain spec mode entry body)
+                [(optional-struct-free-shim spec mode)]))))
 
 (defn- ret-wire-layout
   "The single wire-bearing layout an ownership or error-union return lowers
@@ -967,232 +999,25 @@
           wire-decls
           core))))
 
-;; File mode: the wrapper calls a user-written pub fn
-
-(defn- user-call
-  "The Zig expression calling the user's `entry` fn with each binding by
-  its name. Slices, arrays, and structs arrive reconstructed; enums and
-  scalars arrive by value."
-  [entry params]
-  (str entry "(" (str/join ", " (map #(str (:binding %)) params)) ")"))
-
-(defn- wrapper-prelude
-  "Reconstruction statement nodes for a file-mode wrapper: the statements
-  that rebuild slice, array, and struct arguments before calling the user
-  fn. Returns an empty vector when no param needs rebuilding."
-  [params]
-  (vec (mapcat #(reconstruction % true) params)))
-
-(defn- file-plain
-  "A file-mode `export fn` that reconstructs its slice and struct args and
-  returns the user fn's result directly (scalar, enum, or void)."
-  [{:keys [params ret] sym :symbol} entry]
-  [(zig/export-fn-decl
-    sym
-    (mapcat param-decls params)
-    (zig-type ret)
-    (vec (concat (wrapper-prelude params)
-                 [(zig/return-stmt (zig/raw-expr (user-call entry params)))])))])
-
-(defn- file-error-union
-  "A file-mode `export fn` that calls the user fn and translates a returned
-  error into the caller's error-name buffer."
-  [{:keys [params ret] sym :symbol} entry]
-  (let [params-data (mapcat param-decls params)
-        value-t     (zig-type (:of ret))
-        void?       (= "void" value-t)
-        out-params  [(zig/param "__err" "[*]u8") (zig/param "__errlen" "*usize")]
-        call        (user-call entry params)
-        on-error    (error-catch-clause void?)]
-    [(zig/export-fn-decl
-      sym
-      (vec (concat params-data out-params))
-      value-t
-      (vec (concat
-            (wrapper-prelude params)
-            (if void?
-              [(zig/raw-stmt (str call " " on-error ";"))
-               (zig/assign-stmt (zig/deref (zig/ref "__errlen")) (zig/lit "0"))]
-              [(zig/raw-stmt (str "const __value = " call " " on-error ";"))
-               (zig/assign-stmt (zig/deref (zig/ref "__errlen")) (zig/lit "0"))
-               (zig/return-stmt (zig/ref "__value"))]))))]))
-
-(defn- file-struct-return
-  "A file-mode `export fn` that calls the user fn and writes the returned
-  struct through an out-pointer (the aggregate crosses by reference)."
-  [{:keys [params ret] sym :symbol} entry]
-  (let [params-data (mapcat param-decls params)
-        ret-t       (zig-type ret)]
-    [(zig/export-fn-decl
-      sym
-      (conj (vec params-data) (zig/param "__ret" (str "*" ret-t)))
-      "void"
-      (vec (concat (wrapper-prelude params)
-                   [(zig/assign-stmt
-                     (zig/deref (zig/ref "__ret"))
-                     (zig/raw-expr (user-call entry params)))])))]))
-
-(defn- file-ownership
-  "Dispatch a file-mode owned, borrowed, bytes, or string slice return:
-  the simple one-slab path, or the nice-to-wire transform path for a
-  buffer-carrying struct element."
-  [{:keys [ret] :as spec} entry]
-  (let [slice (ownership-slice ret)]
-    (if (buffer-carrying-slice-element? (:of slice))
-      (file-owned-buffer-slice spec entry)
-      (file-simple-slice-ownership spec entry))))
-
-(defn- file-simple-slice-ownership
-  "A file-mode `export fn` that calls the user fn and writes the returned
-  slice's pointer and length to two out-params. An `:owned` or `:string`
-  return also emits a free shim importing `std` inline."
-  [{:keys [params ret] sym :symbol} entry]
-  (let [params-data (mapcat param-decls params)
-        slice       (ownership-slice ret)
-        elem-t      (zig-type (:of slice))
-        owned?      (contains? #{:owned :bytes :string} (:kind ret))
-        all-params  (conj (vec params-data)
-                          (zig/param "__ptr" "*usize")
-                          (zig/param "__len" "*usize"))]
-    (vec (concat
-          [(zig/export-fn-decl
-            sym
-            all-params
-            "void"
-            (vec (concat
-                  (wrapper-prelude params)
-                  [(zig/const-stmt "__r" (zig/raw-expr (user-call entry params)))
-                   (zig/assign-stmt (zig/deref (zig/ref "__ptr"))
-                                    (zig/call "@intFromPtr" [(zig/field (zig/ref "__r") "ptr")]))
-                   (zig/assign-stmt (zig/deref (zig/ref "__len"))
-                                    (zig/field (zig/ref "__r") "len"))])))]
-          (when owned?
-            [(zig/export-fn-decl
-              (str sym "__free")
-              [(zig/param "__ptr" "usize") (zig/param "__len" "usize")]
-              "void"
-              [(zig/raw-stmt
-                (str "const __p: [*]" elem-t " = @ptrFromInt(__ptr);\n"
-                     "@import(\"std\").heap.c_allocator.free(__p[0..__len]);"))])])))))
-
-(defn- file-owned-buffer-slice
-  "File-mode owned slice of buffer-carrying structs: calls the user's
-  `pub fn`, transforms it into a wire slab, and emits a walking free shim.
-  `std` is imported inline so a user file's own imports never collide."
-  [{:keys [params ret] sym :symbol} entry]
-  (let [layout      (get-in ret [:of :of :layout])
-        type-name   (:name layout)
-        wire-t      (str (wire-struct-name type-name))
-        params-data (mapcat param-decls params)
-        all-params  (conj (vec params-data)
-                          (zig/param "__ptr" "*usize")
-                          (zig/param "__len" "*usize"))
-        copies      (wire-write-stmts layout "__wire[__i]" "__src")
-        frees       (wire-struct-free-stmts layout "__e" "@import(\"std\").heap.c_allocator")]
-    [(zig/export-fn-decl
-      sym
-      all-params
-      "void"
-      (vec (concat
-            (wrapper-prelude params)
-            [(zig/const-stmt "__nice" (zig/raw-expr (user-call entry params)))
-             (zig/raw-stmt
-              (str "const __wire = @import(\"std\").heap.c_allocator.alloc(" wire-t ", __nice.len) catch @panic(\"oom\");"))]
-            [(zig/for-stmt "(__nice, 0..) |__src, __i|" (vec copies))]
-            [(zig/raw-stmt "@import(\"std\").heap.c_allocator.free(__nice);")
-             (zig/assign-stmt (zig/deref (zig/ref "__ptr"))
-                              (zig/call "@intFromPtr" [(zig/field (zig/ref "__wire") "ptr")]))
-             (zig/assign-stmt (zig/deref (zig/ref "__len"))
-                              (zig/field (zig/ref "__wire") "len"))])))
-     (zig/export-fn-decl
-      (str sym "__free")
-      [(zig/param "__ptr" "usize") (zig/param "__len" "usize")]
-      "void"
-      (vec (concat
-            [(zig/raw-stmt (str "const __p: [*]" wire-t " = @ptrFromInt(__ptr);"))
-             (zig/const-stmt "__slice" (zig/raw-expr "__p[0..__len]"))]
-            [(zig/for-stmt "(__slice) |__e|" (vec frees))]
-            [(zig/raw-stmt "@import(\"std\").heap.c_allocator.free(__slice);")])))]))
-
-(defn- file-owned-struct-return
-  "A file-mode `export fn` that calls the user fn and writes the returned
-  nice record field by field into the wire extern struct through an
-  out-pointer. An `:owned` result also emits a per-field `__free` shim
-  importing `std` inline."
-  [{:keys [params ret] sym :symbol} entry]
-  (let [layout     (get-in ret [:of :layout])
-        type-name  (:name layout)
-        wire-t     (str (wire-struct-name type-name))
-        params-data (mapcat param-decls params)
-        writes     (wire-write-stmts layout)
-        owned?     (= :owned (:kind ret))
-        free-stmts (wire-struct-free-stmts layout "__ret" "@import(\"std\").heap.c_allocator")
-        free-body  (free-body-or-noop free-stmts)]
-    (vec (concat
-          [(zig/export-fn-decl
-            sym
-            (conj (vec params-data) (zig/param "__ret" (str "*" wire-t)))
-            "void"
-            (vec (concat
-                  (wrapper-prelude params)
-                  [(zig/const-stmt "__r" (zig/raw-expr (user-call entry params)))]
-                  writes)))]
-          (when owned?
-            [(zig/export-fn-decl
-              (str sym "__free")
-              [(zig/param "__ret" (str "*const " wire-t))]
-              "void"
-              free-body)])))))
-
-(defn- file-error-union-struct-return
-  "A file-mode `export fn` that calls the user fn and translates a
-  returned `E!NiceRecord` error union into the caller's error-name buffer
-  and a wire struct out-pointer."
-  [{:keys [params ret] sym :symbol} entry]
-  (let [layout      (get-in ret [:of :layout])
-        type-name   (:name layout)
-        wire-t      (str (wire-struct-name type-name))
-        params-data (mapcat param-decls params)
-        out-params  [(zig/param "__err" "[*]u8")
-                     (zig/param "__errlen" "*usize")
-                     (zig/param "__ret" (str "*" wire-t))]
-        writes      (wire-write-stmts layout)
-        free-stmts (wire-struct-free-stmts layout "__ret" "@import(\"std\").heap.c_allocator")
-        free-body   (free-body-or-noop free-stmts)
-        on-error    (error-catch-clause true)]
-    [(zig/export-fn-decl
-      sym
-      (vec (concat params-data out-params))
-      "void"
-      (vec (concat
-            (wrapper-prelude params)
-            [(zig/raw-stmt (str "const __r = " (user-call entry params) " " on-error ";"))
-             (zig/assign-stmt (zig/deref (zig/ref "__errlen")) (zig/lit "0"))]
-            writes)))
-     (zig/export-fn-decl
-      (str sym "__free")
-      [(zig/param "__ret" (str "*const " wire-t))]
-      "void"
-      free-body)]))
-
 (defn- generate-file
   "The file-mode declarations: an `export fn` that reconstructs args and
   calls the user's `pub fn`. Wire struct declarations are emitted for any
   buffer-carrying struct type in the spec. Returns a vector of declaration
-  nodes."
+  nodes. Each generator is the same one the inline path uses, passed
+  `:file` so it drops the inner `__impl` fn and calls the entry fn."
   [{:keys [ret] :as spec} entry]
   (let [wire-decls (buffer-wire-decls spec)
         ;; A :stream return has no file-mode generator; it falls through to
         ;; the plain wrapper, as the inline-only stream path does.
-         core       (case (return-shape ret)
-                     :error-union-struct (file-error-union-struct-return spec entry)
-                     :error-union        (file-error-union spec entry)
-                     :owned-record       (file-owned-struct-return spec entry)
-                     :ownership          (file-ownership spec entry)
-                     :optional-struct    (file-optional-struct-return spec entry)
-                     :i128-struct        (file-struct-return spec entry)
-                     :named-struct       (file-struct-return spec entry)
-                     (:stream :named-enum :plain) (file-plain spec entry))]
+        core       (case (return-shape ret)
+                     :error-union-struct (generate-error-union-struct-return spec :file entry nil)
+                     :error-union        (generate-error-union spec :file entry nil)
+                     :owned-record       (generate-owned-struct-return spec :file entry nil)
+                     :ownership          (generate-ownership spec :file entry nil)
+                     :optional-struct    (generate-optional-struct-return spec :file entry nil)
+                     :i128-struct        (generate-struct-return spec :file entry nil)
+                     :named-struct       (generate-struct-return spec :file entry nil)
+                     (:stream :named-enum :plain) (generate-plain spec :file entry nil))]
     (vec (concat wire-decls core))))
 
 (defn inline-nodes
