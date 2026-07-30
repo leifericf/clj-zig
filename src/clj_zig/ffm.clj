@@ -1331,7 +1331,7 @@
 
   Carriers is the thread-local base array of size `(:n-base ctx) + 3`; the
   trailing three slots are filled with errbuf, errlen, and out before the
-  invoke, then cleared so the next call on this thread starts clean."
+  invoke; the next call on this thread overwrites them."
   [{:keys [^MethodHandle spreader ret record-factory free-handle error-buffer-bytes n-base struct-reader struct-out-tl errbuf-tl errlen-tl]}
    ^Arena arena ^objects carriers copy-back!]
   (let [desc   (-> ret :of :layout)

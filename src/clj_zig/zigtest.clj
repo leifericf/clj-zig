@@ -40,7 +40,10 @@
           {:pass true}
           {:pass false :output (str/join "\n" (remove str/blank? [out err]))}))
       (finally
-        (try (fs/delete-recursively! (io/file tmp)) (catch Exception _))))))
+        (try (fs/delete-recursively! (io/file tmp))
+             (catch Exception e
+               (binding [*out* *err*]
+                 (println "clj-zig: failed to delete test temp dir" tmp e))))))))
 
 (defmacro deftestz
   "Define a Clojure test that runs Zig `test` blocks. The `body` is a

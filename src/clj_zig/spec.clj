@@ -234,7 +234,8 @@
 
 (defn- validate-args!
   "Reject contracts FFM cannot honor in argument position: `:void`/`:noreturn`
-  arguments, an `:optional` over anything but a pointer or a carrier scalar,
+  arguments, an `:optional` over anything but a pointer, a carrier scalar,
+  or a named non-enum struct,
   `:error-union`/`:stream`/`:owned`/`:borrowed`/`:bytes` outside return
   position, a `:handle` not wrapping a named type, and any indirection whose
   element is not carryable. A struct-element slice must be `:const` so the
@@ -254,7 +255,7 @@
     (when (and (= :optional (:kind type))
                (not (optional-inner-ok? #{:ptr :manyptr} (:of type))))
       (fail spec :clj-zig/unsupported-optional
-            "An :optional argument must wrap a :ptr, :manyptr, or a carrier scalar." {}))
+            "An :optional argument must wrap a :ptr, :manyptr, a carrier scalar, or a named non-enum struct." {}))
     (when (and (= :optional (:kind type))
                (= :named (:kind (:of type)))
                (some :target (get-in (:of type) [:layout :fields])))

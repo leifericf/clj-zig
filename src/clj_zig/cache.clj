@@ -134,7 +134,7 @@
 ;; Pure: paths
 
 (defn- extension-for-target
-  "The shared-library suffix for a target triple, without the dot."
+  "The shared-library suffix for a target id, without the dot."
   [target]
   (cond
     (str/includes? target "macos")   "dylib"
@@ -331,6 +331,10 @@
   (if (:git/sha ref)
     (git-fingerprint ref)
     (let [path        (:path ref)
+          _           (when-not path
+                        (throw (ex-info "A dev module reference needs a :path."
+                                        {:level :error :error/code :clj-zig/module-missing-path
+                                         :ref ref})))
           signature   (dir-signature (stat path))
           [fp entry]  (memoized-fingerprint (get @module-fingerprint-cache path)
                                                   signature
@@ -381,14 +385,16 @@
                           :library-path (:library-path paths)}))))
 
 (defn read-manifest
-  "Read the manifest for a built artifact, or nil when none exists. The
-  manifest is written as data, so it round-trips through the EDN reader
-  rather than the Clojure reader: a tampered cache dir cannot then craft
-  a payload that leans on Clojure-reader quirks."
+  "Read the manifest for a built artifact, or nil when none exists or the
+  file is corrupt. The manifest is written as data, so it round-trips
+  through the EDN reader rather than the Clojure reader: a tampered cache
+  dir cannot then craft a payload that leans on Clojure-reader quirks.
+  A malformed manifest degrades to nil, treating it as missing."
   [paths]
   (let [f (io/file (:manifest-path paths))]
     (when (.exists f)
-      (edn/read-string (slurp f)))))
+      (try (edn/read-string (slurp f))
+           (catch Exception _ nil)))))
 
 (defn clean!
   "Remove the entire artifact cache under `root` (default `.clj-zig/cache`).

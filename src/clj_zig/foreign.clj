@@ -43,7 +43,9 @@
 
 ;; linker and layout shorthands
 
-(def ^Linker linker (Linker/nativeLinker))
+(def ^Linker linker
+  "The process `Linker` shared by every downcall and upcall stub."
+  (Linker/nativeLinker))
 
 (def ^:private ^"[Ljava.lang.foreign.Linker$Option;" no-options
   (make-array Linker$Option 0))
