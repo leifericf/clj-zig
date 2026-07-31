@@ -890,6 +890,9 @@
       (println "note: --track-allocations is ignored under --axis1 (Axis-1"
                "measures authoring latency, not per-call allocations);"
                "running axis1."))
+    (when (and (:axis1 opts) (:gate opts))
+      (println "note: --gate is ignored under --axis1 (Axis-1 measures"
+               "authoring latency, not per-call overhead); running axis1."))
     (if (:axis1 opts)
       (run-axis1 shapes opts)
       (let [_       (do (attach-profiler! opts)
