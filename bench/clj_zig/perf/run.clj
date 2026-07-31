@@ -913,7 +913,7 @@
               (println "PERF GATE FAILED:" (count breaches)
                        "shape(s) over the defnz/floor ratio budget:")
               (doseq [b breaches]
-                (println (format "  %s ratio %.1f (budget %.1f)"
+                (println (format "  %s ratio %.2f (budget %.2f)"
                                  (name (:kind b))
                                  (double (:overhead-ratio b))
                                  (double (stats/ratio-budget (:kind b))))))
