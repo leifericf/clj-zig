@@ -21,3 +21,14 @@
   ;; When warnings are present the verdict is :fail regardless of the file
   ;; count, so a reflection regression is never masked by an empty count.
   (is (= :fail (gate/gate-verdict 0 "Reflection warning, ..."))))
+
+(deftest gate-script-is-reflection-free
+  ;; The gate that enforces reflection-freedom must itself be clean, or it
+  ;; is an unguarded irony. Re-load it under warn-on-reflection and assert
+  ;; no warning was emitted.
+  (let [sw (java.io.StringWriter.)]
+    (binding [*err* sw]
+      (set! *warn-on-reflection* true)
+      (load-file "script/clj_zig/check_reflection.clj"))
+    (is (not (re-find #"Reflection warning" (str sw)))
+        "the gate script must not itself use reflective interop")))

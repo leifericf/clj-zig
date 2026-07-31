@@ -55,7 +55,7 @@
         (load-file (.getPath f))))
     (let [captured (str sw)]
       (case (gate-verdict (count files) captured)
-        :fail  (do (.write *err* captured)
+        :fail  (do (.write ^java.io.Writer *err* captured)
                    (println "FAIL: reflective interop found in src")
                    (System/exit 1))
         :empty (do (println "FAIL: no .clj files found under src/ --"
