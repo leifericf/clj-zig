@@ -14,7 +14,8 @@
   clojure -M:lint-reflection."
   (:require [clojure.string :as str]))
 
-(defn- ^java.io.File src-root []
+(defn- src-root
+  ^java.io.File []
   (java.io.File. "src"))
 
 (defn- clj-files
